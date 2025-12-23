@@ -117,7 +117,7 @@ const OrderPanel = () => {
           qty: item.quantity,
           comment: item.comment || undefined,
         })),
-        no_of_pax: 1,
+        no_of_pax: selectedOrderType === DINE_IN ? numberOfPeople : 1,
         pos_profile: posProfile.name,
         order_type: selectedOrderType,
         table: selectedTable || undefined,
