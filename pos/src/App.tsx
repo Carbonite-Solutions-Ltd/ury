@@ -4,6 +4,8 @@ import Header from './components/Header';
 import Orders from './pages/Orders';
 import POS from './pages/POS';
 import Table from './pages/Table';
+import Reports from './pages/Reports';
+import Notifications from './pages/Notifications';
 import AuthGuard from './components/AuthGuard';
 import POSOpeningProvider from './components/POSOpeningProvider';
 import ScreenSizeProvider from './components/ScreenSizeProvider';
@@ -12,6 +14,7 @@ import { usePOSStore } from './store/pos-store';
 import { useEffect } from 'react';
 import { setupKotListener } from './lib/kot-listener';
 import { initPosDisplay, destroyPosDisplay } from './lib/pos-display';
+
 
 function App() {
   const {
@@ -44,6 +47,8 @@ function App() {
                     <Route path="/" element={<POS/>} />
                     <Route path="/orders" element={<Orders />} />
                     <Route path="/table" element={<Table />} />
+                    <Route path="/reports" element={<Reports />} />
+                    <Route path="/notifications" element={<Notifications />} />
                   </Routes>
                 </div>
                 <Footer />

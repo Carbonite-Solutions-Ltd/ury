@@ -16,6 +16,7 @@ class URYKOT(Document):
     def before_submit(self):
         self.userSetting()
 
+
     # Function for printing multiple KOTs.
     def multi_print_kot(self):
         # Function for printing a KOT on a specified printer using a print format.
@@ -103,3 +104,5 @@ class URYKOT(Document):
     def userSetting(self):
         userDoc = frappe.get_doc("User", self.owner)
         self.user = userDoc.full_name
+    
+    

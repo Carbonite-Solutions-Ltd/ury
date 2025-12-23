@@ -20,6 +20,7 @@ export interface POSInvoice {
   posting_date: string;
   rounded_total: number;
   order_type: OrderType;
+  custom_order_status?: string;
 }
 
 export interface OrdersState {
