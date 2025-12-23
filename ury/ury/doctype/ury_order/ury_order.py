@@ -555,8 +555,8 @@ def cancel_order(invoice_id, reason):
 
 # Method for URY POS
 @frappe.whitelist()
-def make_invoice(customer, payments, cashier, pos_profile,owner, additionalDiscount=None, table=None, invoice=None):
-    order_type =  invoice_name = frappe.get_value("POS Invoice",invoice , "order_type")
+def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDiscount=None, table=None, invoice=None):
+    order_type = invoice_name = frappe.get_value("POS Invoice", invoice, "order_type")
     invoice = get_order_invoice(table, invoice, order_type, "Payments")
 
     if table:
@@ -565,7 +565,7 @@ def make_invoice(customer, payments, cashier, pos_profile,owner, additionalDisco
 
     invoice.customer = customer
     invoice.pos_profile = pos_profile
-    invoice.additional_discount_percentage=additionalDiscount
+    invoice.additional_discount_percentage = additionalDiscount
     invoice.calculate_taxes_and_totals()
 
     for pay in invoice.payments:
@@ -576,7 +576,9 @@ def make_invoice(customer, payments, cashier, pos_profile,owner, additionalDisco
             "payments", dict(mode_of_payment=d["mode_of_payment"], amount=d["amount"])
         )
 
-    invoice.owner = owner
+    # Don't set owner - it's a read-only field set at document creation
+    # invoice.owner = owner  # REMOVE THIS LINE
+    
     invoice.save()
     try:
         invoice.submit()
