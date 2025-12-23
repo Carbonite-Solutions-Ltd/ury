@@ -9,13 +9,69 @@ from frappe.utils import get_datetime
 @frappe.whitelist()
 def serve_kot(name, time):
     current_time = get_datetime()
-    creation_time = frappe.db.get_value("URY KOT",name,"creation")
+    creation_time = frappe.db.get_value("URY KOT", name, "creation")
 
     production_time = current_time - creation_time
     production_time_minutes = production_time.total_seconds() / 60
+    
+    # Update KOT fields
     frappe.db.set_value("URY KOT", name, "start_time_serv", time)
-    frappe.db.set_value("URY KOT",name,"production_time",production_time_minutes)
+    frappe.db.set_value("URY KOT", name, "production_time", production_time_minutes)
     frappe.db.set_value("URY KOT", name, "order_status", "Served")
+    
+    # Update linked POS Invoice status
+    try:
+        invoice = frappe.db.get_value("URY KOT", name, "invoice")
+        
+        if invoice and frappe.db.exists("POS Invoice", invoice):
+            # Get invoice owner to send notification to specific user
+            invoice_owner = frappe.db.get_value("POS Invoice", invoice, "owner")
+            
+            # Update POS Invoice custom_order_status to Served
+            frappe.db.set_value(
+                "POS Invoice",
+                invoice,
+                "custom_order_status",
+                "Served",
+                update_modified=False
+            )
+            
+            # Get notification details
+            notification_data = frappe.db.sql("""
+                SELECT 
+                    pi.name as invoice,
+                    pi.customer_name,
+                    pi.restaurant_table,
+                    pi.grand_total,
+                    k.name as kot_name,
+                    GROUP_CONCAT(
+                        CONCAT(ki.item_name, ' x', ki.qty) 
+                        ORDER BY ki.idx 
+                        SEPARATOR ', '
+                    ) as items_list,
+                    COUNT(DISTINCT ki.name) as items_count
+                FROM `tabPOS Invoice` pi
+                LEFT JOIN `tabURY KOT` k ON k.invoice = pi.name
+                LEFT JOIN `tabURY KOT Items` ki ON ki.parent = k.name
+                WHERE pi.name = %s
+                GROUP BY pi.name
+            """, (invoice,), as_dict=True)
+            
+            if notification_data:
+                # Publish realtime notification to specific user
+                frappe.publish_realtime(
+                    event="order_served_notification",
+                    message=notification_data[0],
+                    user=invoice_owner
+                )
+            
+            frappe.logger().info(f"Updated POS Invoice {invoice} to Served from KOT {name}")
+        
+        frappe.db.commit()
+        
+    except Exception as e:
+        frappe.log_error(f"Error updating invoice status: {str(e)}", "Serve KOT Error")
+        pass
 
 
 # Function to mark it as verified by a user in cancel type KOT

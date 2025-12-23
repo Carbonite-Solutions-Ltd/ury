@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { Clock, User, UserCheck, Receipt, Printer, Pencil, X } from 'lucide-react';
+import { Clock, User, UserCheck, Receipt, Printer, Pencil, X, CheckCircle } from 'lucide-react';
 import { Badge, Button, Card, CardContent } from '../components/ui';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../components/ui/dialog';
 import { showToast } from '../components/ui/toast';
@@ -206,6 +206,13 @@ export default function Orders() {
       </div>
     );
   }
+  
+  // Debug: Check what fields orders have
+  if (orders.length > 0) {
+    console.log('First order data:', orders[0]);
+    console.log('Has custom_order_status?', 'custom_order_status' in orders[0]);
+    console.log('custom_order_status value:', orders[0].custom_order_status);
+  }
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -238,19 +245,29 @@ export default function Orders() {
                 >
                   <CardContent className="p-0 flex flex-col h-full">
                     <div className="p-3 bg-gray-50 border-b">
-                    <h3 className="font-medium text-gray-900 text-sm truncate" title={order.name}>
-                      {order.name}
-                    </h3>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-xs text-gray-500">
-                          {order.restaurant_table ? `Table ${order.restaurant_table} • ` : ''}{order.order_type}
-                        </p>
+                      <h3 className="font-medium text-gray-900 text-sm truncate" title={order.name}>
+                        {order.name}
+                      </h3>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-xs text-gray-500">
+                            {order.restaurant_table ? `Table ${order.restaurant_table} • ` : ''}{order.order_type}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          {/* Served Badge */}
+                          {order.custom_order_status === 'Served' && (
+                            <Badge variant="default" className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-1 px-2 py-0.5">
+                              <CheckCircle className="w-3 h-3" />
+                              <span className="text-xs">Served</span>
+                            </Badge>
+                          )}
+                          {/* Status Badge */}
+                          <Badge variant={getBadgeVariant(order.status)}>
+                            {order.status}
+                          </Badge>
+                        </div>
                       </div>
-                      <Badge variant={getBadgeVariant(order.status)} className="ml-2">
-                        {order.status}
-                      </Badge>
-                    </div>
                     </div>
 
                     {/* Content section - matches MenuCard padding and structure */}
@@ -353,6 +370,13 @@ export default function Orders() {
                       <X className="w-4 h-4" />
                     </button>
                   </>
+                )}
+                {/* Served Badge in Header */}
+                {selectedOrder.custom_order_status === 'Served' && (
+                  <Badge variant="default" className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-1">
+                    <CheckCircle className="w-3.5 h-3.5" />
+                    <span>Served</span>
+                  </Badge>
                 )}
                 <Badge variant={getBadgeVariant(selectedOrder.status)}>
                   {selectedOrder.status}

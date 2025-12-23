@@ -286,7 +286,7 @@ def getPosInvoice(status, limit, limit_start):
                 name, invoice_printed, grand_total, restaurant_table, 
                 cashier, waiter, net_total, posting_time, 
                 total_taxes_and_charges, customer, status, mobile_number, 
-                posting_date, rounded_total, order_type 
+                posting_date, rounded_total, order_type , custom_order_status
             FROM `tabPOS Invoice` 
             WHERE branch = %s AND status = %s 
             AND (invoice_printed = 1 OR (invoice_printed = 0 AND COALESCE(restaurant_table, '') = ''))
@@ -306,7 +306,7 @@ def getPosInvoice(status, limit, limit_start):
                 name, invoice_printed, grand_total, restaurant_table, 
                 cashier, waiter, net_total, posting_time, 
                 total_taxes_and_charges, customer, status, mobile_number, 
-                posting_date, rounded_total, order_type 
+                posting_date, rounded_total, order_type, custom_order_status
             FROM `tabPOS Invoice` 
             WHERE branch = %s AND status = %s 
             AND (invoice_printed = 0 AND restaurant_table IS NOT NULL)
@@ -325,7 +325,7 @@ def getPosInvoice(status, limit, limit_start):
                 name, invoice_printed, grand_total, restaurant_table, 
                 cashier, waiter, net_total, posting_time, 
                 total_taxes_and_charges, customer, status, mobile_number,
-                posting_date, rounded_total, order_type,additional_discount_percentage,discount_amount 
+                posting_date, rounded_total, order_type,additional_discount_percentage,discount_amount, custom_order_status
             FROM `tabPOS Invoice` 
             WHERE branch = %s AND status = %s 
             ORDER BY modified desc
@@ -802,3 +802,194 @@ def test_get_kots():
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+@frappe.whitelist()
+def get_kitchen_notifications():
+    """Get kitchen order status notifications for the current user"""
+    try:
+        user = frappe.session.user
+        
+        # Get POS Invoices with custom_order_status = 'Served' AND custom_clear_from_notification = 0
+        notifications = frappe.db.sql("""
+            SELECT 
+                pi.name as invoice,
+                pi.customer_name,
+                pi.restaurant_table,
+                pi.posting_date,
+                pi.posting_time,
+                pi.grand_total,
+                pi.custom_order_status,
+                k.name as kot_name,
+                k.order_status as kot_status,
+                k.creation as kot_creation,
+                GROUP_CONCAT(
+                    CONCAT(ki.item_name, ' x', CAST(ki.quantity AS CHAR)) 
+                    ORDER BY ki.idx 
+                    SEPARATOR ', '
+                ) as items_list,
+                COUNT(DISTINCT ki.name) as items_count
+            FROM `tabPOS Invoice` pi
+            LEFT JOIN `tabURY KOT` k ON k.invoice = pi.name
+            LEFT JOIN `tabURY KOT Items` ki ON ki.parent = k.name
+            WHERE pi.custom_order_status = 'Served'
+            AND (pi.custom_clear_from_notification IS NULL OR pi.custom_clear_from_notification = 0)
+            AND pi.owner = %s
+            AND pi.posting_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+            GROUP BY pi.name
+            ORDER BY k.creation DESC
+            LIMIT 50
+        """, (user,), as_dict=True)
+        
+        return notifications
+        
+    except Exception as e:
+        frappe.log_error(f"Error fetching kitchen notifications: {str(e)}")
+        return []
+
+@frappe.whitelist()
+def clear_notification(invoice_name):
+    """Clear a notification by setting custom_clear_from_notification = 1"""
+    try:
+        if frappe.db.exists("POS Invoice", invoice_name):
+            frappe.db.set_value(
+                "POS Invoice",
+                invoice_name,
+                "custom_clear_from_notification",
+                1,
+                update_modified=False
+            )
+            frappe.db.commit()
+            return {"status": "success", "message": "Notification cleared"}
+        return {"status": "error", "message": "Invoice not found"}
+    except Exception as e:
+        frappe.log_error(f"Error clearing notification: {str(e)}")
+        return {"status": "error", "message": str(e)}
+
+
+@frappe.whitelist()
+def get_dashboard_stats(date=None):
+    """Get dashboard statistics for a specific date"""
+    try:
+        if not date:
+            date = frappe.utils.today()
+        
+        user = frappe.session.user
+        
+        # Get total sales
+        total_sales = frappe.db.sql("""
+            SELECT COALESCE(SUM(grand_total), 0) as total
+            FROM `tabPOS Invoice`
+            WHERE posting_date = %s
+            AND owner = %s
+            AND docstatus = 1
+        """, (date, user), as_dict=True)[0].total
+        
+        # Get total orders
+        total_orders = frappe.db.count("POS Invoice", {
+            "posting_date": date,
+            "owner": user,
+            "docstatus": 1
+        })
+        
+        # Get unique customers
+        total_customers = frappe.db.sql("""
+            SELECT COUNT(DISTINCT customer) as count
+            FROM `tabPOS Invoice`
+            WHERE posting_date = %s
+            AND owner = %s
+            AND docstatus = 1
+        """, (date, user), as_dict=True)[0].count
+        
+        # Calculate average order value
+        average_order_value = total_sales / total_orders if total_orders > 0 else 0
+        
+        # Get top selling items
+        top_selling_items = frappe.db.sql("""
+            SELECT 
+                ii.item_name,
+                SUM(ii.qty) as quantity,
+                SUM(ii.amount) as total_amount
+            FROM `tabPOS Invoice` pi
+            JOIN `tabPOS Invoice Item` ii ON ii.parent = pi.name
+            WHERE pi.posting_date = %s
+            AND pi.owner = %s
+            AND pi.docstatus = 1
+            GROUP BY ii.item_code
+            ORDER BY quantity DESC
+            LIMIT 5
+        """, (date, user), as_dict=True)
+        
+        return {
+            "total_sales": float(total_sales),
+            "total_orders": total_orders,
+            "total_customers": total_customers,
+            "average_order_value": float(average_order_value),
+            "top_selling_items": top_selling_items
+        }
+        
+    except Exception as e:
+        frappe.log_error(f"Error fetching dashboard stats: {str(e)}")
+        return {
+            "total_sales": 0,
+            "total_orders": 0,
+            "total_customers": 0,
+            "average_order_value": 0,
+            "top_selling_items": []
+        }
+
+
+@frappe.whitelist()
+def get_daily_sales(date=None):
+    """Get daily sales invoices for a specific date"""
+    try:
+        if not date:
+            date = frappe.utils.today()
+        
+        user = frappe.session.user
+        
+        # Get invoices
+        invoices = frappe.db.sql("""
+            SELECT 
+                pi.name,
+                pi.posting_date,
+                pi.posting_time,
+                pi.customer_name,
+                pi.grand_total,
+                pi.status,
+                pi.restaurant_table,
+                COUNT(ii.name) as items_count
+            FROM `tabPOS Invoice` pi
+            LEFT JOIN `tabPOS Invoice Item` ii ON ii.parent = pi.name
+            WHERE pi.posting_date = %s
+            AND pi.owner = %s
+            AND pi.docstatus = 1
+            GROUP BY pi.name
+            ORDER BY pi.posting_time DESC
+        """, (date, user), as_dict=True)
+        
+        # Get payment method totals - correct table name
+        payment_totals = frappe.db.sql("""
+            SELECT 
+                p.mode_of_payment,
+                SUM(p.base_amount) as total_amount
+            FROM `tabPOS Invoice` pi
+            JOIN `tabSales Invoice Payment` p ON p.parent = pi.name
+            WHERE pi.posting_date = %s
+            AND pi.owner = %s
+            AND pi.docstatus = 1
+            GROUP BY p.mode_of_payment
+            ORDER BY total_amount DESC
+        """, (date, user), as_dict=True)
+        
+        return {
+            "invoices": invoices,
+            "payment_totals": payment_totals
+        }
+        
+    except Exception as e:
+        frappe.log_error(f"Error fetching daily sales: {str(e)}")
+        return {
+            "invoices": [],
+            "payment_totals": []
+        }

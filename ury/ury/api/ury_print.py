@@ -485,3 +485,50 @@ def get_kot_printers(pos_profile):
         filters={"parent": pos_profile, "custom_kot_print": 1},
         fields=["name", "printer", "custom_kot_print_format"]
     )
+
+
+def update_invoice_status_on_kot_change(doc, method=None):
+    """
+    Hook function to update POS Invoice status when KOT status changes to Served.
+    Called on every URY KOT update.
+    """
+    try:
+        # Only proceed if order_status is "Served"
+        if doc.order_status != "Served":
+            return
+        
+        # Check if invoice field exists and has a value
+        if not doc.invoice:
+            logger.info(f"KOT {doc.name} has no linked invoice")
+            return
+        
+        # Check if the POS Invoice exists
+        if not frappe.db.exists("POS Invoice", doc.invoice):
+            logger.warning(f"POS Invoice {doc.invoice} not found for KOT {doc.name}")
+            return
+        
+        # Get current status to avoid unnecessary updates
+        current_status = frappe.db.get_value("POS Invoice", doc.invoice, "custom_order_status")
+        
+        if current_status == "Served":
+            logger.info(f"POS Invoice {doc.invoice} already marked as Served")
+            return
+        
+        # Update the custom_order_status field
+        frappe.db.set_value(
+            "POS Invoice", 
+            doc.invoice, 
+            "custom_order_status", 
+            "Served",
+            update_modified=False
+        )
+        frappe.db.commit()
+        
+        logger.info(f"✅ Updated POS Invoice {doc.invoice} status to Served (from KOT {doc.name})")
+        
+    except Exception as e:
+        logger.error(f"Error updating invoice status for KOT {doc.name}: {traceback.format_exc()}")
+        frappe.log_error(
+            f"Failed to update POS Invoice status from KOT {doc.name}: {str(e)}",
+            "KOT Invoice Status Update Error"
+        )
