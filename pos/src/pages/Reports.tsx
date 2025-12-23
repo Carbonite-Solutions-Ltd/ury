@@ -38,12 +38,23 @@ interface SalesInvoice {
   items_count: number;
 }
 
+interface PaymentTotal {
+  mode_of_payment: string;
+  total_amount: number;
+}
+
+interface DailySalesResponse {
+  invoices: SalesInvoice[];
+  payment_totals: PaymentTotal[];
+}
+
 export default function Reports() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'daily-sales'>('dashboard');
   const [loading, setLoading] = useState(false);
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
   const [salesInvoices, setSalesInvoices] = useState<SalesInvoice[]>([]);
+  const [paymentTotals, setPaymentTotals] = useState<PaymentTotal[]>([]);
   const [error, setError] = useState<string | null>(null);
   const printRef = useRef<HTMLDivElement>(null);
 
@@ -77,7 +88,9 @@ export default function Reports() {
       const response = await call.get('ury.ury_pos.api.get_daily_sales', {
         date: selectedDate
       });
-      setSalesInvoices(response.message || []);
+      const data = response.message as DailySalesResponse;
+      setSalesInvoices(data.invoices || []);
+      setPaymentTotals(data.payment_totals || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch daily sales');
     } finally {
@@ -146,7 +159,7 @@ export default function Reports() {
           .summary {
             display: flex;
             justify-content: space-around;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
             padding: 15px;
             background: #f5f5f5;
             border-radius: 8px;
@@ -166,6 +179,46 @@ export default function Reports() {
             font-size: 18px;
             font-weight: bold;
             color: #333;
+          }
+          .payment-section {
+            margin-bottom: 25px;
+            padding: 15px;
+            background: #f9f9f9;
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+          }
+          .payment-section h3 {
+            font-size: 14px;
+            margin-bottom: 12px;
+            color: #333;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+          }
+          .payment-methods {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+          }
+          .payment-method {
+            flex: 1;
+            min-width: 150px;
+            padding: 10px 15px;
+            background: white;
+            border-radius: 6px;
+            border: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          }
+          .payment-method-name {
+            font-size: 12px;
+            color: #666;
+            font-weight: 500;
+          }
+          .payment-method-amount {
+            font-size: 16px;
+            font-weight: bold;
+            color: #2563eb;
           }
           table {
             width: 100%;
@@ -238,6 +291,20 @@ export default function Reports() {
             <value>${formatCurrency(totalSales / salesInvoices.length || 0)}</value>
           </div>
         </div>
+
+        ${paymentTotals.length > 0 ? `
+          <div class="payment-section">
+            <h3>Payment Methods Breakdown</h3>
+            <div class="payment-methods">
+              ${paymentTotals.map(payment => `
+                <div class="payment-method">
+                  <span class="payment-method-name">${payment.mode_of_payment}</span>
+                  <span class="payment-method-amount">${formatCurrency(payment.total_amount)}</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
 
         <table>
           <thead>
@@ -498,61 +565,81 @@ export default function Reports() {
                 <p className="text-gray-400 text-sm mt-2">Try selecting a different date</p>
               </div>
             ) : (
-              <Card>
-                <CardContent className="p-6">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-semibold text-gray-900">
-                      Sales Invoices ({salesInvoices.length})
-                    </h3>
-                    <p className="text-sm text-gray-500">
-                      Total: {formatCurrency(salesInvoices.reduce((sum, inv) => sum + inv.grand_total, 0))}
-                    </p>
-                  </div>
-
-                  <div className="overflow-x-auto">
-                    <table className="w-full">
-                      <thead className="bg-gray-50 border-y border-gray-200">
-                        <tr>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Invoice</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Time</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Customer</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Table</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Items</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-200">
-                        {salesInvoices.map((invoice) => (
-                          <tr key={invoice.name} className="hover:bg-gray-50">
-                            <td className="px-4 py-3 text-sm font-medium text-gray-900">{invoice.name}</td>
-                            <td className="px-4 py-3 text-sm text-gray-600">
-                              {new Date(invoice.posting_date + ' ' + invoice.posting_time).toLocaleTimeString('en-US', {
-                                hour: 'numeric',
-                                minute: '2-digit',
-                                hour12: true
-                              })}
-                            </td>
-                            <td className="px-4 py-3 text-sm text-gray-900">{invoice.customer_name}</td>
-                            <td className="px-4 py-3 text-sm text-gray-600">
-                              {invoice.restaurant_table || '-'}
-                            </td>
-                            <td className="px-4 py-3 text-sm text-gray-600">{invoice.items_count}</td>
-                            <td className="px-4 py-3">
-                              <Badge variant={invoice.status === 'Paid' ? 'default' : 'secondary'} className="text-xs">
-                                {invoice.status}
-                              </Badge>
-                            </td>
-                            <td className="px-4 py-3 text-sm font-semibold text-gray-900 text-right">
-                              {formatCurrency(invoice.grand_total)}
-                            </td>
-                          </tr>
+              <>
+                {/* Payment Methods Summary */}
+                {paymentTotals.length > 0 && (
+                  <Card className="mb-4">
+                    <CardContent className="p-6">
+                      <h3 className="text-lg font-semibold text-gray-900 mb-4">Payment Methods Breakdown</h3>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        {paymentTotals.map((payment, index) => (
+                          <div key={index} className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                            <p className="text-xs text-gray-500 mb-1">{payment.mode_of_payment}</p>
+                            <p className="text-xl font-bold text-blue-600">{formatCurrency(payment.total_amount)}</p>
+                          </div>
                         ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </CardContent>
-              </Card>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Sales Invoices Table */}
+                <Card>
+                  <CardContent className="p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        Sales Invoices ({salesInvoices.length})
+                      </h3>
+                      <p className="text-sm text-gray-500">
+                        Total: {formatCurrency(salesInvoices.reduce((sum, inv) => sum + inv.grand_total, 0))}
+                      </p>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead className="bg-gray-50 border-y border-gray-200">
+                          <tr>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Invoice</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Time</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Customer</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Table</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Items</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                            <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200">
+                          {salesInvoices.map((invoice) => (
+                            <tr key={invoice.name} className="hover:bg-gray-50">
+                              <td className="px-4 py-3 text-sm font-medium text-gray-900">{invoice.name}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600">
+                                {new Date(invoice.posting_date + ' ' + invoice.posting_time).toLocaleTimeString('en-US', {
+                                  hour: 'numeric',
+                                  minute: '2-digit',
+                                  hour12: true
+                                })}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-gray-900">{invoice.customer_name}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600">
+                                {invoice.restaurant_table || '-'}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-gray-600">{invoice.items_count}</td>
+                              <td className="px-4 py-3">
+                                <Badge variant={invoice.status === 'Paid' ? 'default' : 'secondary'} className="text-xs">
+                                  {invoice.status}
+                                </Badge>
+                              </td>
+                              <td className="px-4 py-3 text-sm font-semibold text-gray-900 text-right">
+                                {formatCurrency(invoice.grand_total)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
+              </>
             )}
           </div>
         )}

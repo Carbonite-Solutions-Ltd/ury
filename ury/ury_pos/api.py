@@ -944,6 +944,7 @@ def get_daily_sales(date=None):
         
         user = frappe.session.user
         
+        # Get invoices
         invoices = frappe.db.sql("""
             SELECT 
                 pi.name,
@@ -963,8 +964,28 @@ def get_daily_sales(date=None):
             ORDER BY pi.posting_time DESC
         """, (date, user), as_dict=True)
         
-        return invoices
+        # Get payment method totals - correct table name
+        payment_totals = frappe.db.sql("""
+            SELECT 
+                p.mode_of_payment,
+                SUM(p.base_amount) as total_amount
+            FROM `tabPOS Invoice` pi
+            JOIN `tabSales Invoice Payment` p ON p.parent = pi.name
+            WHERE pi.posting_date = %s
+            AND pi.owner = %s
+            AND pi.docstatus = 1
+            GROUP BY p.mode_of_payment
+            ORDER BY total_amount DESC
+        """, (date, user), as_dict=True)
+        
+        return {
+            "invoices": invoices,
+            "payment_totals": payment_totals
+        }
         
     except Exception as e:
         frappe.log_error(f"Error fetching daily sales: {str(e)}")
-        return []
+        return {
+            "invoices": [],
+            "payment_totals": []
+        }
