@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Trash2, Edit, FrownIcon, Plus, Loader2, MessageSquare } from 'lucide-react';
+import { Trash2, Edit, FrownIcon, Plus, Loader2, MessageSquare, Users } from 'lucide-react';
 import { usePOSStore } from '../store/pos-store';
 import { formatCurrency, cn } from '../lib/utils';
 import { CustomerSelect } from './CustomerSelect';
@@ -40,6 +40,7 @@ const OrderPanel = () => {
   const [editingItem, setEditingItem] = useState<typeof activeOrders[0] | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showCommentDialog, setShowCommentDialog] = useState(false);
+  const [numberOfPeople, setNumberOfPeople] = useState<number>(1);
 
   const calculateItemTotal = (item: typeof activeOrders[0]) => {
     const basePrice = item.selectedVariant?.price || item.price;
@@ -64,6 +65,13 @@ const OrderPanel = () => {
 
   const handleCommentSave = (comment: string) => {
     setOrderComment(comment);
+  };
+
+  const handleNumberOfPeopleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = parseInt(e.target.value) || 0;
+    if (value >= 0 && value <= 100) {
+      setNumberOfPeople(value);
+    }
   };
 
   const handleSubmit = async () => {
@@ -93,36 +101,43 @@ const OrderPanel = () => {
         return;
       }
 
+      // Validate number of people for dine-in orders
+      if (selectedOrderType === DINE_IN && numberOfPeople < 1) {
+        showToast.error('Please enter the number of people (at least 1)');
+        return;
+      }
+
       setIsSubmitting(true);
       
       const orderData = {
-      items: activeOrders.map(item => ({
-        item: item.id,
-        item_name: item.name,
-        rate: item.selectedVariant?.price || item.price,
-        qty: item.quantity,
-        comment: item.comment || undefined
-      })),
-      no_of_pax: 1,
-      pos_profile: posProfile.name,
-      order_type: selectedOrderType,
-      table: selectedTable || undefined,
-      room: selectedRoom || undefined,
-      customer: selectedOrderType === 'Aggregators' ? selectedAggregator?.customer : selectedCustomer?.name,
-      aggregator_id: selectedOrderType === 'Aggregators' ? selectedAggregator?.customer : undefined,
-      cashier: posProfile.cashier,
-      owner: isUpdatingOrder ? undefined : user.name,  // Only set owner for new orders
-      mode_of_payment: paymentModes[0],
-      last_invoice: isUpdatingOrder ? orderId : null,
-      invoice: isUpdatingOrder ? orderId : null,
-      waiter: user.name,
-      comments: orderComment || undefined
-    };
+        items: activeOrders.map(item => ({
+          item: item.id,
+          item_name: item.name,
+          rate: item.selectedVariant?.price || item.price,
+          qty: item.quantity,
+          comment: item.comment || undefined
+        })),
+        no_of_pax: selectedOrderType === DINE_IN ? numberOfPeople : 1,
+        pos_profile: posProfile.name,
+        order_type: selectedOrderType,
+        table: selectedTable || undefined,
+        room: selectedRoom || undefined,
+        customer: selectedOrderType === 'Aggregators' ? selectedAggregator?.customer : selectedCustomer?.name,
+        aggregator_id: selectedOrderType === 'Aggregators' ? selectedAggregator?.customer : undefined,
+        cashier: posProfile.cashier,
+        owner: isUpdatingOrder ? undefined : user.name,
+        mode_of_payment: paymentModes[0],
+        last_invoice: isUpdatingOrder ? orderId : null,
+        invoice: isUpdatingOrder ? orderId : null,
+        waiter: user.name,
+        comments: orderComment || undefined
+      };
 
       await syncOrder(orderData);
       
       // Reset all states after successful order submission
       resetOrderState();
+      setNumberOfPeople(1);
       showToast.success(isUpdatingOrder ? 'Order updated successfully' : 'Order created successfully');
     } catch (error) {
       console.error('Failed to sync order:', error);
@@ -183,6 +198,40 @@ const OrderPanel = () => {
       <div className="p-4 border-b border-gray-200 flex-shrink-0">
         <OrderTypeSelect disabled={isInteractionDisabled} />
         <div className="mt-3"><CustomerSelect disabled={isInteractionDisabled} /></div>
+        
+        {/* Number of People Input - Only show for Dine In */}
+        {selectedOrderType === DINE_IN && (
+          <div className="mt-3">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Number of People
+            </label>
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <Users className="h-4 w-4 text-gray-400" />
+              </div>
+              <input
+                type="number"
+                min="1"
+                max="100"
+                value={numberOfPeople}
+                onChange={handleNumberOfPeopleChange}
+                className={cn(
+                  "block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md",
+                  "focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500",
+                  "text-sm",
+                  isInteractionDisabled && "bg-gray-100 cursor-not-allowed"
+                )}
+                disabled={isInteractionDisabled}
+                placeholder="Enter number of people"
+              />
+            </div>
+            {numberOfPeople < 1 && (
+              <p className="mt-1 text-xs text-red-600">
+                Please enter at least 1 person
+              </p>
+            )}
+          </div>
+        )}
       </div>
       
       {orderLoading ? (
@@ -348,4 +397,4 @@ const OrderPanel = () => {
   );
 };
 
-export default OrderPanel; 
+export default OrderPanel;
