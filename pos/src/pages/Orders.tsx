@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { showToast } from '../components/ui/toast';
 import OrderStatusSidebar from '../components/OrderStatusSidebar';
 import { useRootStore } from '../store/root-store';
-import { formatCurrency } from '../lib/utils';
+import { formatCurrency, hasRole } from '../lib/utils';
 import { Spinner } from '../components/ui/spinner';
 import { Textarea } from '../components/ui/textarea';
 import { usePOSStore } from '../store/pos-store';
@@ -44,6 +44,7 @@ export default function Orders() {
   const [editLoading, setEditLoading] = React.useState(false);
   const [showPaymentDialog, setShowPaymentDialog] = React.useState(false);
   const [isPrinting, setIsPrinting] = React.useState(false);
+  const isManager = hasRole('URY Manager');
 
   useEffect(() => {
     fetchOrders();
@@ -52,14 +53,12 @@ export default function Orders() {
   useEffect(() => {
     if (!mounted.current) {
       mounted.current = true;
-      return; // Skip the first run
+      return;
     }
     fetchOrders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderSearchQuery]);
 
-
-  // Function to format the date and time
   const formatDateTime = (date: string, time: string) => {
     const formattedDate = new Date(date + ' ' + time).toLocaleString('en-US', {
       month: 'short',
@@ -76,7 +75,6 @@ export default function Orders() {
     selectOrder(order);
   };
 
-  // Helper function to get badge variant based on order status
   const getBadgeVariant = (status: string) => {
     switch (status) {
       case 'Draft':
@@ -93,11 +91,8 @@ export default function Orders() {
     }
   };
 
-  // Helper function to get order total with fallback
   const getOrderTotal = (order: any) => {
-    // Try rounded_total first, then grand_total, then fallback to 0
     const total = order.rounded_total || order.grand_total || 0;
-    console.log(`Order ${order.name}: rounded_total=${order.rounded_total}, grand_total=${order.grand_total}, using=${total}`);
     return total;
   };
 
@@ -133,15 +128,13 @@ export default function Orders() {
       if (!res.ok) throw new Error('Failed to fetch order details');
       const data = await res.json();
       const order = data.message;
-      // Fill POS store
       posStore.resetOrderState();
       posStore.setSelectedOrderType(order.order_type);
       posStore.setOrderForUpdate(order.name);
       if (order.restaurant_table) {
-        posStore.setSelectedTable(order.restaurant_table, order.custom_restaurant_room || null,true);
+        posStore.setSelectedTable(order.restaurant_table, order.custom_restaurant_room || null, true);
       }
       posStore.setSelectedCustomer({ id: order.customer, name: order.customer_name, phone: order.mobile_number });
-      // Fill cart
       const items = (order.items || []).map((item: any) => ({
         id: item.item_code,
         name: item.item_name,
@@ -161,7 +154,6 @@ export default function Orders() {
       for (const cartItem of items) {
         await posStore.addToOrder(cartItem);
       }
-      // Redirect to POS page
       navigate('/');
     } catch (err) {
       showToast.error(err instanceof Error ? err.message : 'Failed to edit order');
@@ -179,11 +171,9 @@ export default function Orders() {
         posProfile: posStore.posProfile
       });
       showToast.success(`Printed Successfully`);
-      // Locally update selectedOrder.invoice_printed to 1
       if (selectedOrder && typeof selectedOrder === 'object') {
         selectOrder({ ...selectedOrder, invoice_printed: 1 });
       }
-      // If order was Unbilled, set to Draft and reload draft orders
       if (selectedStatus === 'Unbilled') {
         showToast.info('Order moved to Draft after printing.');
         setSelectedStatus('Draft');
@@ -206,24 +196,24 @@ export default function Orders() {
       </div>
     );
   }
-  
-  // Debug: Check what fields orders have
-  if (orders.length > 0) {
-    console.log('First order data:', orders[0]);
-    console.log('Has custom_order_status?', 'custom_order_status' in orders[0]);
-    console.log('custom_order_status value:', orders[0].custom_order_status);
-  }
 
   return (
     <div className="flex h-screen overflow-hidden">
-      {/* Left Sidebar - Order Types */}
       <OrderStatusSidebar
         selectedStatus={selectedStatus}
         setSelectedStatus={setSelectedStatus}
       />
 
-      {/* Middle Section - Order Cards */}
       <div className="flex-1 flex flex-col h-screen overflow-hidden pr-96">
+        {/* Manager View Indicator */}
+        {isManager && (
+          <div className="px-6 py-2 bg-blue-50 border-b border-blue-100">
+            <p className="text-xs text-blue-700 font-medium">
+              📋 Manager View - Showing all orders
+            </p>
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto bg-gray-50 p-4 pb-40">
           {orderLoading ? (
             <div className="flex items-center justify-center h-full">
@@ -255,14 +245,12 @@ export default function Orders() {
                           </p>
                         </div>
                         <div className="flex items-center gap-1.5">
-                          {/* Served Badge */}
                           {order.custom_order_status === 'Served' && (
                             <Badge variant="default" className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-1 px-2 py-0.5">
                               <CheckCircle className="w-3 h-3" />
                               <span className="text-xs">Served</span>
                             </Badge>
                           )}
-                          {/* Status Badge */}
                           <Badge variant={getBadgeVariant(order.status)}>
                             {order.status}
                           </Badge>
@@ -270,9 +258,8 @@ export default function Orders() {
                       </div>
                     </div>
 
-                    {/* Content section - matches MenuCard padding and structure */}
                     <div className="flex-1 p-3 flex flex-col">
-                      <div className="">
+                      <div>
                         <p className="text-sm text-gray-900">{order.customer}</p>
                       </div>
 
@@ -281,7 +268,6 @@ export default function Orders() {
                         <span>{formatDateTime(order.posting_date, order.posting_time)}</span>
                       </div>
 
-                      {/* Total - pushed to bottom like MenuCard */}
                       <div className="mt-auto pt-2">
                         <span className="text-sm font-semibold text-gray-900 tabular-nums">
                           {formatCurrency(getOrderTotal(order))}
@@ -293,7 +279,7 @@ export default function Orders() {
               ))}
             </div>
           )}
-          {/* Pagination Controls */}
+
           {!orderLoading && (
             <div className="py-4">
               <div className="flex justify-center items-center gap-x-4 max-w-screen-xl mx-auto">
@@ -326,7 +312,6 @@ export default function Orders() {
         </div>
       </div>
 
-      {/* Right Section - Order Details */}
       <div className="w-96 bg-white border-l border-gray-200 flex flex-col h-[calc(100vh-4rem)] fixed right-0 z-10">
         {!selectedOrder ? (
           <div className="text-center h-full flex flex-col items-center justify-center text-gray-500 p-6">
@@ -344,11 +329,9 @@ export default function Orders() {
           </div>
         ) : (
           <>
-            {/* Fixed Header */}
             <div className="sticky top-0 left-0 right-0 z-20 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between min-h-[64px]">
               <h2 className="text-xl font-semibold text-gray-900 truncate max-w-[10rem]">{selectedOrder.name}</h2>
               <div className="flex items-center gap-2">
-                {/* Only show edit and cancel buttons for Draft, Unbilled, and Recently Paid orders */}
                 {(selectedOrder.status === 'Draft' || selectedOrder.status === 'Unbilled' || selectedOrder.status === 'Recently Paid') && (
                   <>
                     <button
@@ -371,7 +354,6 @@ export default function Orders() {
                     </button>
                   </>
                 )}
-                {/* Served Badge in Header */}
                 {selectedOrder.custom_order_status === 'Served' && (
                   <Badge variant="default" className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-1">
                     <CheckCircle className="w-3.5 h-3.5" />
@@ -383,7 +365,7 @@ export default function Orders() {
                 </Badge>
               </div>
             </div>
-            {/* Cancel Order Dialog */}
+
             <Dialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
               <DialogContent>
                 <DialogHeader>
@@ -393,13 +375,13 @@ export default function Orders() {
                   </DialogDescription>
                 </DialogHeader>
                 <div className="px-6 mb-3">
-                <Textarea
-                  placeholder="Enter cancel reason"
-                  value={cancelReason}
-                  onChange={e => setCancelReason(e.target.value)}
-                  disabled={cancelLoading}
-                  autoFocus
-                />
+                  <Textarea
+                    placeholder="Enter cancel reason"
+                    value={cancelReason}
+                    onChange={e => setCancelReason(e.target.value)}
+                    disabled={cancelLoading}
+                    autoFocus
+                  />
                 </div>
                 <DialogFooter>
                   <Button variant="outline" onClick={() => setCancelDialogOpen(false)} disabled={cancelLoading}>
@@ -411,13 +393,10 @@ export default function Orders() {
                 </DialogFooter>
               </DialogContent>
             </Dialog>
-            {/* Scrollable Content Area */}
+
             <div className="flex-1 overflow-y-auto p-6 pb-40">
-              {/* Order Header (now only info, not name/buttons) */}
               <div className="mb-6">
-                {/* Two-column Order Info */}
                 <div className="grid grid-cols-2 gap-4">
-                  {/* First column: customer and time */}
                   <div className="space-y-3">
                     <div className="flex items-center gap-3 text-sm">
                       <User className="w-4 h-4 text-gray-500" />
@@ -428,7 +407,6 @@ export default function Orders() {
                       <span className="text-gray-600">{formatDateTime(selectedOrder.posting_date, selectedOrder.posting_time)}</span>
                     </div>
                   </div>
-                  {/* Second column: waiter and table */}
                   <div className="space-y-3">
                     <div className="flex items-center gap-3 text-sm">
                       <UserCheck className="w-4 h-4 text-gray-500" />
@@ -444,7 +422,6 @@ export default function Orders() {
                 </div>
               </div>
 
-              {/* Order Items */}
               <div className="mb-6">
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">Order Items</h3>
                 <div className="space-y-3">
@@ -464,7 +441,6 @@ export default function Orders() {
                 </div>
               </div>
 
-              {/* Taxes */}
               {selectedOrderTaxes.length > 0 && (
                 <div className="mb-6">
                   <h3 className="text-lg font-semibold text-gray-900 mb-4">Taxes & Charges</h3>
@@ -482,10 +458,8 @@ export default function Orders() {
               )}
             </div>
 
-            {/* Sticky Bottom Section - Single Row: Print | Payment | Total */}
             <div className="border-t border-gray-200 p-6 bg-gray-50 sticky bottom-0 left-0 right-0 z-10">
               <div className="flex items-center gap-3 w-full">
-                {/* Print Icon Button */}
                 <Button
                   variant="outline"
                   size="icon"
@@ -496,7 +470,6 @@ export default function Orders() {
                 >
                   {isPrinting ? <Spinner className="w-5 h-5" hideMessage /> : <Printer className="w-5 h-5" />}
                 </Button>
-                {/* Payment Button - Only show for Draft, Unbilled, and Recently Paid orders */}
                 {(selectedOrder.status === 'Draft' || selectedOrder.status === 'Unbilled' || selectedOrder.status === 'Recently Paid') && (
                   <Button
                     className="flex-1"
@@ -511,7 +484,6 @@ export default function Orders() {
                     Payment
                   </Button>
                 )}
-                {/* Total */}
                 <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
                   {formatCurrency(getOrderTotal(selectedOrder))}
                 </span>
@@ -520,6 +492,7 @@ export default function Orders() {
           </>
         )}
       </div>
+
       {showPaymentDialog && selectedOrder && (
         <PaymentDialog
           onClose={() => setShowPaymentDialog(false)}
@@ -537,4 +510,4 @@ export default function Orders() {
       )}
     </div>
   );
-};
+}
