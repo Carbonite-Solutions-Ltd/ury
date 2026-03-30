@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { 
+import {
   Command,
   User,
   ChevronDown,
   Monitor,
   LogOut,
   RefreshCw,
+  MapPin,
 } from 'lucide-react';
 import { Button, Input } from './ui';
 import { useRootStore } from '../store/root-store';
@@ -14,6 +15,7 @@ import { usePOSStore } from '../store/pos-store';
 import type { RootState } from '../store/root-store';
 import { logout } from '../lib/auth-api';
 import { showToast } from './ui/toast';
+import { clearSavedTerminal } from '../lib/terminal-api';
 
 const Header = () => {
   const [showUserMenu, setShowUserMenu] = useState(false);
@@ -21,7 +23,7 @@ const Header = () => {
   const user = useRootStore((state: RootState) => state.user);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const location = useLocation();
-  const { searchQuery, setSearchQuery } = usePOSStore();
+  const { searchQuery, setSearchQuery, terminalName, selectedRoom } = usePOSStore();
   const { orderSearchQuery, setOrderSearchQuery } = useRootStore();
   const [orderSearchInput, setOrderSearchInput] = useState(orderSearchQuery);
 
@@ -94,13 +96,22 @@ const Header = () => {
   };
 
   const handleClearCache = () => {
-    // Clear all local storage
+    // Preserve terminal registration, clear everything else
+    const savedTerminal = localStorage.getItem('ury_pos_terminal');
     localStorage.clear();
-    // Clear all session storage
+    if (savedTerminal) {
+      localStorage.setItem('ury_pos_terminal', savedTerminal);
+    }
     sessionStorage.clear();
-    // Reload the page
     window.location.reload();
   };
+
+  const handleChangeTerminal = () => {
+    clearSavedTerminal();
+    sessionStorage.clear();
+    window.location.reload();
+  };
+
 
   return (
     <header className="bg-white border-b border-gray-200">
@@ -114,6 +125,11 @@ const Header = () => {
               className="h-10 w-auto"
             />
           </Link>
+          {terminalName && (
+            <span className="ml-3 text-xs font-medium text-gray-500 bg-gray-100 rounded px-2 py-1">
+              {terminalName}
+            </span>
+          )}
         </div>
 
         {/* Search Bar */}
@@ -153,8 +169,28 @@ const Header = () => {
                 <div className="p-4 border-b border-gray-200">
                   <p className="text-sm font-medium text-gray-900">{user?.full_name || 'User'}</p>
                   <p className="text-sm text-gray-500">{user?.name || ''}</p>
+                  {terminalName && (
+                    <div className="flex items-center gap-1.5 mt-2 text-xs text-blue-600 bg-blue-50 rounded-md px-2 py-1">
+                      <Monitor className="w-3 h-3" />
+                      <span>{terminalName}</span>
+                    </div>
+                  )}
+                  {selectedRoom && (
+                    <div className="flex items-center gap-1.5 mt-1 text-xs text-gray-500">
+                      <MapPin className="w-3 h-3" />
+                      <span>{selectedRoom}</span>
+                    </div>
+                  )}
                 </div>
                 <div className="py-2">
+                  <Button
+                    variant="ghost"
+                    className="flex justify-start items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
+                    onClick={handleChangeTerminal}
+                  >
+                    <MapPin className="w-4 h-4 mr-3" />
+                    Change Terminal
+                  </Button>
                   <Button
                     variant="ghost"
                     className="flex justify-start items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
