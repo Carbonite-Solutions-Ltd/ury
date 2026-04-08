@@ -119,6 +119,22 @@ def getBranch():
 
         return branch_name
 
+    # Administrator fallback: pick the branch of the first available POS Profile
+    # so Admin can load the POS without being tied to a specific URY User/Branch.
+    # See CLAUDE.md "Fixes log" 2026-04-08 for context.
+    pos_profile_row = frappe.db.get_value(
+        "POS Profile",
+        {"disabled": 0},
+        ["name", "branch"],
+        as_dict=True,
+    )
+    if not pos_profile_row or not pos_profile_row.get("branch"):
+        frappe.throw(
+            "Administrator has no default branch and no POS Profile with a branch is configured. "
+            "Create at least one POS Profile linked to a Branch."
+        )
+    return pos_profile_row.get("branch")
+
 @frappe.whitelist()
 def getBranchRoom():
     user = frappe.session.user
