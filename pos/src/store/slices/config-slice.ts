@@ -86,19 +86,30 @@ export const createConfigSlice: StateCreator<
   },
 
   checkAccess: () => {
-    const { user } = get();
-    const { allowedRoles } = get();
+    const { user, allowedRoles } = get();
 
-    if (!user || !user.roles || !allowedRoles.length) {
+    if (!user || !user.roles) {
       set({ hasAccess: false });
       return;
     }
 
-    // Check if user has any of the allowed roles
+    // Administrator and System Manager bypass all POS role gates.
+    // See CLAUDE.md "Fixes log" 2026-04-08.
+    if (user.name === 'Administrator' || user.roles.includes('System Manager')) {
+      set({ hasAccess: true });
+      return;
+    }
+
+    // Misconfigured profile (no roles listed) should not lock users out —
+    // treat "no roles configured" as "no restriction" rather than "deny all".
+    if (!allowedRoles.length) {
+      set({ hasAccess: true });
+      return;
+    }
+
     const hasAccess = user.roles.some(role => allowedRoles.includes(role));
     set({ hasAccess });
 
-    // If no access, we could redirect or show an error message
     if (!hasAccess) {
       set({ error: 'You do not have permission to access this application.' });
     }
