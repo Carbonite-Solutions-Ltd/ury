@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Trash2, Edit, FrownIcon, Plus, Loader2, MessageSquare, Users } from 'lucide-react';
 import { usePOSStore } from '../store/pos-store';
-import { formatCurrency, cn } from '../lib/utils';
+import { formatCurrency, cn, extractFrappeServerError } from '../lib/utils';
+import { canManageMenuPrices } from '../lib/role-utils';
 import { CustomerSelect } from './CustomerSelect';
 import ProductDialog from './ProductDialog';
 import OrderTypeSelect from './OrderTypeSelect';
@@ -149,19 +150,37 @@ const OrderPanel = () => {
       showToast.success(isUpdatingOrder ? 'Order updated successfully' : 'Order created successfully');
     } catch (error) {
       console.error('Failed to sync order:', error);
-      // Frappe API error handling
-      if (error && typeof error === 'object' && '_server_messages' in error && typeof (error as any)._server_messages === 'string') {
-        try {
-          const messages = JSON.parse((error as any)._server_messages);
-          const messageObj = JSON.parse(messages[0]);
-          showToast.error(messageObj.message || 'API error');
-        } catch {
-          showToast.error('API error');
-        }
-      } else if (error instanceof Error) {
-        showToast.error(error.message);
+
+      // Parse Frappe's _server_messages envelope. Prefers raise_exception=1
+      // so we surface the actual ValidationError, not any side-effect
+      // msgprint(alert=True) that piggybacked on the response. Strips
+      // HTML so links like <a href="...">Fanta</a> don't render as raw
+      // markup. See CLAUDE.md "Fixes log" 2026-04-08.
+      const parsed = extractFrappeServerError(error, 'Failed to process order');
+
+      // Special case: Price Not Set. sync_order throws with
+      // title="Price Not Set" when a menu item has no price or rate 0.
+      // Show a rich toast with a "Set Price in Menu" deep-link — but
+      // only to users who can actually edit the menu. Cashiers see the
+      // message without the button so they know to ask a manager.
+      if (parsed.title === 'Price Not Set') {
+        const canEdit = canManageMenuPrices(user);
+        showToast.error({
+          title: 'Price Not Set',
+          description: parsed.message,
+          action: canEdit
+            ? {
+                label: 'Set Price in Menu',
+                onClick: () =>
+                  window.open(
+                    `${window.location.origin}/app/ury-menu`,
+                    '_blank',
+                  ),
+              }
+            : undefined,
+        });
       } else {
-        showToast.error('Failed to process order');
+        showToast.error(parsed.message);
       }
     } finally {
       setIsSubmitting(false);

@@ -80,7 +80,8 @@ website_route_rules = [
 # ------------
 
 # before_install = "ury.install.before_install"
-# after_install = "ury.install.after_install"
+after_install = "ury.install.after_install"
+after_migrate = "ury.install.after_migrate"
 
 # Uninstallation
 # ------------

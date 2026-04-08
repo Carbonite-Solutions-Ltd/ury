@@ -262,40 +262,58 @@ def sync_order(
     menu = frappe.db.get_value("URY Menu", {"branch": invoice.branch}, "name")
    
     for d in items:
-        
+
         course = frappe.db.get_value("URY Menu Item", {"item": d.get("item"),"parent":menu}, "course")
-        
+
         item_prices = frappe.db.get_list(
             "Item Price",
             filters={"item_code": d.get("item"), "price_list": price_list},
             fields=["price_list_rate"],
         )
 
-        if not item_prices:
-            frappe.throw(_("No item price found for Item: {0} in Price List: {1}. Please check the price list settings.").format(d.get("item"), price_list))
-
-        else:
-            invoice.append(
-                "items",
-                dict(
-                    item_code=d.get("item"),
-                    item_name=d.get("item_name"),
-                    qty=d.get("qty"),
-                    **({"custom_course": course} if course else {}),
-                    comment=d.get("comment"),
-                    rate = item_prices[0].price_list_rate,
-                    price_list_rate = item_prices[0].price_list_rate,
-                    base_price_list_rate = item_prices[0].price_list_rate,
-                    cost_center = frappe.db.get_value(
-                        "POS Profile", pos_profile, "cost_center"
-                        ),
-                ),
+        # "Price Not Set" branded error — covers both (a) no Item Price
+        # row for the (item, price_list) pair and (b) a row exists but
+        # rate is 0/null. The frontend matches on title="Price Not Set"
+        # to render a rich actionable toast with a "Set Price" button
+        # (admin/captain/manager only). See CLAUDE.md "Fixes log"
+        # 2026-04-08.
+        has_valid_price = bool(item_prices and float(item_prices[0].price_list_rate or 0) > 0)
+        if not has_valid_price:
+            friendly_name = d.get("item_name") or d.get("item")
+            frappe.throw(
+                _(
+                    "No price is set for '{0}' in the active menu. "
+                    "An admin needs to open '{1}' in the desk and set a "
+                    "rate for this item before it can be ordered."
+                ).format(friendly_name, _("ExPOS Menu")),
+                title=_("Price Not Set"),
             )
 
-    try:
-        invoice.save()
-    except Exception as e:
-        frappe.throw(f"Error while updating order: {e}")   
+        invoice.append(
+            "items",
+            dict(
+                item_code=d.get("item"),
+                item_name=d.get("item_name"),
+                qty=d.get("qty"),
+                **({"custom_course": course} if course else {}),
+                comment=d.get("comment"),
+                rate=item_prices[0].price_list_rate,
+                price_list_rate=item_prices[0].price_list_rate,
+                base_price_list_rate=item_prices[0].price_list_rate,
+                cost_center=frappe.db.get_value(
+                    "POS Profile", pos_profile, "cost_center"
+                ),
+            ),
+        )
+
+    # Let ERPNext's ValidationErrors propagate unwrapped — they already
+    # carry a title, raise_exception flag and indicator. Wrapping them in
+    # `frappe.throw(f"Error while updating order: {e}")` destroyed the
+    # title, stripped the raise_exception flag on the re-raise, and
+    # prepended a noisy "Error while updating order:" prefix that made
+    # the frontend's error-picking logic misbehave. See CLAUDE.md
+    # "Fixes log" 2026-04-08.
+    invoice.save()
 
 
     try:

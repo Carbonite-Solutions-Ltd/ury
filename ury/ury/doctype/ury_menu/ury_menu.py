@@ -34,12 +34,20 @@ class URYMenu(Document):
         self.clear_item_price(price_list.name)
 
         for d in self.items:
+            # Always stamp uom = item.stock_uom. Without a uom on the Item
+            # Price, ERPNext's standard POS Invoice validation can't match
+            # this price row during save and falls through to
+            # insert_item_price() which creates a duplicate and fires a
+            # noisy "Item Price added for <a>…</a>" alert on every order.
+            # See CLAUDE.md "Fixes log" 2026-04-08.
+            stock_uom = frappe.db.get_value("Item", d.item, "stock_uom")
             frappe.get_doc(
                 dict(
                     doctype="Item Price",
                     price_list=price_list.name,
                     item_code=d.item,
                     price_list_rate=d.rate,
+                    uom=stock_uom,
                 )
             ).insert()
 
