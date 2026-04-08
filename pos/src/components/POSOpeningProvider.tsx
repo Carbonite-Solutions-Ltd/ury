@@ -9,63 +9,77 @@ interface POSOpeningProviderProps {
 
 type ValidationType = 'opening' | 'closing' | null;
 
+interface ValidationState {
+  type: ValidationType;
+  unclosedEntry: string | null;
+}
+
 const POSOpeningProvider = ({ children }: POSOpeningProviderProps) => {
-  const [validationType, setValidationType] = useState<ValidationType>(null);
+  const [validation, setValidation] = useState<ValidationState>({
+    type: null,
+    unclosedEntry: null,
+  });
   const [isLoading, setIsLoading] = useState(true);
   const { posProfile } = usePOSStore();
 
   const checkPOSStatus = async () => {
     try {
       setIsLoading(true);
-      
-      // First check if POS is opened
+
       const openingResponse = await checkPOSOpening();
       if (openingResponse.message === 1) {
-        // POS is not opened
-        setValidationType('opening');
+        setValidation({ type: 'opening', unclosedEntry: null });
         return;
       }
 
-      // If POS is opened, check if custom_daily_pos_close is enabled
+      // POS is open for the branch. If the daily-close rule is on, also
+      // verify there's no unclosed previous-day entry for this profile.
       if (posProfile?.custom_daily_pos_close === 1) {
         try {
           const closeResponse = await validatePOSClose(posProfile.name);
-          if (closeResponse.message === 'Failed') {
-            // Previous POS is not closed
-            setValidationType('closing');
+          const msg = closeResponse.message;
+
+          // Backend returns {status, unclosed_entry?} (new) but older
+          // servers may still return the string "Failed"/"Success".
+          if (typeof msg === 'string') {
+            if (msg === 'Failed') {
+              setValidation({ type: 'closing', unclosedEntry: null });
+              return;
+            }
+          } else if (msg && msg.status === 'Failed') {
+            setValidation({
+              type: 'closing',
+              unclosedEntry: msg.unclosed_entry || null,
+            });
             return;
           }
         } catch (error) {
           console.error('Failed to validate POS close status:', error);
-          // On error, assume POS is not closed for safety
-          setValidationType('closing');
+          setValidation({ type: 'closing', unclosedEntry: null });
           return;
         }
       }
 
-      // All validations passed
-      setValidationType(null);
+      setValidation({ type: null, unclosedEntry: null });
     } catch (error) {
       console.error('Failed to check POS opening status:', error);
-      // On error, assume POS is not opened for safety
-      setValidationType('opening');
+      // On failure, assume POS is not opened so the user gets an
+      // actionable screen rather than a silent broken POS page.
+      setValidation({ type: 'opening', unclosedEntry: null });
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleReload = () => {
-    window.location.reload();
-  };
-
   useEffect(() => {
-    // Only check if we have the POS profile loaded
+    // Only check once the POS profile is loaded — we need it for the
+    // captain-detection logic in the opening dialog.
     if (posProfile) {
       checkPOSStatus();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [posProfile]);
 
-  // Show loading state while checking
   if (isLoading) {
     return (
       <div className="fixed inset-0 bg-white flex items-center justify-center z-50">
@@ -77,13 +91,23 @@ const POSOpeningProvider = ({ children }: POSOpeningProviderProps) => {
     );
   }
 
-  // Show dialog if there's a validation issue
-  if (validationType) {
-    return <POSOpeningDialog onReload={handleReload} type={validationType} />;
+  if (validation.type) {
+    // After a successful open inside the dialog we do a full reload so the
+    // menu items, categories, payment modes and POS profile all refetch
+    // cleanly — the dialog already clears sessionStorage before calling us.
+    // See CLAUDE.md "Fixes log" for the reload-cache rationale.
+    const handleOpened = () => window.location.reload();
+
+    return (
+      <POSOpeningDialog
+        type={validation.type}
+        unclosedEntry={validation.unclosedEntry}
+        onOpened={handleOpened}
+      />
+    );
   }
 
-  // Render children if all validations passed
   return <>{children}</>;
 };
 
-export default POSOpeningProvider; 
+export default POSOpeningProvider;

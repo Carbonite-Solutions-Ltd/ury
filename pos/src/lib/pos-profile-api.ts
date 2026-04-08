@@ -42,6 +42,24 @@ interface RolePermission {
   doctype: string;
 }
 
+/**
+ * POS Profile User (child table applicable_for_users).
+ * `custom_main_cashier` marks the "captain" in multi-cashier mode.
+ */
+export interface PosProfileUser {
+  user: string;
+  custom_main_cashier?: 0 | 1;
+}
+
+/**
+ * POS Profile payment row (child table payments).
+ * Used to seed the opening-balance form.
+ */
+export interface PosProfilePayment {
+  mode_of_payment: string;
+  default?: 0 | 1;
+}
+
 // Full POS Profile response
 export interface PosProfileFull {
   name: string;
@@ -64,6 +82,9 @@ export interface PosProfileFull {
   role_allowed_for_billing: RolePermission[];
   role_restricted_for_table_order?: RolePermission[];
   paid_limit?: number;
+  applicable_for_users?: PosProfileUser[];
+  payments?: PosProfilePayment[];
+  custom_enable_multiple_cashier?: 0 | 1;
 }
 
 // Combined POS Profile with both limited and full fields

@@ -2,6 +2,31 @@ import { StateCreator } from 'zustand';
 import { AuthSlice } from './auth-slice';
 import { getCombinedPosProfile, PosProfileCombined } from '../../lib/pos-profile-api';
 
+/**
+ * Frappe returns human-readable errors under `_server_messages` as a
+ * JSON-encoded array of JSON-encoded objects. The standard `Error.message`
+ * for frappe-js-sdk errors is just the HTTP status phrase, which reaches
+ * users as "There was an error." Prefer the server-side message when we
+ * can parse it. See CLAUDE.md "Fixes log" 2026-04-08.
+ */
+const extractFrappeErrorMessage = (err: unknown): string => {
+  const fallback = 'Failed to load POS configuration.';
+  if (!err || typeof err !== 'object') return fallback;
+  const anyErr = err as { _server_messages?: string; message?: string };
+  if (anyErr._server_messages) {
+    try {
+      const messages = JSON.parse(anyErr._server_messages);
+      if (Array.isArray(messages) && messages.length > 0) {
+        const parsed = JSON.parse(messages[0]);
+        if (parsed?.message) return parsed.message;
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  return anyErr.message || fallback;
+};
+
 interface RolePermission {
   name: string;
   owner: string;
@@ -78,8 +103,8 @@ export const createConfigSlice: StateCreator<
       get().setAllowedRoles(allowedRoles);
       set({ isLoading: false });
     } catch (error) {
-      set({ 
-        error: (error as Error).message,
+      set({
+        error: extractFrappeErrorMessage(error),
         isLoading: false,
       });
     }

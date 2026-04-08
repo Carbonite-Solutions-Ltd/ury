@@ -137,54 +137,119 @@ def getBranch():
 
 @frappe.whitelist()
 def getBranchRoom():
+    """Return the current user's branch + room as ``[{"name": room, "branch": branch}]``.
+
+    Used by multi-cashier POS Profile mode to find the POS Opening Entry tied
+    to a specific (branch, room). Historically this function hard-threw when
+    the user's URY User row had no room assigned, which crashed the entire
+    POS load path the moment multi-cashier was enabled.
+
+    Behaviour (see CLAUDE.md "Fixes log" 2026-04-08):
+      - Administrator: fall back to the first non-disabled POS Profile's
+        branch and the first URY Room in that branch (same spirit as
+        getBranch()).
+      - Regular user without any URY User row: friendly error.
+      - Regular user whose URY User row has no room: silently fall back to
+        the first URY Room in their branch; if the branch has none, return
+        ``room=None`` and let the caller cope. Do not hard-throw — the
+        default URY direction is to loosen restrictions, not tighten them.
+    """
     user = frappe.session.user
-    if user != "Administrator":
-        sql_query = """
-            SELECT b.branch , a.room
-            FROM `tabURY User` AS a
-            INNER JOIN `tabBranch` AS b ON a.parent = b.name
-            WHERE a.user = %s
-        """
-        branch_array = frappe.db.sql(sql_query, user, as_dict=True)
-        
-        branch_name = branch_array[0].get("branch")
-        room_name = branch_array[0].get("room")
-    
-        if not branch_name:
-            frappe.throw("Branch information is missing for the user. Please contact your administrator.")
 
-        if not room_name:
-            frappe.throw("No room assigned to this user. Please contact your administrator.")
+    if user == "Administrator":
+        profile = frappe.db.get_value(
+            "POS Profile",
+            {"disabled": 0},
+            ["name", "branch"],
+            as_dict=True,
+        )
+        if not profile or not profile.get("branch"):
+            frappe.throw(
+                "Administrator has no default branch and no POS Profile with a branch is configured. "
+                "Create at least one POS Profile linked to a Branch."
+            )
+        first_room = frappe.db.get_value("URY Room", {"branch": profile.branch}, "name")
+        return [{"name": first_room, "branch": profile.branch}]
 
-        return [{
-            "name":room_name ,
-            "branch": branch_name,
-        }]
+    sql_query = """
+        SELECT b.branch, a.room
+        FROM `tabURY User` AS a
+        INNER JOIN `tabBranch` AS b ON a.parent = b.name
+        WHERE a.user = %s
+    """
+    branch_array = frappe.db.sql(sql_query, user, as_dict=True)
+
+    if not branch_array:
+        frappe.throw(
+            "Your user is not associated with any Branch. "
+            "Ask your administrator to add you to a Branch's URY Users list."
+        )
+
+    branch_name = branch_array[0].get("branch")
+    room_name = branch_array[0].get("room")
+
+    if not room_name:
+        # No room on the URY User row — fall back to the first URY Room in
+        # this branch instead of hard-throwing. If there's no room at all,
+        # leave it as None; the caller handles an empty pos_opening_list.
+        room_name = frappe.db.get_value("URY Room", {"branch": branch_name}, "name")
+
+    return [{
+        "name": room_name,
+        "branch": branch_name,
+    }]
 
 @frappe.whitelist()
 def getRoom():
-    user = frappe.session.user
-    if user != "Administrator":
-        sql_query = """
-            SELECT b.branch, a.room
-            FROM `tabURY User` AS a
-            INNER JOIN `tabBranch` AS b ON a.parent = b.name
-            WHERE a.user = %s
-        """
-        branch_array = frappe.db.sql(sql_query, user, as_dict=True)
-        
-        if not branch_array:
-            frappe.throw("No branch or room information found for the user. Please contact your administrator.")
-        
-        room_details = [
-            {
-                "name": row.get("room"),
-                "branch": row.get("branch")
-            } 
-            for row in branch_array
-        ]
+    """Return every ``(branch, room)`` pair the current user is attached to.
 
-        return room_details
+    Used by the legacy Vue POS (`ury.ury_pos.api.getRoom`). Administrator
+    falls back to every URY Room in the first configured POS Profile's
+    branch so they can load the legacy POS without a dedicated URY User
+    assignment. See CLAUDE.md "Fixes log" 2026-04-08.
+    """
+    user = frappe.session.user
+
+    if user == "Administrator":
+        profile = frappe.db.get_value(
+            "POS Profile",
+            {"disabled": 0},
+            ["name", "branch"],
+            as_dict=True,
+        )
+        if not profile or not profile.get("branch"):
+            frappe.throw(
+                "Administrator has no default branch and no POS Profile with a branch is configured. "
+                "Create at least one POS Profile linked to a Branch."
+            )
+        rooms = frappe.get_all(
+            "URY Room",
+            filters={"branch": profile.branch},
+            fields=["name"],
+        )
+        return [{"name": r.name, "branch": profile.branch} for r in rooms]
+
+    sql_query = """
+        SELECT b.branch, a.room
+        FROM `tabURY User` AS a
+        INNER JOIN `tabBranch` AS b ON a.parent = b.name
+        WHERE a.user = %s
+    """
+    branch_array = frappe.db.sql(sql_query, user, as_dict=True)
+
+    if not branch_array:
+        frappe.throw(
+            "Your user is not associated with any Branch. "
+            "Ask your administrator to add you to a Branch's URY Users list."
+        )
+
+    return [
+        {
+            "name": row.get("room"),
+            "branch": row.get("branch"),
+        }
+        for row in branch_array
+    ]
 
 @frappe.whitelist()
 def getModeOfPayment():
@@ -669,35 +734,46 @@ def getAggregatorMOP(aggregator):
 
 
 @frappe.whitelist()
-def validate_pos_close(pos_profile): 
-    enable_unclosed_pos_check = frappe.db.get_value("POS Profile",pos_profile,"custom_daily_pos_close")
-    
-    if enable_unclosed_pos_check:
-        current_datetime = frappe.utils.now_datetime()
-        start_of_day = current_datetime.replace(hour=5, minute=0, second=0, microsecond=0)
-        
-        if current_datetime > start_of_day:
-            previous_day = start_of_day - timedelta(days=1)
-            
-        else:
-            previous_day = start_of_day
-    
-        unclosed_pos_opening = frappe.db.exists(
-            "POS Opening Entry",
-            {
-                "posting_date": previous_day.date(),
-                "status": "Open",
-                "pos_profile": pos_profile,
-                "docstatus": 1
-            }
-        )
-    
-        if unclosed_pos_opening:
-            return "Failed"
-        
-        return "Success"
-    
-    return "Success"
+def validate_pos_close(pos_profile):
+    """Return the closing status for the previous business day.
+
+    Response shape (new — used by the React POS opening dialog so it can
+    deep-link directly to the unclosed entry instead of dumping the user
+    on /app):
+        {"status": "Success"}
+        {"status": "Failed", "unclosed_entry": "POS-OPEN-..."}
+
+    See CLAUDE.md "Fixes log" 2026-04-08 for context.
+    """
+    enable_unclosed_pos_check = frappe.db.get_value(
+        "POS Profile", pos_profile, "custom_daily_pos_close"
+    )
+
+    if not enable_unclosed_pos_check:
+        return {"status": "Success"}
+
+    current_datetime = frappe.utils.now_datetime()
+    start_of_day = current_datetime.replace(hour=5, minute=0, second=0, microsecond=0)
+
+    if current_datetime > start_of_day:
+        previous_day = start_of_day - timedelta(days=1)
+    else:
+        previous_day = start_of_day
+
+    unclosed_pos_opening = frappe.db.exists(
+        "POS Opening Entry",
+        {
+            "posting_date": previous_day.date(),
+            "status": "Open",
+            "pos_profile": pos_profile,
+            "docstatus": 1,
+        },
+    )
+
+    if unclosed_pos_opening:
+        return {"status": "Failed", "unclosed_entry": unclosed_pos_opening}
+
+    return {"status": "Success"}
 
 @frappe.whitelist(allow_guest=True)
 def get_latest_kot():
