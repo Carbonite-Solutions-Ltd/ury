@@ -117,6 +117,10 @@ interface POSState {
   orderComment: string;
   terminalName: string | null;
   terminalDescription: string | null;
+  /** Branch the registered terminal belongs to. Displayed in the Header chip. */
+  terminalBranch: string | null;
+  /** POS Profile name bound to the registered terminal. Displayed in the Header chip. */
+  terminalPosProfile: string | null;
 }
 
 interface POSStore extends POSState {
@@ -156,7 +160,13 @@ interface POSStore extends POSState {
   resetOrderState: () => void;
   setSelectedAggregator: (aggregator: Aggregator | null) => void;
   setOrderComment: (comment: string) => void;
-  setTerminalConfig: (config: { terminal: string; room: string; branch: string; description?: string }) => void;
+  setTerminalConfig: (config: {
+    terminal: string;
+    room: string;
+    branch: string;
+    description?: string;
+    pos_profile?: string;
+  }) => void;
 }
 
 const generateUniqueId = (item: OrderItem): string => {
@@ -204,11 +214,15 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   orderComment: '',
   terminalName: null,
   terminalDescription: null,
+  terminalBranch: null,
+  terminalPosProfile: null,
 
   setTerminalConfig: (config) => {
     set({
       terminalName: config.terminal,
       terminalDescription: config.description || null,
+      terminalBranch: config.branch,
+      terminalPosProfile: config.pos_profile || null,
       selectedRoom: config.room,
     });
   },
@@ -255,8 +269,8 @@ export const usePOSStore = create<POSStore>((set, get) => ({
       const cached = sessionStorage.getItem('posProfile');
       if (cached) {
         const profile = JSON.parse(cached);
-        set({ 
-          posProfile: profile, 
+        set({
+          posProfile: profile,
           profileLoading: false,
           currency: profile.currency || 'INR'
         });
@@ -267,8 +281,11 @@ export const usePOSStore = create<POSStore>((set, get) => ({
       }
 
       set({ profileLoading: true, error: null });
-      const combinedProfile = await getCombinedPosProfile();
-      
+      // Pass the registered terminal so the backend uses
+      // `URY POS Terminal.pos_profile` to resolve the profile
+      // deterministically, even when a branch has multiple profiles.
+      const combinedProfile = await getCombinedPosProfile(get().terminalName);
+
       sessionStorage.setItem('posProfile', JSON.stringify(combinedProfile));
       set({ 
         posProfile: combinedProfile, 

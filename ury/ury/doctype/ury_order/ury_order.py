@@ -127,7 +127,8 @@ def sync_order(
     comments=None,
     order_type=None,
     aggregator_id=None,
-    room=None
+    room=None,
+    terminal=None,
 ):
     
     user_role = frappe.get_roles()
@@ -211,8 +212,18 @@ def sync_order(
     invoice.cashier = cashier
     invoice.waiter = waiter
     invoice.custom_aggregator_id = aggregator_id
-    invoice.custom_restaurant_room =room
+    invoice.custom_restaurant_room = room
     invoice.restaurant_table = table
+    # Stamp the originating terminal so the invoice can be filtered/
+    # reported by physical till. Only trusts terminals tied to the
+    # session's branch — a spoofed terminal name from a different
+    # branch is silently ignored. See CLAUDE.md "Fixes log" 2026-04-08.
+    if terminal:
+        terminal_branch = frappe.db.get_value(
+            "URY POS Terminal", terminal, "branch"
+        )
+        if terminal_branch and terminal_branch == invoice.branch:
+            invoice.custom_terminal = terminal
     
     if order_type == "Aggregators":
         price_list = frappe.db.get_value("Aggregator Settings",{"customer": customer, "parent": invoice.branch, "parenttype": "Branch"},"price_list",)

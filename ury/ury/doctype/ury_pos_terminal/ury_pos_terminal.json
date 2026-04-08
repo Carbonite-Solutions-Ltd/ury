@@ -9,6 +9,7 @@
  "engine": "InnoDB",
  "field_order": [
   "room",
+  "pos_profile",
   "column_break_1",
   "branch",
   "section_break_1",
@@ -23,6 +24,15 @@
    "in_list_view": 1,
    "label": "Room",
    "options": "URY Room",
+   "reqd": 1
+  },
+  {
+   "description": "The POS Profile this terminal uses. Determines the menu, payment modes, printers and role permissions for this till.",
+   "fieldname": "pos_profile",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "POS Profile",
+   "options": "POS Profile",
    "reqd": 1
   },
   {

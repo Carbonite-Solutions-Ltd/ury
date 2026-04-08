@@ -23,7 +23,15 @@ const Header = () => {
   const user = useRootStore((state: RootState) => state.user);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const location = useLocation();
-  const { searchQuery, setSearchQuery, terminalName, selectedRoom } = usePOSStore();
+  const {
+    searchQuery,
+    setSearchQuery,
+    terminalName,
+    terminalBranch,
+    terminalPosProfile,
+    terminalDescription,
+    selectedRoom,
+  } = usePOSStore();
   const { orderSearchQuery, setOrderSearchQuery } = useRootStore();
   const [orderSearchInput, setOrderSearchInput] = useState(orderSearchQuery);
 
@@ -126,8 +134,27 @@ const Header = () => {
             />
           </Link>
           {terminalName && (
-            <span className="ml-3 text-xs font-medium text-gray-500 bg-gray-100 rounded px-2 py-1">
-              {terminalName}
+            // "terminal · branch · profile" chip so the cashier can see
+            // at a glance exactly what context they're ringing in.
+            // See CLAUDE.md "Fixes log" 2026-04-08.
+            <span
+              className="ml-3 inline-flex items-center gap-1.5 text-xs font-medium text-gray-700 bg-gray-100 border border-gray-200 rounded-md px-2.5 py-1"
+              title={terminalDescription || undefined}
+            >
+              <Monitor className="w-3 h-3 text-gray-500" />
+              <span>{terminalName}</span>
+              {terminalBranch && (
+                <>
+                  <span className="text-gray-400">·</span>
+                  <span>{terminalBranch}</span>
+                </>
+              )}
+              {terminalPosProfile && (
+                <>
+                  <span className="text-gray-400">·</span>
+                  <span>{terminalPosProfile}</span>
+                </>
+              )}
             </span>
           )}
         </div>
@@ -172,13 +199,27 @@ const Header = () => {
                   {terminalName && (
                     <div className="flex items-center gap-1.5 mt-2 text-xs text-blue-600 bg-blue-50 rounded-md px-2 py-1">
                       <Monitor className="w-3 h-3" />
-                      <span>{terminalName}</span>
+                      <span className="font-medium">{terminalName}</span>
+                      {terminalBranch && (
+                        <span className="text-blue-400">· {terminalBranch}</span>
+                      )}
+                    </div>
+                  )}
+                  {terminalPosProfile && (
+                    <div className="flex items-center gap-1.5 mt-1 text-xs text-gray-500">
+                      <span className="w-3 h-3 inline-block" />
+                      <span>POS Profile: {terminalPosProfile}</span>
                     </div>
                   )}
                   {selectedRoom && (
                     <div className="flex items-center gap-1.5 mt-1 text-xs text-gray-500">
                       <MapPin className="w-3 h-3" />
                       <span>{selectedRoom}</span>
+                    </div>
+                  )}
+                  {terminalDescription && (
+                    <div className="mt-2 text-xs text-gray-400 italic">
+                      {terminalDescription}
                     </div>
                   )}
                 </div>

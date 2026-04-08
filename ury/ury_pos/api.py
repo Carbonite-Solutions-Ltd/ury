@@ -557,7 +557,21 @@ def getCashier(room):
     
 
 @frappe.whitelist()
-def getPosProfile():
+def getPosProfile(terminal=None):
+    """Resolve the POS Profile for the current session.
+
+    When ``terminal`` is supplied (the React POS always passes it — the
+    device has a registered URY POS Terminal), the profile comes from
+    ``URY POS Terminal.pos_profile``. This makes profile selection
+    deterministic even when several POS Profiles exist for the same
+    branch (Bar, Restaurant, Takeaway…).
+
+    When ``terminal`` is not supplied (legacy Vue POS, Administrator
+    experiments, direct API callers), fall back to the historical
+    "first POS Profile on this branch" behaviour so nothing breaks.
+
+    See CLAUDE.md "Fixes log" 2026-04-08 for context.
+    """
     branchName = getBranch()
     waiter = frappe.session.user
     bill_present = False
@@ -565,7 +579,28 @@ def getPosProfile():
     printer = None
     cashier = None
     owner = None
-    posProfile = frappe.db.exists("POS Profile", {"branch": branchName})
+
+    posProfile = None
+    if terminal:
+        terminal_profile = frappe.db.get_value(
+            "URY POS Terminal", terminal, "pos_profile"
+        )
+        if terminal_profile:
+            posProfile = terminal_profile
+
+    if not posProfile:
+        posProfile = frappe.db.exists("POS Profile", {"branch": branchName})
+
+    if not posProfile:
+        frappe.throw(
+            _(
+                "No POS Profile is configured for branch '{0}'. "
+                "Open 'POS Profile' in the desk and create one, then bind "
+                "it to a URY POS Terminal."
+            ).format(branchName),
+            title=_("POS Profile Not Configured"),
+        )
+
     pos_profiles = frappe.get_doc("POS Profile", posProfile)
     global_defaults = frappe.get_single('Global Defaults')
     disable_rounded_total = global_defaults.disable_rounded_total
@@ -657,8 +692,10 @@ def getPosProfile():
         "multiple_cashier":multiple_cashier,
         "owner":owner,
         "edit_order_type":edit_order_type,
-        "enable_kot_reprint":enable_kot_reprint
-
+        "enable_kot_reprint":enable_kot_reprint,
+        # Echo the caller's terminal back so the frontend store has a
+        # single source of truth for "which terminal resolved this profile".
+        "terminal": terminal or None,
     }
 
     return invoice_details
@@ -1121,12 +1158,17 @@ def get_daily_sales(date=None):
 
 @frappe.whitelist()
 def get_terminals():
-    """List all active POS Terminals for the current user's branch."""
+    """List all active POS Terminals for the current user's branch.
+
+    Used by the React POS setup screen to let the admin pick which terminal
+    this device is. Includes ``pos_profile`` so the caller can show which
+    profile a terminal is bound to before selection.
+    """
     branch = getBranch()
     terminals = frappe.get_all(
         "URY POS Terminal",
         filters={"branch": branch, "disabled": 0},
-        fields=["name", "room", "branch", "description"],
+        fields=["name", "room", "branch", "description", "pos_profile"],
         order_by="name asc",
     )
     return terminals
@@ -1134,7 +1176,13 @@ def get_terminals():
 
 @frappe.whitelist()
 def get_terminal_config(terminal):
-    """Fetch POS Terminal configuration by name."""
+    """Fetch POS Terminal configuration by name.
+
+    Returns the terminal's room, branch, description and — crucially —
+    the ``pos_profile`` it's bound to. The React POS uses this to resolve
+    the profile without guessing by branch. See CLAUDE.md "Fixes log"
+    2026-04-08 ("URY POS Terminal ↔ POS Profile binding").
+    """
     if not frappe.db.exists("URY POS Terminal", terminal):
         frappe.throw(
             _("POS Terminal '{0}' not found.").format(terminal),
@@ -1149,9 +1197,19 @@ def get_terminal_config(terminal):
             frappe.ValidationError,
         )
 
+    if not doc.pos_profile:
+        frappe.throw(
+            _(
+                "POS Terminal '{0}' has no POS Profile set. "
+                "Open it in the desk and link a POS Profile before using it."
+            ).format(terminal),
+            title=_("Terminal Not Configured"),
+        )
+
     return {
         "terminal": doc.name,
         "room": doc.room,
         "branch": doc.branch,
         "description": doc.description,
+        "pos_profile": doc.pos_profile,
     }

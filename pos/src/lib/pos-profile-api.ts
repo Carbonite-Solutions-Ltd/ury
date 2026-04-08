@@ -21,6 +21,8 @@ export interface PosProfileLimited {
   multiple_cashier: number;
   owner: string;
   edit_order_type?: number;
+  /** Terminal name that resolved this profile — echoed back from the server. */
+  terminal?: string | null;
 }
 
 export interface PosProfileLimitedResponse {
@@ -120,8 +122,15 @@ export interface PosProfileFullResponse {
   message: PosProfileFull;
 }
 
-export async function getPosProfileLimitedFields(): Promise<PosProfileLimited> {
-  const res = await call.get('ury.ury_pos.api.getPosProfile');
+export async function getPosProfileLimitedFields(
+  terminal?: string | null
+): Promise<PosProfileLimited> {
+  // The backend uses `terminal` to resolve the correct POS Profile
+  // deterministically when a branch has multiple profiles.
+  // See CLAUDE.md "Fixes log" 2026-04-08 ("URY POS Terminal ↔ POS Profile").
+  const params: Record<string, string> = {};
+  if (terminal) params.terminal = terminal;
+  const res = await call.get('ury.ury_pos.api.getPosProfile', params);
   return res.message;
 }
 
@@ -130,15 +139,13 @@ export async function getPosProfileFull(posProfileName: string): Promise<PosProf
   return doc;
 }
 
-export async function getCombinedPosProfile(): Promise<PosProfileCombined> {
-  // Get limited fields first
-  const limitedProfile = await getPosProfileLimitedFields();
-  console.log('limitedProfile', limitedProfile);
-  
-  // Get full profile using the pos_profile name from limited profile
+export async function getCombinedPosProfile(
+  terminal?: string | null
+): Promise<PosProfileCombined> {
+  const limitedProfile = await getPosProfileLimitedFields(terminal);
+
   const fullProfile = await getPosProfileFull(limitedProfile.pos_profile);
-  
-  // Merge both profiles
+
   const combinedProfile: PosProfileCombined = {
     ...fullProfile,
     waiter: limitedProfile.waiter,

@@ -77,6 +77,8 @@ export interface SyncOrderRequest {
   last_invoice: string | null;
   comments?: string | null;
   room?: string;
+  /** Terminal (URY POS Terminal name) that's ringing this invoice. Stamped on the invoice for reporting + reconciliation. */
+  terminal?: string | null;
 }
 
 export const syncOrder = async (data: SyncOrderRequest) => {

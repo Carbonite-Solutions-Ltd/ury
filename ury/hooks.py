@@ -350,6 +350,7 @@ fixtures = [
                     "POS Opening Entry-custom_ury_last_aggregator_invoice",
                     "POS Profile-custom_reset_order_number_daily",
                     "POS Invoice-custom_ury_order_number",
+                    "POS Invoice-custom_terminal",
                     "URY Menu Course-custom_serving_priority",
                     "URY Menu Course-custom_indicate_in_kds",
                     "POS Profile-custom_enable_kot_reprint",

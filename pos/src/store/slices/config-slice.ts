@@ -1,6 +1,7 @@
 import { StateCreator } from 'zustand';
 import { AuthSlice } from './auth-slice';
 import { getCombinedPosProfile, PosProfileCombined } from '../../lib/pos-profile-api';
+import { getSavedTerminal } from '../../lib/terminal-api';
 
 /**
  * Frappe returns human-readable errors under `_server_messages` as a
@@ -91,9 +92,13 @@ export const createConfigSlice: StateCreator<
         return;
       }
 
-      // If not in cache or forcing refresh, fetch from API
-      const profile = await getCombinedPosProfile();
-      
+      // If not in cache or forcing refresh, fetch from API.
+      // Pass the device's registered terminal so the backend resolves
+      // the correct POS Profile deterministically. See CLAUDE.md
+      // "Fixes log" 2026-04-08 ("URY POS Terminal ↔ POS Profile").
+      const terminal = getSavedTerminal();
+      const profile = await getCombinedPosProfile(terminal);
+
       // Cache the profile
       sessionStorage.setItem('posProfile', JSON.stringify(profile));
       set({ posProfile: profile });

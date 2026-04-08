@@ -160,12 +160,15 @@ function TerminalSetupScreen({ onSelect }: { onSelect: (terminal: string) => voi
   useEffect(() => {
     getTerminals()
       .then((list) => {
-        // Normalize: frappe.get_all returns 'name', map to 'terminal'
+        // Normalize: frappe.get_all returns 'name' for the terminal ID, and
+        // also carries pos_profile so the setup screen can show which
+        // profile each terminal is bound to and flag unconfigured ones.
         const normalized = list.map((t: any) => ({
           terminal: t.terminal || t.name,
           room: t.room,
           branch: t.branch,
           description: t.description,
+          pos_profile: t.pos_profile,
         }));
         setTerminals(normalized);
         setLoading(false);
@@ -214,7 +217,7 @@ function TerminalSetupScreen({ onSelect }: { onSelect: (terminal: string) => voi
           </div>
           <h2 className="text-xl font-bold text-gray-900 mb-2">No Terminals Available</h2>
           <p className="text-gray-600">
-            No POS Terminals have been created yet. Ask your administrator to create terminals in the back office under <strong>URY POS Terminal</strong>.
+            No POS Terminals have been created yet. Ask your administrator to create terminals in the back office under <strong>ExPOS POS Terminal</strong>.
           </p>
         </div>
       </div>
@@ -238,42 +241,66 @@ function TerminalSetupScreen({ onSelect }: { onSelect: (terminal: string) => voi
 
           {/* Terminal list */}
           <div className="space-y-3 mb-8">
-            {terminals.map((t) => (
-              <button
-                key={t.terminal}
-                onClick={() => setSelected(t.terminal)}
-                className={`w-full flex items-center gap-4 p-4 rounded-xl border-2 transition-all ${
-                  selected === t.terminal
-                    ? 'border-blue-500 bg-blue-50'
-                    : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-                }`}
-              >
-                <div
-                  className={`flex items-center justify-center w-10 h-10 rounded-lg ${
-                    selected === t.terminal
-                      ? 'bg-blue-500 text-white'
-                      : 'bg-gray-100 text-gray-500'
+            {terminals.map((t) => {
+              const unconfigured = !t.pos_profile;
+              const isSelected = selected === t.terminal;
+              return (
+                <button
+                  key={t.terminal}
+                  onClick={() => !unconfigured && setSelected(t.terminal)}
+                  disabled={unconfigured}
+                  title={
+                    unconfigured
+                      ? 'This terminal has no POS Profile set. Open it in the desk and link a POS Profile before using it.'
+                      : undefined
+                  }
+                  className={`w-full flex items-center gap-4 p-4 rounded-xl border-2 transition-all text-left ${
+                    unconfigured
+                      ? 'border-gray-200 bg-gray-50 opacity-60 cursor-not-allowed'
+                      : isSelected
+                      ? 'border-blue-500 bg-blue-50'
+                      : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
                   }`}
                 >
-                  <MapPin className="w-5 h-5" />
-                </div>
-                <div className="text-left flex-1">
                   <div
-                    className={`font-semibold ${
-                      selected === t.terminal ? 'text-blue-700' : 'text-gray-900'
+                    className={`flex items-center justify-center w-10 h-10 rounded-lg shrink-0 ${
+                      isSelected
+                        ? 'bg-blue-500 text-white'
+                        : 'bg-gray-100 text-gray-500'
                     }`}
                   >
-                    {t.terminal}
+                    <MapPin className="w-5 h-5" />
                   </div>
-                  <div className="text-sm text-gray-500">{t.room}</div>
-                </div>
-                {t.description && (
-                  <div className="text-xs text-gray-400 text-right max-w-[140px] truncate">
-                    {t.description}
+                  <div className="flex-1 min-w-0">
+                    <div
+                      className={`font-semibold truncate ${
+                        isSelected ? 'text-blue-700' : 'text-gray-900'
+                      }`}
+                    >
+                      {t.terminal}
+                    </div>
+                    <div className="text-sm text-gray-500 truncate">
+                      {t.room}
+                      {t.branch && ` · ${t.branch}`}
+                    </div>
+                    {t.pos_profile ? (
+                      <div className="text-xs text-gray-400 truncate mt-0.5">
+                        POS Profile: {t.pos_profile}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-red-500 truncate mt-0.5">
+                        Not configured — no POS Profile linked
+                      </div>
+                    )}
+                    {t.description && (
+                      <div className="text-xs text-gray-400 italic truncate mt-0.5">
+                        {t.description}
+                      </div>
+                    )}
                   </div>
-                )}
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
 
           {/* Confirm */}

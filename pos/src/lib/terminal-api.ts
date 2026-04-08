@@ -7,6 +7,15 @@ export interface TerminalConfig {
   room: string;
   branch: string;
   description?: string;
+  /**
+   * Name of the POS Profile bound to this terminal.
+   * Always present on responses from `get_terminal_config`. On responses
+   * from `get_terminals` (the list endpoint used by the setup screen) it
+   * may be empty for terminals that haven't been fully configured yet —
+   * those should be visually flagged as "not configured" and not
+   * selectable.
+   */
+  pos_profile?: string;
 }
 
 interface TerminalConfigResponse {

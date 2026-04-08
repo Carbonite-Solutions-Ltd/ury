@@ -15,11 +15,11 @@ import { showToast } from './ui/toast';
 import { DINE_IN } from '../data/order-types';
 
 const OrderPanel = () => {
-  const { 
-    activeOrders, 
-    removeFromOrder, 
-    updateQuantity, 
-    clearOrder, 
+  const {
+    activeOrders,
+    removeFromOrder,
+    updateQuantity,
+    clearOrder,
     setSelectedItem,
     orderLoading,
     isOrderInteractionDisabled,
@@ -34,7 +34,8 @@ const OrderPanel = () => {
     paymentModes,
     orderId,
     orderComment,
-    setOrderComment
+    setOrderComment,
+    terminalName
   } = usePOSStore();
   const user = useRootStore((state: RootState) => state.user);
   const [editingItem, setEditingItem] = useState<typeof activeOrders[0] | null>(null);
@@ -137,6 +138,7 @@ const OrderPanel = () => {
         invoice: isUpdatingOrder ? orderId : null,
         waiter: user.name,
         comments: orderComment || undefined,
+        terminal: terminalName || undefined,
       };
 
       await syncOrder(orderData);
