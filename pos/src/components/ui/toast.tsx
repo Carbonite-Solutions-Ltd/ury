@@ -47,7 +47,26 @@ const renderRichContent = (content: RichToastContent) => (
           e.stopPropagation();
           content.action!.onClick();
         }}
-        className="mt-2 inline-flex items-center gap-1.5 self-start rounded-md bg-white/20 hover:bg-white/30 px-2.5 py-1 text-xs font-medium text-white transition-colors"
+        // NOTE: toast.css overrides react-toastify's "colored" theme with
+        // pale pastel backgrounds (#fef2f2 for error, #ecfdf5 for success,
+        // #eff6ff for info) and dark foregrounds. A white-on-white button
+        // is invisible on those backgrounds — that hid this button
+        // entirely the first time we shipped it. Inline styles using
+        // `currentColor` keep the button legible on every toast variant
+        // without hardcoding one colour per variant.
+        // See CLAUDE.md "Fixes log" 2026-04-08.
+        style={{
+          color: 'currentColor',
+          backgroundColor: 'rgba(0, 0, 0, 0.08)',
+          border: '1px solid rgba(0, 0, 0, 0.2)',
+        }}
+        onMouseEnter={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.backgroundColor = 'rgba(0, 0, 0, 0.16)';
+        }}
+        onMouseLeave={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.backgroundColor = 'rgba(0, 0, 0, 0.08)';
+        }}
+        className="mt-2 inline-flex items-center gap-1.5 self-start rounded-md px-2.5 py-1 text-xs font-semibold transition-colors"
       >
         <ExternalLink className="w-3 h-3" />
         {content.action.label}
