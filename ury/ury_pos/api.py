@@ -993,3 +993,41 @@ def get_daily_sales(date=None):
             "invoices": [],
             "payment_totals": []
         }
+
+
+@frappe.whitelist()
+def get_terminals():
+    """List all active POS Terminals for the current user's branch."""
+    branch = getBranch()
+    terminals = frappe.get_all(
+        "URY POS Terminal",
+        filters={"branch": branch, "disabled": 0},
+        fields=["name", "room", "branch", "description"],
+        order_by="name asc",
+    )
+    return terminals
+
+
+@frappe.whitelist()
+def get_terminal_config(terminal):
+    """Fetch POS Terminal configuration by name."""
+    if not frappe.db.exists("URY POS Terminal", terminal):
+        frappe.throw(
+            _("POS Terminal '{0}' not found.").format(terminal),
+            frappe.DoesNotExistError,
+        )
+
+    doc = frappe.get_doc("URY POS Terminal", terminal)
+
+    if doc.disabled:
+        frappe.throw(
+            _("POS Terminal '{0}' is disabled.").format(terminal),
+            frappe.ValidationError,
+        )
+
+    return {
+        "terminal": doc.name,
+        "room": doc.room,
+        "branch": doc.branch,
+        "description": doc.description,
+    }

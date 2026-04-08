@@ -115,6 +115,8 @@ interface POSState {
   tableOrder: TableOrder | null;
   isInitializing: boolean;
   orderComment: string;
+  terminalName: string | null;
+  terminalDescription: string | null;
 }
 
 interface POSStore extends POSState {
@@ -154,6 +156,7 @@ interface POSStore extends POSState {
   resetOrderState: () => void;
   setSelectedAggregator: (aggregator: Aggregator | null) => void;
   setOrderComment: (comment: string) => void;
+  setTerminalConfig: (config: { terminal: string; room: string; branch: string; description?: string }) => void;
 }
 
 const generateUniqueId = (item: OrderItem): string => {
@@ -199,11 +202,21 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   isUpdatingOrder: false,
   orderId: null,
   orderComment: '',
+  terminalName: null,
+  terminalDescription: null,
+
+  setTerminalConfig: (config) => {
+    set({
+      terminalName: config.terminal,
+      terminalDescription: config.description || null,
+      selectedRoom: config.room,
+    });
+  },
 
   initializeApp: async () => {
   try {
     set({ isInitializing: true, error: null });
-    
+
     const [profileResult, menuResult, categoriesResult, paymentModesResult] = await Promise.allSettled([
       get().fetchPosProfile(),
       get().fetchMenuItems(),
@@ -666,12 +679,12 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   },
 
   resetOrderState: () => {
-  const { fetchMenuItems } = get();
-  
+  const { fetchMenuItems, selectedRoom } = get();
+
   set({
-    selectedCustomer: { id: 'Cash Customer', name: 'Cash Customer', phone: '' }, // Changed from null
+    selectedCustomer: { id: 'Cash Customer', name: 'Cash Customer', phone: '' },
     selectedTable: null,
-    selectedRoom: null,
+    selectedRoom: selectedRoom,
     selectedAggregator: null,
     isUpdatingOrder: false,
     orderId: null,
