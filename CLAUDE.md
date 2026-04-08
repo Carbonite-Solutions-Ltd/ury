@@ -134,6 +134,25 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) spins up a fresh bench
 
 No frontend test suites are configured. `pos/` has `yarn lint` (ESLint); the Vue projects have no lint script wired up in their `package.json`.
 
+## Brand naming — "URY" vs "ExPOS Restaurant"
+
+**The product has been rebranded from URY to ExPOS Restaurant, but the underlying DocType names, Python package, URL slugs, and file paths are all still `URY …`**. The rebrand is implemented through Frappe's translation layer, not via renames.
+
+- **Translation source:** [ury/translations/en.csv](ury/translations/en.csv) — maps `URY → ExPOS`, `URY Restaurant → ExPOS Restaurant`, `URY Menu Item → ExPOS Menu Item`, etc. Add new mappings here when you reference a new DocType name in user-visible Python strings.
+- **Workspace labels** use the `"label": "ExPOS X"` / `"link_to": "URY X"` split (see [ury/ury/workspace/ury/ury.json](ury/ury/workspace/ury/ury.json) line 42+).
+- **What to do in backend Python** — when a `frappe.throw` / `frappe.msgprint` message references a DocType name, **wrap the DocType name in `_()` and interpolate it with `.format()`** so the en.csv mapping applies. Example:
+  ```python
+  frappe.throw(
+      _("No {0} is configured for branch '{1}'. Open '{0}' in the desk...").format(
+          _("URY Restaurant"), branch_name
+      ),
+      title=_("Restaurant Not Configured"),
+  )
+  ```
+  Do NOT write `_("No URY Restaurant is configured...")` — the translator matches whole strings, so the mapping in en.csv (`URY Restaurant`) won't fire inside that longer sentence.
+- **What to do in the React POS (`pos/`)** — there is no translation layer. **Hardcode the brand string** (`ExPOS Restaurant`, `ExPOS Menu Item`, etc.) in user-visible text. Keep URL paths, DocType arguments, and API payloads literal — they still reference the real `URY …` names (e.g. the deep-link target is `/app/ury-menu-item/new`, not `/app/expos-menu-item/new`). If the brand changes again, grep for `ExPOS` in `pos/src/` to find every hardcoded occurrence.
+- **Never rename the DocTypes, Python package, URL slugs, or file paths.** A rename would break the database schema, all existing records, and all API callers. This is a label-only rebrand.
+
 ## Gotchas
 
 - **Gitignored build outputs.** `ury/public/{pos,urypos,URYMosaic}` and `ury/www/{pos,urypos,URYMosaic}.html` are all gitignored. Don't edit them — they get overwritten by `yarn build`. Edit the source under `pos/src/`, `urypos/src/`, or `URYMosaic/src/` instead.
@@ -155,6 +174,28 @@ Running record of bugs fixed and non-obvious traps discovered. Add new entries a
 - **Verification:**
 - **Notes / follow-ups:**
 -->
+
+### 2026-04-08 — Fresh-install "Failed to load menu items" (417 EXPECTATION FAILED) + initializeApp swallowing errors
+- **Symptom:** On a fresh install with no URY Restaurant / URY Menu / URY Menu Items created yet, opening `/pos` showed "Failed to load POS / Failed to load menu items / Retry". Network tab showed `GET getRestaurantMenu ... 417 EXPECTATION FAILED`. Even when the real server message was something actionable like "Please set an active menu for Restaurant None", the frontend displayed only the generic "Failed to load menu items" string.
+- **Root cause (three layers):**
+  1. [ury/ury_pos/api.py](ury/ury_pos/api.py) `getRestaurantMenu` assumed a URY Restaurant existed for the branch. When `frappe.db.get_value("URY Restaurant", {"branch": branch_name}, "name")` returned `None`, every downstream lookup also returned `None` and the final throw formatted as "Please set an active menu for Restaurant None" — confusing because the restaurant itself was missing, not just the menu.
+  2. [pos/src/store/pos-store.ts](pos/src/store/pos-store.ts) `fetchMenuItems` caught the error and replaced it with the hardcoded string `'Failed to load menu items'`, even though [pos/src/lib/menu-api.ts](pos/src/lib/menu-api.ts#L37-L42) had already parsed `_server_messages` into `new Error(serverMessage)`. The friendly text was there — the store just discarded it.
+  3. `initializeApp()` used `Promise.allSettled` and, on any rejection, **overwrote** whatever error its child actions had set with a fresh `'Failed to initialize app. Please refresh the page.'` string. So even if layer 2 had been fixed, the user would still see the generic wrapper message. (Also the top-level `try/catch` around `allSettled` was dead — `allSettled` never rejects.)
+- **Files changed:**
+  - [ury/ury_pos/api.py](ury/ury_pos/api.py) `getRestaurantMenu()` — two distinct early-guard errors with `title` set: "Restaurant Not Configured" when no URY Restaurant exists for the branch (tells the user to open "URY Restaurant" in the desk and create a record), "Active Menu Not Set" when the restaurant exists but `active_menu` is unset. Crucially, an empty menu (menu exists but has zero `URY Menu Item` children) is **not an error** — the function returns `items: []` successfully so the POS can render a dedicated empty state with a deep-link to add items.
+  - [pos/src/store/pos-store.ts](pos/src/store/pos-store.ts) `fetchMenuItems` — catch block now uses `(error as Error)?.message` so the friendly message from `menu-api.ts` reaches the user. Fallback to the old string only if `message` is genuinely empty.
+  - [pos/src/store/pos-store.ts](pos/src/store/pos-store.ts) `initializeApp` — no longer overwrites child errors. Each child action (`fetchPosProfile`, `fetchMenuItems`, `fetchCategories`, `fetchPaymentModes`) sets its own specific `error` on failure; `initializeApp` just awaits `Promise.allSettled` and lets whatever child message stuck take precedence. Removed the dead top-level `try/catch` since `allSettled` never rejects (kept a defensive outer try for unexpected sync errors but it now preserves the original message if any).
+  - [pos/src/components/MenuList.tsx](pos/src/components/MenuList.tsx) — distinguishes two empty cases. When the underlying `menuItems` array is genuinely empty (no items at all — fresh install or admin who hasn't added items) the component shows a friendly "No menu items yet" message with an **Add Menu Items** button that opens `/app/ury-menu-item/new` in a new tab. The existing "No items found / Try adjusting your filters" branch is preserved for the case where items exist but filters exclude them all.
+  - [pos/src/pages/POS.tsx](pos/src/pages/POS.tsx) — removed a duplicate `if (error) { return ... }` block that was dead code (the first `if (error)` already returned, so the second one was unreachable).
+- **Verification:**
+  - `yarn build` in `pos/` — clean, bundle 641.31 kB → 641.55 kB.
+  - `python3 -m py_compile ury/ury_pos/api.py` — OK.
+  - **Still to do:** user walks the three freshinstall stages in his browser: (a) no URY Restaurant exists → "Restaurant Not Configured" error; (b) URY Restaurant exists, no Active Menu → "Active Menu Not Set" error; (c) active menu set, no items → POS loads with "No menu items yet" empty state and the "Add Menu Items" button; (d) items exist → normal POS grid.
+- **Notes / follow-ups:**
+  - The pattern "child action sets specific error, parent orchestrator preserves it" is now the rule for this store. If a new child action is added to `initializeApp`'s `Promise.allSettled`, make sure it sets a user-actionable error on its own failure path — the wrapper will not do it for you anymore.
+  - The "Add Menu Items" deep-link goes to the create form with `disabled=0` prefilled. If the user needs to create the parent URY Menu first, the Frappe form will surface that requirement. Phase-2 could add a full setup wizard, but this deep-link unblocks a fresh install with minimal UI effort.
+  - `menu-api.ts` was already parsing `_server_messages` correctly — this round's fix was entirely about not discarding the parsed message further up the chain. Worth remembering: frappe-js-sdk throws an object with `_server_messages` on it, and there's already a parser for that in `menu-api.ts`, `pos-opening-api.ts` style — reuse that pattern before writing new parsers.
+  - **Brand:** The new error strings use `_("URY Restaurant")` wrapped inside the sentence via `.format()` so the en.csv rebrand (`URY Restaurant → ExPOS Restaurant`) applies at runtime. Frontend hardcodes "ExPOS Menu Item" directly. See the "Brand naming" section above for the full convention. Also added `URY Menu Item, ExPOS Menu Item,` to [ury/translations/en.csv](ury/translations/en.csv) so any future backend message referencing it gets rebranded for free.
 
 ### 2026-04-08 — Multi-cashier mode crashed POS load via `getBranchRoom()`
 - **Symptom:** Enabling `custom_enable_multiple_cashier` on the POS Profile made `/pos` show a generic "Access Denied / There was an error" screen for regular cashiers. Browser Network tab on `getPosProfile` showed `frappe.exceptions.ValidationError: No room assigned to this user. Please contact your administrator.` with the error originating in `ury_pos/api.py:getBranchRoom` line 157.

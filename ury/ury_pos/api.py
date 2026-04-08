@@ -17,69 +17,102 @@ def getTable(room):
 
 @frappe.whitelist()
 def getRestaurantMenu(pos_profile, room=None, order_type=None):
-    menu_items = []
-    menu_items_with_image = []
+    """Resolve and return the active menu's items for the given context.
 
+    Fails with specific, actionable errors when the data isn't set up yet —
+    fresh installs previously hit "Please set an active menu for Restaurant
+    None" which didn't explain that the URY Restaurant record itself was
+    missing. See CLAUDE.md "Fixes log" 2026-04-08.
+
+    Returns ``items: []`` successfully when the menu exists but has zero
+    items — the frontend renders a dedicated empty-state rather than an
+    error, so the POS still loads.
+    """
     user_role = frappe.get_roles()
-
     pos_profile = frappe.get_doc("POS Profile", pos_profile)
 
     cashier = any(
         role.role in user_role for role in pos_profile.role_allowed_for_billing
     )
     branch_name = getBranch()
-    restaurant = frappe.db.get_value("URY Restaurant", {"branch": branch_name}, "name")
-    
+
+    restaurant = frappe.db.get_value(
+        "URY Restaurant", {"branch": branch_name}, "name"
+    )
+    if not restaurant:
+        # DocType name is wrapped in _() so the en.csv translation layer
+        # rewrites "URY Restaurant" → "ExPOS Restaurant" (current brand).
+        # See CLAUDE.md "Rebranding" note for the pattern.
+        frappe.throw(
+            _(
+                "No {0} is configured for branch '{1}'. "
+                "Open '{0}' in the desk, create a new record linked "
+                "to this branch, and set its 'Active Menu'."
+            ).format(_("URY Restaurant"), branch_name),
+            title=_("Restaurant Not Configured"),
+        )
+
+    # Resolve which menu to load based on room-wise / order-type-wise / default.
     if room:
-    
         room_wise_menu = frappe.db.get_value(
             "URY Restaurant", restaurant, "room_wise_menu"
         )
-        
         if room_wise_menu:
             menu = frappe.db.get_value(
                 "Menu for Room",
                 {"parent": restaurant, "room": room},
-                "menu"
+                "menu",
             )
             if not menu:
-                 menu = frappe.db.get_value("URY Restaurant", restaurant, "active_menu")
+                menu = frappe.db.get_value(
+                    "URY Restaurant", restaurant, "active_menu"
+                )
         else:
-            menu = frappe.db.get_value("URY Restaurant", restaurant, "active_menu")
-
+            menu = frappe.db.get_value(
+                "URY Restaurant", restaurant, "active_menu"
+            )
     elif cashier and order_type:
         order_type_wise_menu = frappe.db.get_value(
             "URY Restaurant", restaurant, "order_type_wise_menu"
         )
-    
         if order_type_wise_menu:
             menu = frappe.db.get_value(
                 "Order Type Menu",
                 {"parent": restaurant, "order_type": order_type},
-                "menu"
+                "menu",
             )
             if not menu:
-                 menu = frappe.db.get_value("URY Restaurant", restaurant, "active_menu")
-    
+                menu = frappe.db.get_value(
+                    "URY Restaurant", restaurant, "active_menu"
+                )
         else:
-            menu = frappe.db.get_value("URY Restaurant", restaurant, "active_menu")
-
-    # Default menu if nothing is selected
+            menu = frappe.db.get_value(
+                "URY Restaurant", restaurant, "active_menu"
+            )
     else:
         menu = frappe.db.get_value("URY Restaurant", restaurant, "active_menu")
-    
+
     if not menu:
-        frappe.throw(_("Please set an active menu for Restaurant {0}").format(restaurant))
-    
-    
-    # Get menu items (your existing code)
+        frappe.throw(
+            _(
+                "{0} '{1}' has no Active Menu set. "
+                "Open it in the desk and select an 'Active Menu' under the "
+                "Menu Settings section."
+            ).format(_("URY Restaurant"), restaurant),
+            title=_("Active Menu Not Set"),
+        )
+
     menu_items = frappe.get_all(
         "URY Menu Item",
         filters={"parent": menu, "disabled": 0},
         fields=["item", "item_name", "rate", "special_dish", "disabled", "course"],
-        order_by="item_name asc"
+        order_by="item_name asc",
     )
-    
+
+    # An empty menu is not an error — return an empty list so the POS can
+    # render its "no items yet" empty state with a deep-link back to the
+    # desk. Throwing here would force the user back to the "Failed to load
+    # menu items" screen with nothing actionable.
     menu_items_with_image = [
         {
             "item": item.item,
@@ -93,12 +126,11 @@ def getRestaurantMenu(pos_profile, room=None, order_type=None):
         for item in menu_items
     ]
     modified = frappe.db.get_value("URY Menu", menu, "modified")
-    
-    
+
     return {
         "items": menu_items_with_image,
         "modified_time": modified,
-        "name": menu
+        "name": menu,
     }
 
 @frappe.whitelist()

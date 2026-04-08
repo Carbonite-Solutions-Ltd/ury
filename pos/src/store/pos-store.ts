@@ -214,39 +214,41 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   },
 
   initializeApp: async () => {
-  try {
-    set({ isInitializing: true, error: null });
+    try {
+      set({ isInitializing: true, error: null });
 
-    const [profileResult, menuResult, categoriesResult, paymentModesResult] = await Promise.allSettled([
-      get().fetchPosProfile(),
-      get().fetchMenuItems(),
-      get().fetchCategories(),
-      get().fetchPaymentModes()
-    ]);
+      await Promise.allSettled([
+        get().fetchPosProfile(),
+        get().fetchMenuItems(),
+        get().fetchCategories(),
+        get().fetchPaymentModes(),
+      ]);
 
-    if (profileResult.status === 'rejected' || 
-        menuResult.status === 'rejected' || 
-        categoriesResult.status === 'rejected' ||
-        paymentModesResult.status === 'rejected') {
-      set({ 
-        error: 'Failed to initialize app. Please refresh the page.',
-        isInitializing: false 
+      // Each child action sets `error` on its own failure path with a
+      // specific, actionable message — don't overwrite those with a
+      // generic "Failed to initialize app" string. The POS page's error
+      // screen reads `error` directly, so preserving the child message is
+      // what makes the user see e.g. "No URY Restaurant is configured for
+      // branch 'X'..." See CLAUDE.md "Fixes log" 2026-04-08.
+      set({
+        isInitializing: false,
+        selectedCustomer: {
+          id: 'Cash Customer',
+          name: 'Cash Customer',
+          phone: '',
+        },
       });
-      return;
+    } catch (error) {
+      // Only unexpected synchronous errors reach here — allSettled never
+      // rejects. Keep a fallback so we still unstick the UI.
+      set({
+        error:
+          (error as Error)?.message ||
+          'Failed to initialize app. Please refresh the page.',
+        isInitializing: false,
+      });
     }
-
-    // Set default customer after successful initialization
-    set({ 
-      isInitializing: false,
-      selectedCustomer: { id: 'Cash Customer', name: 'Cash Customer', phone: '' }
-    });
-  } catch (error) {
-    set({ 
-      error: 'Failed to initialize app. Please refresh the page.',
-      isInitializing: false 
-    });
-  }
-},
+  },
 
   fetchPosProfile: async () => {
     try {
@@ -325,7 +327,12 @@ export const usePOSStore = create<POSStore>((set, get) => ({
 
       set({ menuItems });
     } catch (error) {
-      set({ error: 'Failed to load menu items' });
+      // `menu-api.ts` already unwraps Frappe's _server_messages into
+      // `new Error(serverMessage)` — keep that friendly text instead of
+      // replacing it with a vague fallback. See CLAUDE.md "Fixes log".
+      const message =
+        (error as Error)?.message || 'Failed to load menu items';
+      set({ error: message });
       console.error('Error loading menu items:', error);
     } finally {
       set({ menuLoading: false });

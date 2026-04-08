@@ -55,6 +55,31 @@ const MenuList: React.FC<MenuListProps> = ({ onItemClick }) => {
               <p className="text-sm mt-2">{error}</p>
             </div>
           </div>
+        ) : menuItems.length === 0 ? (
+          // Underlying menu is genuinely empty — a fresh install or an
+          // admin who hasn't added any items yet. Deep-link to the desk
+          // so they can add items instead of just staring at a blank screen.
+          // See CLAUDE.md "Fixes log" 2026-04-08.
+          <div className="flex items-center justify-center h-96">
+            <div className="text-center max-w-md">
+              <p className="text-lg font-medium text-gray-700">No menu items yet</p>
+              <p className="text-sm mt-2 text-gray-500">
+                This menu has no items. Add some under{' '}
+                <strong>ExPOS Menu Item</strong> in the desk to see them here.
+              </p>
+              <button
+                onClick={() =>
+                  window.open(
+                    `${window.location.origin}/app/ury-menu-item/new?disabled=0`,
+                    '_blank'
+                  )
+                }
+                className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium"
+              >
+                Add Menu Items
+              </button>
+            </div>
+          </div>
         ) : filteredItems.length === 0 ? (
           <div className="flex items-center justify-center h-96">
             <div className="text-gray-500 text-center">
