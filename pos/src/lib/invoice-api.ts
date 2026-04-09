@@ -12,11 +12,23 @@ export interface POSInvoice {
   posting_time: string;
   total_taxes_and_charges: number;
   customer: string;
+  customer_name?: string;
   status: 'Draft' | 'Unbilled' | 'Recently Paid' | 'Paid' | 'Consolidated' | 'Return';
   mobile_number: string;
   posting_date: string;
   rounded_total: number;
   order_type: OrderType;
+  custom_order_status?: string;
+  custom_terminal?: string | null;
+  /** User who created the invoice. The "real" cashier under the new model. */
+  owner?: string;
+  /** Friendly name from JOIN to tabUser. */
+  owner_full_name?: string;
+}
+
+export interface CashierUser {
+  user: string;
+  full_name: string;
 }
 
 export interface POSInvoiceItem {
@@ -42,38 +54,73 @@ interface GetPOSInvoicesParams {
   limit?: number;
   limit_start?: number;
   paid_limit?: number;
+  /** Optional URY POS Terminal name to scope orders to a single till. */
+  terminal?: string | null;
+  /** Optional posting_date filter (YYYY-MM-DD). */
+  posting_date?: string | null;
+  /** Cashier scope: "mine" (default), "all", or a specific user id. */
+  cashier?: string | null;
 }
 
 interface GetPOSInvoiceItemsResponse {
   message: [POSInvoiceItem[], POSInvoiceTax[]];
 }
 
-export async function getPOSInvoices({ 
-  status, 
-  limit, 
+export async function getPOSInvoices({
+  status,
+  limit,
   limit_start,
-  paid_limit
+  paid_limit,
+  terminal,
+  posting_date,
+  cashier,
 }: GetPOSInvoicesParams) {
   try {
     // Use paid_limit as the limit for Recently Paid status
     const actualLimit = status === 'Recently Paid' && paid_limit ? paid_limit : limit;
-    
+
+    const params: Record<string, unknown> = {
+      status,
+      limit: actualLimit,
+      limit_start,
+    };
+    if (terminal) params.terminal = terminal;
+    if (posting_date) params.posting_date = posting_date;
+    if (cashier) params.cashier = cashier;
+
     const response = await call.get<GetPOSInvoicesResponse>(
       'ury.ury_pos.api.getPosInvoice',
-      {
-        status,
-        limit: actualLimit,
-        limit_start
-      }
+      params
     );
 
     return {
       invoices: response.message.data,
-      hasMore: response.message.next
+      hasMore: response.message.next,
     };
   } catch (error) {
     console.error('Error fetching POS invoices:', error);
     throw new Error('Failed to fetch POS invoices');
+  }
+}
+
+/**
+ * List the cashier users (URY Cashier or URY Captain role) attached to
+ * the terminal's branch via the URY User child table. Used by the
+ * captain's "Cashier" filter dropdown on the Orders page.
+ */
+export async function getCashierUsersForTerminal(
+  terminal: string | null
+): Promise<CashierUser[]> {
+  if (!terminal) return [];
+  try {
+    const response = await call.get<{ message: CashierUser[] }>(
+      'ury.ury_pos.api.get_cashier_users_for_terminal',
+      { terminal }
+    );
+    return response.message || [];
+  } catch (error) {
+    console.error('Error fetching cashier users:', error);
+    return [];
   }
 }
 
@@ -111,18 +158,27 @@ export async function updateInvoiceStatus(
   }
 } 
 
-export async function searchPosInvoice(query: string, status: string) {
+export async function searchPosInvoice(
+  query: string,
+  status: string,
+  options?: {
+    terminal?: string | null;
+    posting_date?: string | null;
+    cashier?: string | null;
+  }
+) {
   try {
-    const response = await call.get('ury.ury_pos.api.searchPosInvoice', {
-      query,
-      status,
-    });
+    const params: Record<string, unknown> = { query, status };
+    if (options?.terminal) params.terminal = options.terminal;
+    if (options?.posting_date) params.posting_date = options.posting_date;
+    if (options?.cashier) params.cashier = options.cashier;
+    const response = await call.get('ury.ury_pos.api.searchPosInvoice', params);
     return response.message;
   } catch (error) {
     console.error('Error searching POS invoices:', error);
     throw error;
   }
-} 
+}
 
 export async function getInvoicePrintHtml(invoiceId: string, printFormat: string) {
   try {

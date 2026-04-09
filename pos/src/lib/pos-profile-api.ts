@@ -140,9 +140,22 @@ export async function getPosProfileLimitedFields(
   return res.message;
 }
 
-export async function getPosProfileFull(posProfileName: string): Promise<PosProfileFull> {
-  const doc = await db.getDoc(DOCTYPES.POS_PROFILE, posProfileName);
-  return doc;
+export async function getPosProfileFull(
+  posProfileName: string,
+  terminal?: string | null
+): Promise<PosProfileFull> {
+  // Goes through the whitelisted `get_pos_profile_full` method instead
+  // of the REST resource endpoint so URY Cashier / URY Captain users
+  // don't need a Custom DocPerm row on POS Profile to read their own
+  // profile. Backend enforces that the requested profile matches the
+  // terminal's binding. See CLAUDE.md "Fixes log" 2026-04-09.
+  const params: Record<string, string> = { pos_profile: posProfileName };
+  if (terminal) params.terminal = terminal;
+  const res = await call.get<{ message: PosProfileFull }>(
+    'ury.ury_pos.api.get_pos_profile_full',
+    params
+  );
+  return res.message;
 }
 
 export async function getCombinedPosProfile(
@@ -150,7 +163,10 @@ export async function getCombinedPosProfile(
 ): Promise<PosProfileCombined> {
   const limitedProfile = await getPosProfileLimitedFields(terminal);
 
-  const fullProfile = await getPosProfileFull(limitedProfile.pos_profile);
+  const fullProfile = await getPosProfileFull(
+    limitedProfile.pos_profile,
+    terminal
+  );
 
   const combinedProfile: PosProfileCombined = {
     ...fullProfile,

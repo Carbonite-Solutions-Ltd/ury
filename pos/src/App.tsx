@@ -22,6 +22,7 @@ import {
   TerminalConfig,
 } from './lib/terminal-api';
 import { Monitor, MapPin } from 'lucide-react';
+import { extractFrappeServerError } from './lib/utils';
 
 
 function App() {
@@ -173,8 +174,15 @@ function TerminalSetupScreen({ onSelect }: { onSelect: (terminal: string) => voi
         setTerminals(normalized);
         setLoading(false);
       })
-      .catch(() => {
-        setError('Failed to load terminals. Check your connection and user permissions.');
+      .catch((err) => {
+        // Surface the actual server message (e.g. "Your user is not
+        // linked to any Branch...") instead of a generic catchall.
+        // See CLAUDE.md "Fixes log" 2026-04-09.
+        const parsed = extractFrappeServerError(
+          err,
+          'Failed to load terminals. Check your connection and user permissions.'
+        );
+        setError(parsed.message);
         setLoading(false);
       });
   }, []);

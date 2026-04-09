@@ -145,7 +145,14 @@ def getBranch():
         """
         branch_array = frappe.db.sql(sql_query, user, as_dict=True)
         if not branch_array:
-            frappe.throw("User is not Associated with any Branch.Please refresh Page")
+            frappe.throw(
+                _(
+                    "Your user is not linked to any Branch. "
+                    "Ask your administrator to open the Branch in the desk and "
+                    "add you to the {0}s table."
+                ).format(_("URY User")),
+                title=_("Branch Not Linked"),
+            )
 
         branch_name = branch_array[0].get("branch")
 
@@ -298,210 +305,305 @@ def getModeOfPayment():
 
 @frappe.whitelist()
 def getInvoiceForCashier(status, cashier, limit, limit_start):
-    branch = getBranch()
-    updatedlist = []
-    limit = int(limit)+1
-    limit_start = int(limit_start)
-    if status == "Draft":
-        invoices = frappe.db.sql(
-            """
-            SELECT 
-                name, invoice_printed, grand_total, restaurant_table, 
-                cashier, waiter, net_total, posting_time, 
-                total_taxes_and_charges, customer, status, mobile_number, 
-                posting_date, rounded_total, order_type 
-            FROM `tabPOS Invoice` 
-            WHERE branch = %s AND status = %s AND cashier = %s
-            AND (invoice_printed = 1 OR (invoice_printed = 0 AND COALESCE(restaurant_table, '') = ''))
-            ORDER BY modified desc
-            LIMIT %s OFFSET %s
-            """,
-            (branch, status, cashier, limit,limit_start),
-            as_dict=True,
-        )
-        updatedlist.extend(invoices)
-    elif status == "Unbilled":
-        
-        docstatus = "Draft"
-        invoices = frappe.db.sql(
-            """
-            SELECT 
-                name, invoice_printed, grand_total, restaurant_table, 
-                cashier, waiter, net_total, posting_time, 
-                total_taxes_and_charges, customer, status, mobile_number, 
-                posting_date, rounded_total, order_type 
-            FROM `tabPOS Invoice` 
-            WHERE branch = %s AND status = %s AND cashier = %s
-            AND (invoice_printed = 0 AND restaurant_table IS NOT NULL)
-            ORDER BY modified desc
-            LIMIT %s OFFSET %s
-            """,
-            (branch, docstatus, cashier, limit, limit_start),
-            as_dict=True,
-        )
-        updatedlist.extend(invoices)
-    elif status == "Recently Paid":
-        docstatus = "Paid"
-        invoices = frappe.db.sql(
-            """
-            SELECT 
-                name, invoice_printed, grand_total, restaurant_table, 
-                cashier, waiter, net_total, posting_time, 
-                total_taxes_and_charges, customer, status, mobile_number,
-                posting_date, rounded_total, order_type,additional_discount_percentage,discount_amount 
-            FROM `tabPOS Invoice` 
-            WHERE branch = %s AND status = %s AND cashier = %s
-            ORDER BY modified desc
-            LIMIT %s OFFSET %s
-            """,
-            (branch, docstatus, cashier, limit, limit_start),
-            as_dict=True,
-        )
-        updatedlist.extend(invoices)    
-    else:
-        
-        invoices = frappe.db.sql(
-            """
-            SELECT 
-                name, invoice_printed, grand_total, restaurant_table, 
-                cashier, waiter, net_total, posting_time, 
-                total_taxes_and_charges, customer, status, mobile_number,
-                posting_date, rounded_total, order_type,additional_discount_percentage,discount_amount
-            FROM `tabPOS Invoice` 
-            WHERE branch = %s AND status = %s AND cashier = %s
-            ORDER BY modified desc
-            LIMIT %s OFFSET %s
-            """,
-            (branch, status, cashier, limit, limit_start),
-            as_dict=True,
-        )
+    """Legacy endpoint kept only for the Vue POS (`urypos/`). New code
+    should call ``getPosInvoice`` directly with the ``cashier`` arg.
 
-        updatedlist.extend(invoices)
-    if len(updatedlist) == limit and status != "Recently Paid":
-            next = True
-            updatedlist.pop()
-    else:
-            next = False   
-    return  { "data":updatedlist,"next":next}
+    The Vue POS at `urypos/src/stores/recentOrder.js` is the only
+    remaining caller. The Vue POS sunset per README was Dec 2025; this
+    wrapper goes away once the Vue POS is removed from the tree.
+    See CLAUDE.md "Fixes log" 2026-04-09.
+    """
+    return getPosInvoice(
+        status=status,
+        limit=limit,
+        limit_start=limit_start,
+        cashier=cashier,
+    )
 
 
 
-@frappe.whitelist()
-def getPosInvoice(status, limit, limit_start):
-    branch = getBranch()
-    updatedlist = []
-    limit = int(limit)+1
-    limit_start = int(limit_start)
-    if status == "Draft":
-        invoices = frappe.db.sql(
-            """
-            SELECT 
-                name, invoice_printed, grand_total, restaurant_table, 
-                cashier, waiter, net_total, posting_time, 
-                total_taxes_and_charges, customer, status, mobile_number, 
-                posting_date, rounded_total, order_type , custom_order_status
-            FROM `tabPOS Invoice` 
-            WHERE branch = %s AND status = %s 
-            AND (invoice_printed = 1 OR (invoice_printed = 0 AND COALESCE(restaurant_table, '') = ''))
-            ORDER BY modified desc
-            LIMIT %s OFFSET %s
-            """,
-            (branch, status, limit,limit_start),
-            as_dict=True,
-        )
-        updatedlist.extend(invoices)
-    elif status == "Unbilled":
-        
-        docstatus = "Draft"
-        invoices = frappe.db.sql(
-            """
-            SELECT 
-                name, invoice_printed, grand_total, restaurant_table, 
-                cashier, waiter, net_total, posting_time, 
-                total_taxes_and_charges, customer, status, mobile_number, 
-                posting_date, rounded_total, order_type, custom_order_status
-            FROM `tabPOS Invoice` 
-            WHERE branch = %s AND status = %s 
-            AND (invoice_printed = 0 AND restaurant_table IS NOT NULL)
-            ORDER BY modified desc
-            LIMIT %s OFFSET %s
-            """,
-            (branch, docstatus, limit, limit_start),
-            as_dict=True,
-        )
-        updatedlist.extend(invoices)
-    elif status == "Recently Paid":
-        docstatus = "Paid"
-        invoices = frappe.db.sql(
-            """
-            SELECT 
-                name, invoice_printed, grand_total, restaurant_table, 
-                cashier, waiter, net_total, posting_time, 
-                total_taxes_and_charges, customer, status, mobile_number,
-                posting_date, rounded_total, order_type,additional_discount_percentage,discount_amount, custom_order_status
-            FROM `tabPOS Invoice` 
-            WHERE branch = %s AND status = %s 
-            ORDER BY modified desc
-            LIMIT %s OFFSET %s
-            """,
-            (branch, docstatus, limit, limit_start),
-            as_dict=True,
-        )
-        updatedlist.extend(invoices)    
-    else:
-        
-        invoices = frappe.db.sql(
-            """
-            SELECT 
-                name, invoice_printed, grand_total, restaurant_table, 
-                cashier, waiter, net_total, posting_time, 
-                total_taxes_and_charges, customer, status, mobile_number,
-                posting_date, rounded_total, order_type,additional_discount_percentage,discount_amount
-            FROM `tabPOS Invoice` 
-            WHERE branch = %s AND status = %s 
-            ORDER BY modified desc
-            LIMIT %s OFFSET %s
-            """,
-            (branch, status, limit, limit_start),
-            as_dict=True,
-        )
+def _resolve_orders_scope(terminal, cashier):
+    """Translate the requested cashier-scope into an SQL `owner` clause.
 
-        updatedlist.extend(invoices)
-    if len(updatedlist) == limit and status != "Recently Paid":
-            next = True
-            updatedlist.pop()
-    else:
-            next = False   
-    return  { "data":updatedlist,"next":next}
+    The frontend sends one of three values for ``cashier``:
+      - ``None`` or ``"mine"`` → only the current user's orders.
+      - ``"all"`` → all URY Cashier / URY Captain users on this terminal's
+        branch (so HR users etc. who happen to have rung an order are
+        excluded).
+      - any other string → a specific user. Validated to make sure they
+        have URY Cashier / URY Captain role on this branch; otherwise
+        the request is silently downgraded to ``"mine"``.
+
+    Server-side privilege escalation: only Administrator / System Manager /
+    URY Manager / URY Captain can request anything other than ``"mine"``.
+    Anything else gets downgraded to the requesting user's own orders.
+
+    See CLAUDE.md "Fixes log" 2026-04-09.
+    """
+    requesting_user = frappe.session.user
+    requesting_roles = set(frappe.get_roles(requesting_user))
+    captain_roles = {"Administrator", "System Manager", "URY Manager", "URY Captain"}
+    is_captain = (
+        requesting_user == "Administrator" or bool(requesting_roles & captain_roles)
+    )
+
+    # Default and the silent-downgrade fallback.
+    mine_clause = ("owner = %s", [requesting_user])
+
+    if not cashier or cashier == "mine":
+        return mine_clause
+
+    if not is_captain:
+        # Cashier requested a wider scope they aren't allowed to see.
+        return mine_clause
+
+    if cashier == "all":
+        if not terminal:
+            return mine_clause
+        terminal_branch = frappe.db.get_value(
+            "URY POS Terminal", terminal, "branch"
+        )
+        if not terminal_branch:
+            return mine_clause
+        cashier_users = _get_cashier_users_on_branch(terminal_branch)
+        if not cashier_users:
+            return mine_clause
+        placeholders = ", ".join(["%s"] * len(cashier_users))
+        return (f"owner IN ({placeholders})", list(cashier_users))
+
+    # Specific user — verify they're a real cashier on this branch
+    # before honouring the request. Anything else downgrades to mine.
+    if not terminal:
+        return mine_clause
+    terminal_branch = frappe.db.get_value(
+        "URY POS Terminal", terminal, "branch"
+    )
+    if not terminal_branch:
+        return mine_clause
+    cashier_users = _get_cashier_users_on_branch(terminal_branch)
+    if cashier not in cashier_users:
+        return mine_clause
+    return ("owner = %s", [cashier])
+
+
+def _get_cashier_users_on_branch(branch_name):
+    """Return enabled User names that (a) appear in the URY User child
+    table for this Branch and (b) have URY Cashier or URY Captain role.
+    Used by both the orders scope helper and the cashier-list endpoint.
+    """
+    rows = frappe.db.sql(
+        """
+        SELECT DISTINCT u.name
+        FROM `tabURY User` AS uu
+        INNER JOIN `tabBranch` AS b ON uu.parent = b.name
+        INNER JOIN `tabUser` AS u ON u.name = uu.user
+        INNER JOIN `tabHas Role` AS hr ON hr.parent = u.name
+        WHERE b.branch = %s
+        AND hr.role IN ('URY Cashier', 'URY Captain')
+        AND u.enabled = 1
+        """,
+        (branch_name,),
+    )
+    return [r[0] for r in rows]
 
 
 @frappe.whitelist()
-def searchPosInvoice(query,status):
+def get_cashier_users_for_terminal(terminal):
+    """Return the list of cashier users on this terminal's branch, for
+    the captain's "Cashier" filter dropdown on the Orders page.
+
+    Each row: ``{user, full_name}``. Sorted by full_name.
+    """
+    if not terminal:
+        return []
+
+    terminal_branch = frappe.db.get_value(
+        "URY POS Terminal", terminal, "branch"
+    )
+    if not terminal_branch:
+        return []
+
+    rows = frappe.db.sql(
+        """
+        SELECT DISTINCT u.name AS user, u.full_name
+        FROM `tabURY User` AS uu
+        INNER JOIN `tabBranch` AS b ON uu.parent = b.name
+        INNER JOIN `tabUser` AS u ON u.name = uu.user
+        INNER JOIN `tabHas Role` AS hr ON hr.parent = u.name
+        WHERE b.branch = %s
+        AND hr.role IN ('URY Cashier', 'URY Captain')
+        AND u.enabled = 1
+        ORDER BY u.full_name
+        """,
+        (terminal_branch,),
+        as_dict=True,
+    )
+    return rows
+
+
+@frappe.whitelist()
+def getPosInvoice(
+    status,
+    limit,
+    limit_start,
+    terminal=None,
+    posting_date=None,
+    cashier=None,
+):
+    """List POS Invoices for the Orders page.
+
+    Filters (all optional except `status`):
+      - `terminal`: scope to a single URY POS Terminal (custom_terminal).
+      - `posting_date`: scope to a single posting_date (YYYY-MM-DD).
+      - `cashier`: see ``_resolve_orders_scope`` for the three modes
+        ("mine" / "all" / specific user).
+
+    Status branches share most of the SQL — only the `status` value and
+    a small "extra clause" differ. Refactored from four near-identical
+    50-line SQL blocks into one builder. See CLAUDE.md "Fixes log"
+    2026-04-09.
+    """
+    branch = getBranch()
+    limit = int(limit) + 1
+    limit_start = int(limit_start)
+
+    # Map UI status → DB status + extra WHERE clause for the special
+    # Draft/Unbilled splits that ride on the same `Draft` docstatus.
+    status_map = {
+        "Draft": (
+            "Draft",
+            "AND (pi.invoice_printed = 1 OR (pi.invoice_printed = 0 AND COALESCE(pi.restaurant_table, '') = ''))",
+        ),
+        "Unbilled": (
+            "Draft",
+            "AND (pi.invoice_printed = 0 AND pi.restaurant_table IS NOT NULL)",
+        ),
+        "Recently Paid": ("Paid", ""),
+    }
+    db_status, extra_where = status_map.get(status, (status, ""))
+
+    where_parts = ["pi.branch = %s", "pi.status = %s"]
+    params = [branch, db_status]
+
+    if terminal:
+        # Defensive null fallback: orders that pre-date the
+        # custom_terminal field (or that somehow slipped through
+        # without a terminal stamp) still show up on every terminal of
+        # their branch. The branch filter above keeps the scope
+        # bounded — an Accra user never sees Tamale orders. Without
+        # this fallback, historical orders disappear from the Orders
+        # page entirely once per-terminal scoping is enabled. See
+        # CLAUDE.md "Fixes log" 2026-04-09.
+        where_parts.append(
+            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
+        )
+        params.append(terminal)
+    if posting_date:
+        where_parts.append("pi.posting_date = %s")
+        params.append(posting_date)
+
+    scope_clause, scope_params = _resolve_orders_scope(terminal, cashier)
+    where_parts.append(f"pi.{scope_clause}")
+    params.extend(scope_params)
+
+    where_sql = " AND ".join(where_parts)
+    if extra_where:
+        where_sql = f"{where_sql} {extra_where}"
+
+    sql = f"""
+        SELECT
+            pi.name, pi.invoice_printed, pi.grand_total, pi.restaurant_table,
+            pi.cashier, pi.waiter, pi.net_total, pi.posting_time,
+            pi.total_taxes_and_charges, pi.customer, pi.customer_name,
+            pi.status, pi.mobile_number, pi.posting_date, pi.rounded_total,
+            pi.order_type, pi.custom_order_status, pi.custom_terminal,
+            pi.owner,
+            u.full_name AS owner_full_name
+        FROM `tabPOS Invoice` AS pi
+        LEFT JOIN `tabUser` AS u ON u.name = pi.owner
+        WHERE {where_sql}
+        ORDER BY pi.modified DESC
+        LIMIT %s OFFSET %s
+    """
+    params.extend([limit, limit_start])
+
+    rows = frappe.db.sql(sql, tuple(params), as_dict=True)
+
+    has_next = False
+    if len(rows) == limit and status != "Recently Paid":
+        has_next = True
+        rows.pop()
+
+    return {"data": rows, "next": has_next}
+
+
+@frappe.whitelist()
+def searchPosInvoice(
+    query,
+    status,
+    terminal=None,
+    posting_date=None,
+    cashier=None,
+):
+    """Search POS Invoices by name / customer / mobile.
+
+    Honours the same scoping rules as `getPosInvoice` so a captain who
+    types into the search box doesn't suddenly see invoices from
+    yesterday on a different terminal. See CLAUDE.md "Fixes log"
+    2026-04-09.
+    """
     if not query:
         return {"data": [], "next": False}
-    query = query.lower()
-    filters = {"status": "Paid" if status == "Recently Paid" else status}
-    
-    # Add additional conditions for Unbilled status
+
+    branch = getBranch()
+    query_str = f"%{query.lower()}%"
+
+    db_status = "Paid" if status == "Recently Paid" else status
+    where_parts = ["pi.branch = %s", "pi.status = %s"]
+    params = [branch, db_status]
+
     if status == "Unbilled":
-        filters.update({
-            "status":"draft",
-            "restaurant_table": ["not in", [None, ""]],  # Check if restaurant_table has value
-            "invoice_printed": 0  # Check if invoice_printed is 0
-        })
-    pos_invoices = frappe.get_all(
-        "POS Invoice",
-        filters=filters,           
-        or_filters=[
-            ["name", "like", f"%{query}%"],
-            ["customer", "like", f"%{query}%"],
-            ["mobile_number", "like", f"%{query}%"],
-        ],
-        fields=["name", "customer", "grand_total", "posting_date", "posting_time", "order_type", "restaurant_table","status","grand_total","rounded_total","net_total","mobile_number"],
-        limit_page_length=10 
+        where_parts.append("pi.restaurant_table IS NOT NULL")
+        where_parts.append("pi.invoice_printed = 0")
+
+    if terminal:
+        # Same defensive null fallback as getPosInvoice — see
+        # CLAUDE.md "Fixes log" 2026-04-09.
+        where_parts.append(
+            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
+        )
+        params.append(terminal)
+    if posting_date:
+        where_parts.append("pi.posting_date = %s")
+        params.append(posting_date)
+
+    scope_clause, scope_params = _resolve_orders_scope(terminal, cashier)
+    where_parts.append(f"pi.{scope_clause}")
+    params.extend(scope_params)
+
+    # Search across name / customer / mobile_number.
+    where_parts.append(
+        "(LOWER(pi.name) LIKE %s OR LOWER(pi.customer) LIKE %s OR LOWER(pi.mobile_number) LIKE %s)"
     )
-    
-    return {"data": pos_invoices, "next": len(pos_invoices) == 10}
+    params.extend([query_str, query_str, query_str])
+
+    sql = f"""
+        SELECT
+            pi.name, pi.customer, pi.customer_name, pi.grand_total,
+            pi.posting_date, pi.posting_time, pi.order_type,
+            pi.restaurant_table, pi.status, pi.rounded_total, pi.net_total,
+            pi.mobile_number, pi.cashier, pi.waiter, pi.invoice_printed,
+            pi.custom_order_status, pi.custom_terminal, pi.owner,
+            u.full_name AS owner_full_name
+        FROM `tabPOS Invoice` AS pi
+        LEFT JOIN `tabUser` AS u ON u.name = pi.owner
+        WHERE {" AND ".join(where_parts)}
+        ORDER BY pi.modified DESC
+        LIMIT 10
+    """
+
+    rows = frappe.db.sql(sql, tuple(params), as_dict=True)
+    return {"data": rows, "next": len(rows) == 10}
     
 
 @frappe.whitelist()
@@ -555,6 +657,100 @@ def getCashier(room):
             "user",)
     return cashier       
     
+
+@frappe.whitelist()
+def get_session_user_info():
+    """Return the current session user's identity, full name, and the
+    *effective* role list — including roles inherited from any Role
+    Profile assignment AND the implicit `All` / `Guest` roles.
+
+    Why this exists:
+
+    The React POS used to fetch the user's role list via
+    `db.getDoc('User', email)` (frappe-js-sdk → REST endpoint
+    `/api/resource/User/<email>`). That requires the user to have
+    READ permission on the User doctype, which URY-only roles like
+    URY Captain and URY Cashier don't have by default. The fetch
+    silently 403s, the catch block swallows the error and returns
+    `{ roles: [], full_name: '' }`, and any role-gated UI in the
+    React POS (Cashier filter card, Set Price button, etc.) never
+    fires because `user.roles` is empty.
+
+    This endpoint sidesteps the doctype permission entirely. Every
+    authenticated user is allowed to introspect their OWN session —
+    it never reveals other users' info — so no scoping is needed.
+    Uses `frappe.get_roles()` which is the canonical effective-role
+    accessor (also picks up Role Profile inheritance, which raw
+    `User.roles` child-table reads miss).
+
+    See CLAUDE.md "Fixes log" 2026-04-09.
+    """
+    user = frappe.session.user
+    full_name = frappe.db.get_value("User", user, "full_name") or ""
+    roles = frappe.get_roles(user) or []
+    return {
+        "user": user,
+        "full_name": full_name,
+        "roles": roles,
+    }
+
+
+@frappe.whitelist()
+def get_pos_profile_full(pos_profile, terminal=None):
+    """Return the full POS Profile doc for the React POS, bypassing the
+    REST-resource permission check.
+
+    Background: the React POS needs the full doc (role lists, payment
+    modes, applicable_for_users, etc.) to render the order panel and
+    enforce some role gates. The naive approach (`db.getDoc('POS
+    Profile', name)` from frappe-js-sdk) routes through
+    `/api/resource/POS Profile/<name>` which calls
+    `doc.check_permission("read")`. URY Cashier and URY Captain don't
+    have a read perm on POS Profile by default, so the call 403s. The
+    `ensure_role_permissions()` baseline tries to add a Custom DocPerm
+    but that approach is fragile (cache invalidation, migrate-time
+    silent failures, conflicts with admin tweaks).
+
+    This endpoint sidesteps the REST permission check entirely:
+    `frappe.get_doc()` doesn't enforce read perms — it just loads the
+    doc — and as a whitelisted method we run with the session user's
+    identity but don't trigger ERPNext's role-based read check on the
+    POS Profile doctype.
+
+    Authorization is enforced server-side instead: when a `terminal`
+    is supplied, we verify the requested profile matches the
+    terminal's `pos_profile` binding. This prevents a captain at
+    branch A from reading branch B's POS Profile via this method.
+
+    See CLAUDE.md "Fixes log" 2026-04-09.
+    """
+    if not pos_profile:
+        frappe.throw(
+            _("POS Profile name is required."),
+            title=_("Missing Argument"),
+        )
+
+    if not frappe.db.exists("POS Profile", pos_profile):
+        frappe.throw(
+            _("POS Profile '{0}' not found.").format(pos_profile),
+            frappe.DoesNotExistError,
+        )
+
+    if terminal:
+        terminal_profile = frappe.db.get_value(
+            "URY POS Terminal", terminal, "pos_profile"
+        )
+        if terminal_profile and terminal_profile != pos_profile:
+            frappe.throw(
+                _(
+                    "Terminal '{0}' is bound to POS Profile '{1}', not '{2}'."
+                ).format(terminal, terminal_profile, pos_profile),
+                title=_("Profile Mismatch"),
+            )
+
+    doc = frappe.get_doc("POS Profile", pos_profile)
+    return doc.as_dict()
+
 
 @frappe.whitelist()
 def getPosProfile(terminal=None):

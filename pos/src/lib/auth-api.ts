@@ -1,15 +1,11 @@
-import { call, db, auth } from './frappe-sdk';
+import { call, auth } from './frappe-sdk';
 
 type LoggedUserResponse = string | null;
 
-interface UserDoc {
-  name: string;
+interface SessionUserInfo {
+  user: string;
   full_name: string;
-  roles: Array<{
-    name: string;
-    role: string;
-    parent: string;
-  }>;
+  roles: string[];
 }
 
 export const getLoggedUser = async (): Promise<LoggedUserResponse> => {
@@ -22,22 +18,28 @@ export const getLoggedUser = async (): Promise<LoggedUserResponse> => {
   }
 };
 
-export const getUserRoles = async (email: string): Promise<{ roles: string[]; full_name: string }> => {
+export const getUserRoles = async (
+  _email?: string
+): Promise<{ roles: string[]; full_name: string }> => {
+  // Routes through the whitelisted `get_session_user_info` method
+  // instead of `db.getDoc('User', email)` which requires User-doctype
+  // read permission. URY Cashier / URY Captain users don't have that
+  // by default, so the old REST path 403'd and silently returned an
+  // empty role list — which made every role-gated UI quietly disappear.
+  // The `_email` arg is kept for backward compat with callers; the
+  // backend always reads `frappe.session.user`. See CLAUDE.md
+  // "Fixes log" 2026-04-09.
   try {
-    // Get user details using db.getDoc
-    const userDoc = await db.getDoc<UserDoc>('User', email);
-    
-    if (!userDoc || !userDoc.roles) {
-      return { roles: [], full_name: '' };
-    }
-
-    // Extract role names and full_name from the user doc
+    const res = await call.get<{ message: SessionUserInfo }>(
+      'ury.ury_pos.api.get_session_user_info'
+    );
+    const info = res?.message;
     return {
-      roles: userDoc.roles.map(role => role.role),
-      full_name: userDoc.full_name
+      roles: info?.roles || [],
+      full_name: info?.full_name || '',
     };
   } catch (error) {
-    console.error('Error getting user details:', error);
+    console.error('Error getting session user info:', error);
     return { roles: [], full_name: '' };
   }
 };

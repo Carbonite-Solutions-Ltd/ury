@@ -112,10 +112,30 @@ def get_custom_fields():
 					"options": "URY Table",
 					"read_only": 0,
 				},
+				# Terminal stamping field. Mirrors the custom_field.json
+				# fixture entry but lives here so create_custom_fields()
+				# (called from after_install + after_migrate) can ensure
+				# the column exists on existing sites that already had
+				# URY installed before the field shipped. Without this,
+				# fixtures only get imported on initial install and
+				# pre-existing sites silently lose the column —
+				# `invoice.custom_terminal = ...` becomes a no-op write.
+				# See CLAUDE.md "Fixes log" 2026-04-09.
+				{
+					"fieldname": "custom_terminal",
+					"fieldtype": "Link",
+					"insert_after": "restaurant_table",
+					"label": "Terminal",
+					"options": "URY POS Terminal",
+					"read_only": 1,
+					"in_standard_filter": 1,
+					"print_hide_if_no_value": 1,
+					"description": "Physical terminal (till) that rang this invoice. Stamped automatically from the React POS session.",
+				},
 				{
 					"fieldname": "column_break_gd1mq",
 					"fieldtype": "Column Break",
-					"insert_after": "restaurant_table",
+					"insert_after": "custom_terminal",
 				},
 				{
 					"fieldname": "arrived_time",
@@ -130,7 +150,7 @@ def get_custom_fields():
 					"label": "Total Spend Time"
 				}
 				],
-      
+
 		"Sales Invoice": [
 					{
 					"fieldname": "mobile_number",
@@ -289,7 +309,29 @@ def get_custom_fields():
 				"insert_after": "qz_print",
 				"label": "QZ Host",
 				"translatable": 0,
-			}
+			},
+			# Shift hours fields. Same dual-source-of-truth fix —
+			# in custom_field.json AND here so existing sites pick
+			# them up via after_migrate. See CLAUDE.md "Fixes log"
+			# 2026-04-09.
+			{
+				"fieldname": "custom_shift_hours",
+				"fieldtype": "Int",
+				"insert_after": "qz_host",
+				"label": "Shift Length (Hours)",
+				"default": "0",
+				"non_negative": 1,
+				"description": "Length of a single shift in hours. After this many hours have elapsed since the POS Opening Entry was created, the React POS shows a banner reminding the cashier to close the shift. Set to 0 to disable.",
+			},
+			{
+				"fieldname": "custom_block_orders_after_shift_end",
+				"fieldtype": "Check",
+				"insert_after": "custom_shift_hours",
+				"label": "Block Orders After Shift End",
+				"default": "0",
+				"depends_on": "eval:doc.custom_shift_hours > 0",
+				"description": "When the shift length is exceeded, also block new orders until the cashier closes the shift.",
+			},
 		],
   
 		"POS Opening Entry": [
@@ -312,14 +354,29 @@ def get_custom_fields():
 				"fieldtype": "Column Break",
 				"insert_after": "restaurant",
 			},
-			{	
+			{
 				"fieldname": "branch",
 				"fieldtype": "Link",
 				"insert_after": "column_break_e3dky",
 				"label": "Branch",
 				"options": "Branch",
 				"reqd": 1
-			}
+			},
+			# Same dual-source-of-truth fix as POS Invoice.custom_terminal —
+			# this entry exists in custom_field.json but pre-existing
+			# installs need create_custom_fields to ensure the column.
+			# See CLAUDE.md "Fixes log" 2026-04-09.
+			{
+				"fieldname": "custom_terminal",
+				"fieldtype": "Link",
+				"insert_after": "branch",
+				"label": "Terminal",
+				"options": "URY POS Terminal",
+				"read_only": 1,
+				"in_standard_filter": 1,
+				"in_list_view": 1,
+				"description": "Physical terminal (till) this opening entry belongs to.",
+			},
 		],
 
 		"Price List": [
@@ -333,11 +390,17 @@ def get_custom_fields():
 		],
   
 		"Branch": [
+			# Label rebranded from "User" to "ExPOS Users" so the section
+			# heading on the Branch form is unambiguous (Frappe already
+			# has its own User DocType, so just "User" is confusing).
+			# `create_custom_fields` updates the existing field on the
+			# next migrate. See CLAUDE.md "Brand naming" + "Fixes log"
+			# 2026-04-09.
 			{
 				"fieldname": "user",
 				"fieldtype": "Table",
 				"options": "URY User",
-				"label": "User",
+				"label": "ExPOS Users",
 				"insert_after": "branch",
 				"reqd": 1
 			}

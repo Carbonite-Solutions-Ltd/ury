@@ -1,11 +1,22 @@
-import React, { useEffect, useRef } from 'react';
-import { Clock, User, UserCheck, Receipt, Printer, Pencil, X, CheckCircle } from 'lucide-react';
+import React, { useEffect, useMemo, useRef } from 'react';
+import {
+  Clock,
+  User,
+  UserCheck,
+  Receipt,
+  Printer,
+  Pencil,
+  X,
+  CheckCircle,
+  LayoutGrid,
+  List as ListIcon,
+} from 'lucide-react';
 import { Badge, Button, Card, CardContent } from '../components/ui';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../components/ui/dialog';
 import { showToast } from '../components/ui/toast';
 import OrderStatusSidebar from '../components/OrderStatusSidebar';
 import { useRootStore } from '../store/root-store';
-import { formatCurrency } from '../lib/utils';
+import { cn, formatCurrency } from '../lib/utils';
 import { Spinner } from '../components/ui/spinner';
 import { Textarea } from '../components/ui/textarea';
 import { usePOSStore } from '../store/pos-store';
@@ -13,9 +24,53 @@ import { useNavigate } from 'react-router-dom';
 import PaymentDialog from '../components/PaymentDialog';
 import { printOrder } from '../lib/print';
 import { call } from '../lib/frappe-sdk';
+import type { POSInvoice } from '../store/slices/orders-slice';
+
+const todayIso = (): string => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+// "Apr 9, 11:00 AM" when the date is today; full date+time otherwise.
+// Keeps the list dense for the common (today) case but stays unambiguous
+// when the user is browsing yesterday or a date months back.
+const formatOrderDateTime = (date: string, time: string): string => {
+  const dt = new Date(`${date} ${time}`);
+  if (Number.isNaN(dt.getTime())) return '';
+  const isToday = date === todayIso();
+  const opts: Intl.DateTimeFormatOptions = isToday
+    ? { hour: 'numeric', minute: 'numeric', hour12: true }
+    : { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: 'numeric', hour12: true };
+  return dt.toLocaleString('en-US', opts);
+};
+
+const formatTimeOnly = (date: string, time: string): string => {
+  const dt = new Date(`${date} ${time}`);
+  if (Number.isNaN(dt.getTime())) return '';
+  return dt.toLocaleString('en-US', { hour: 'numeric', minute: 'numeric', hour12: true });
+};
+
+const getOrderTotal = (order: POSInvoice): number =>
+  order.rounded_total || order.grand_total || 0;
+
+const getBadgeVariant = (status: string) => {
+  switch (status) {
+    case 'Draft':
+    case 'Unbilled':
+      return 'secondary';
+    case 'Recently Paid':
+    case 'Paid':
+    case 'Consolidated':
+      return 'default';
+    case 'Return':
+      return 'destructive';
+    default:
+      return 'default';
+  }
+};
 
 export default function Orders() {
-  const { 
+  const {
     orders,
     orderLoading,
     error,
@@ -32,7 +87,14 @@ export default function Orders() {
     goToPreviousPage,
     selectOrder,
     clearSelectedOrder,
-    orderSearchQuery
+    orderSearchQuery,
+    selectedDate,
+    resetSelectedDateToToday,
+    viewMode,
+    setViewMode,
+    hydrateViewMode,
+    cashierFilter,
+    user,
   } = useRootStore();
 
   const posStore = usePOSStore();
@@ -45,60 +107,39 @@ export default function Orders() {
   const [showPaymentDialog, setShowPaymentDialog] = React.useState(false);
   const [isPrinting, setIsPrinting] = React.useState(false);
 
+  // Hydrate the per-user view-mode preference once we know who's logged
+  // in. The slice's default ('card') is overridden if the user's last
+  // session set it to 'list'.
+  useEffect(() => {
+    if (user?.name) {
+      hydrateViewMode(user.name);
+    }
+  }, [user?.name, hydrateViewMode]);
+
   useEffect(() => {
     fetchOrders();
   }, [fetchOrders]);
 
   useEffect(() => {
+    // Skip the first run because the mount-time fetchOrders effect
+    // above has already issued the initial request.
     if (!mounted.current) {
       mounted.current = true;
-      return; // Skip the first run
+      return;
     }
     fetchOrders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderSearchQuery]);
 
+  // Show the cashier column only when the captain has flipped the scope
+  // off "mine" — otherwise every row would say the same name.
+  const showCashierColumn = useMemo(
+    () => cashierFilter !== 'mine',
+    [cashierFilter]
+  );
 
-  // Function to format the date and time
-  const formatDateTime = (date: string, time: string) => {
-    const formattedDate = new Date(date + ' ' + time).toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: 'numeric',
-      hour12: true
-    });
-    return formattedDate;
-  };
-
-  const handleOrderClick = (order: any) => {
-    console.log('Order clicked:', order);
+  const handleOrderClick = (order: POSInvoice) => {
     selectOrder(order);
-  };
-
-  // Helper function to get badge variant based on order status
-  const getBadgeVariant = (status: string) => {
-    switch (status) {
-      case 'Draft':
-      case 'Unbilled':
-        return 'secondary';
-      case 'Recently Paid':
-      case 'Paid':
-      case 'Consolidated':
-        return 'default';
-      case 'Return':
-        return 'destructive';
-      default:
-        return 'default';
-    }
-  };
-
-  // Helper function to get order total with fallback
-  const getOrderTotal = (order: any) => {
-    // Try rounded_total first, then grand_total, then fallback to 0
-    const total = order.rounded_total || order.grand_total || 0;
-    console.log(`Order ${order.name}: rounded_total=${order.rounded_total}, grand_total=${order.grand_total}, using=${total}`);
-    return total;
   };
 
   async function handleCancelOrder() {
@@ -206,13 +247,6 @@ export default function Orders() {
       </div>
     );
   }
-  
-  // Debug: Check what fields orders have
-  if (orders.length > 0) {
-    console.log('First order data:', orders[0]);
-    console.log('Has custom_order_status?', 'custom_order_status' in orders[0]);
-    console.log('custom_order_status value:', orders[0].custom_order_status);
-  }
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -222,22 +256,145 @@ export default function Orders() {
         setSelectedStatus={setSelectedStatus}
       />
 
-      {/* Middle Section - Order Cards */}
+      {/* Middle Section - Order list / cards */}
       <div className="flex-1 flex flex-col h-screen overflow-hidden pr-96">
+        {/* Top toolbar — view-mode toggle */}
+        <div className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between shrink-0">
+          <div className="text-xs text-gray-500">
+            {orders.length > 0 && (
+              <span>
+                Showing <span className="font-medium text-gray-700">{orders.length}</span>{' '}
+                {orders.length === 1 ? 'order' : 'orders'}
+              </span>
+            )}
+          </div>
+          <div className="inline-flex rounded-md border border-gray-200 bg-white shadow-sm overflow-hidden">
+            <button
+              onClick={() => setViewMode('card', user?.name || null)}
+              aria-label="Card view"
+              className={cn(
+                'px-3 py-1.5 inline-flex items-center gap-1.5 text-xs font-medium transition-colors',
+                viewMode === 'card'
+                  ? 'bg-gray-100 text-gray-900'
+                  : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+              )}
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+              Card
+            </button>
+            <button
+              onClick={() => setViewMode('list', user?.name || null)}
+              aria-label="List view"
+              className={cn(
+                'px-3 py-1.5 inline-flex items-center gap-1.5 text-xs font-medium transition-colors border-l border-gray-200',
+                viewMode === 'list'
+                  ? 'bg-gray-100 text-gray-900'
+                  : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+              )}
+            >
+              <ListIcon className="w-3.5 h-3.5" />
+              List
+            </button>
+          </div>
+        </div>
+
         <div className="flex-1 overflow-y-auto bg-gray-50 p-4 pb-40">
           {orderLoading ? (
             <div className="flex items-center justify-center h-full">
               <Spinner />
             </div>
           ) : orders.length === 0 ? (
-            <div className="text-center mt-10">
-              <p className="text-gray-500">No orders found</p>
+            <div className="text-center mt-16">
+              <p className="text-lg font-medium text-gray-700">No orders found</p>
+              <p className="text-sm text-gray-500 mt-1">
+                No <span className="font-medium">{selectedStatus}</span> orders for{' '}
+                <span className="font-medium">{selectedDate}</span> on this terminal.
+              </p>
+              {selectedDate !== todayIso() && (
+                <Button
+                  onClick={() => resetSelectedDateToToday()}
+                  variant="outline"
+                  className="mt-4"
+                  size="sm"
+                >
+                  Reset to Today
+                </Button>
+              )}
+            </div>
+          ) : viewMode === 'list' ? (
+            <div className="max-w-screen-xl mx-auto bg-white border border-gray-200 rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-xs text-gray-600 uppercase">
+                  <tr>
+                    <th className="text-left px-4 py-2.5 font-medium">Order #</th>
+                    <th className="text-left px-3 py-2.5 font-medium">Customer</th>
+                    <th className="text-left px-3 py-2.5 font-medium">Type / Table</th>
+                    {showCashierColumn && (
+                      <th className="text-left px-3 py-2.5 font-medium">Cashier</th>
+                    )}
+                    <th className="text-left px-3 py-2.5 font-medium">Time</th>
+                    <th className="text-right px-3 py-2.5 font-medium">Total</th>
+                    <th className="text-right px-4 py-2.5 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {orders.map((order) => (
+                    <tr
+                      key={order.name}
+                      onClick={() => handleOrderClick(order)}
+                      className={cn(
+                        'cursor-pointer hover:bg-gray-50 transition-colors',
+                        selectedOrder?.name === order.name && 'bg-blue-50 hover:bg-blue-50'
+                      )}
+                    >
+                      <td className="px-4 py-2 text-gray-900 font-medium" title={order.name}>
+                        <span className="block max-w-[10rem] truncate">{order.name}</span>
+                      </td>
+                      <td className="px-3 py-2 text-gray-700">
+                        {order.customer_name || order.customer}
+                      </td>
+                      <td className="px-3 py-2 text-gray-600">
+                        {order.restaurant_table
+                          ? `${order.restaurant_table} · ${order.order_type}`
+                          : order.order_type}
+                      </td>
+                      {showCashierColumn && (
+                        <td className="px-3 py-2 text-gray-600">
+                          {order.owner_full_name || order.owner || '—'}
+                        </td>
+                      )}
+                      <td className="px-3 py-2 text-gray-500 tabular-nums">
+                        {formatTimeOnly(order.posting_date, order.posting_time)}
+                      </td>
+                      <td className="px-3 py-2 text-right text-gray-900 font-semibold tabular-nums">
+                        {formatCurrency(getOrderTotal(order))}
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        <div className="inline-flex items-center gap-1.5 justify-end">
+                          {order.custom_order_status === 'Served' && (
+                            <Badge
+                              variant="default"
+                              className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-1 px-2 py-0.5"
+                            >
+                              <CheckCircle className="w-3 h-3" />
+                              <span className="text-xs">Served</span>
+                            </Badge>
+                          )}
+                          <Badge variant={getBadgeVariant(order.status)}>
+                            {order.status}
+                          </Badge>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-w-screen-xl mx-auto">
               {orders.map((order) => (
-                <Card 
-                  key={order.name} 
+                <Card
+                  key={order.name}
                   className={`p-0 bg-white hover:shadow-md transition-shadow flex flex-col overflow-hidden cursor-pointer ${
                     selectedOrder?.name === order.name ? 'ring-2 ring-blue-500 shadow-lg' : ''
                   }`}
@@ -272,13 +429,23 @@ export default function Orders() {
 
                     {/* Content section - matches MenuCard padding and structure */}
                     <div className="flex-1 p-3 flex flex-col">
-                      <div className="">
-                        <p className="text-sm text-gray-900">{order.customer}</p>
+                      <div>
+                        <p className="text-sm text-gray-900">
+                          {order.customer_name || order.customer}
+                        </p>
                       </div>
 
-                      <div className="flex items-center gap-2 text-xs text-gray-500">
+                      {/* Cashier — only when the captain has flipped the scope off "mine" */}
+                      {showCashierColumn && (
+                        <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">
+                          <UserCheck className="w-3.5 h-3.5" />
+                          <span>{order.owner_full_name || order.owner}</span>
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">
                         <Clock className="w-3.5 h-3.5" />
-                        <span>{formatDateTime(order.posting_date, order.posting_time)}</span>
+                        <span>{formatOrderDateTime(order.posting_date, order.posting_time)}</span>
                       </div>
 
                       {/* Total - pushed to bottom like MenuCard */}
@@ -346,7 +513,12 @@ export default function Orders() {
           <>
             {/* Fixed Header */}
             <div className="sticky top-0 left-0 right-0 z-20 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between min-h-[64px]">
-              <h2 className="text-xl font-semibold text-gray-900 truncate max-w-[10rem]">{selectedOrder.name}</h2>
+              <h2
+                className="text-xl font-semibold text-gray-900 truncate max-w-[10rem]"
+                title={selectedOrder.name}
+              >
+                {selectedOrder.name}
+              </h2>
               <div className="flex items-center gap-2">
                 {/* Only show edit and cancel buttons for Draft, Unbilled, and Recently Paid orders */}
                 {(selectedOrder.status === 'Draft' || selectedOrder.status === 'Unbilled' || selectedOrder.status === 'Recently Paid') && (
@@ -421,11 +593,13 @@ export default function Orders() {
                   <div className="space-y-3">
                     <div className="flex items-center gap-3 text-sm">
                       <User className="w-4 h-4 text-gray-500" />
-                      <span className="text-gray-900 font-medium">{selectedOrder.customer}</span>
+                      <span className="text-gray-900 font-medium">
+                        {selectedOrder.customer_name || selectedOrder.customer}
+                      </span>
                     </div>
                     <div className="flex items-center gap-3 text-sm">
                       <Clock className="w-4 h-4 text-gray-500" />
-                      <span className="text-gray-600">{formatDateTime(selectedOrder.posting_date, selectedOrder.posting_time)}</span>
+                      <span className="text-gray-600">{formatOrderDateTime(selectedOrder.posting_date, selectedOrder.posting_time)}</span>
                     </div>
                   </div>
                   {/* Second column: waiter and table */}

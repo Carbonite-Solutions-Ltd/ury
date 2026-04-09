@@ -217,12 +217,23 @@ def sync_order(
     # Stamp the originating terminal so the invoice can be filtered/
     # reported by physical till. Only trusts terminals tied to the
     # session's branch — a spoofed terminal name from a different
-    # branch is silently ignored. See CLAUDE.md "Fixes log" 2026-04-08.
+    # branch is silently ignored.
+    #
+    # IMPORTANT: on a freshly-created POS Invoice, `invoice.branch` is
+    # still None at this point because ERPNext's `fetch_from` hooks
+    # haven't run yet (they fire during validate/save). Comparing
+    # against `invoice.branch` directly always fails for new invoices,
+    # which means `custom_terminal` was silently dropped on every
+    # fresh order. Fall back to looking up the POS Profile's branch
+    # directly. See CLAUDE.md "Fixes log" 2026-04-09.
     if terminal:
         terminal_branch = frappe.db.get_value(
             "URY POS Terminal", terminal, "branch"
         )
-        if terminal_branch and terminal_branch == invoice.branch:
+        invoice_branch = invoice.branch or frappe.db.get_value(
+            "POS Profile", pos_profile, "branch"
+        )
+        if terminal_branch and invoice_branch and terminal_branch == invoice_branch:
             invoice.custom_terminal = terminal
     
     if order_type == "Aggregators":

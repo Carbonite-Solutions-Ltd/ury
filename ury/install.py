@@ -2,6 +2,7 @@ import click
 import frappe
 
 from ury.setup import after_install as setup
+from ury.permissions import ensure_role_permissions
 
 
 def after_install():
@@ -14,16 +15,34 @@ def after_install():
     except Exception:
         pass
 
-    # Run this OUTSIDE the blanket try/except above — if POS Settings
-    # configuration fails we want it to be loud, not silent.
+    # Run these OUTSIDE the blanket try/except above — if any of these
+    # fail we want it loud, not silent. Each function is idempotent.
     ensure_pos_settings_configured()
+    _safe_ensure_role_permissions()
 
 
 def after_migrate():
     """Runs on every `bench migrate`. Idempotent setup that keeps existing
     installs in a URY-compatible state as the app evolves. See CLAUDE.md
-    "Fixes log" 2026-04-08 for context."""
+    "Fixes log" 2026-04-08 / 2026-04-09 for context."""
     ensure_pos_settings_configured()
+    _safe_ensure_role_permissions()
+
+
+def _safe_ensure_role_permissions():
+    """Wrap ensure_role_permissions in a defensive try/except so a single
+    permission failure (e.g. a doctype that doesn't exist on this site)
+    doesn't crash the whole migrate. Logs a red warning instead."""
+    try:
+        ensure_role_permissions()
+    except Exception as e:
+        click.secho(
+            f"[URY] Failed to ensure role permissions: {e}. "
+            f"URY Cashier / URY Captain users may hit 403s on POS doctypes. "
+            f"Run `bench --site <site> execute "
+            f"ury.permissions.ensure_role_permissions` manually to retry.",
+            fg="red",
+        )
 
 
 def ensure_pos_settings_configured():
