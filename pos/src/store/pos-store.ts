@@ -121,6 +121,15 @@ interface POSState {
   terminalBranch: string | null;
   /** POS Profile name bound to the registered terminal. Displayed in the Header chip. */
   terminalPosProfile: string | null;
+  /**
+   * Shift watcher state. Set by the ShiftHoursBanner when the open
+   * entry's `period_start_date` is older than `posProfile.custom_shift_hours`.
+   * `shiftBlocked` is only true when the profile also has
+   * `custom_block_orders_after_shift_end` enabled — in that case
+   * OrderPanel disables the submit button.
+   */
+  shiftExpired: boolean;
+  shiftBlocked: boolean;
 }
 
 interface POSStore extends POSState {
@@ -167,6 +176,7 @@ interface POSStore extends POSState {
     description?: string;
     pos_profile?: string;
   }) => void;
+  setShiftExpired: (expired: boolean, blocked: boolean) => void;
 }
 
 const generateUniqueId = (item: OrderItem): string => {
@@ -216,6 +226,8 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   terminalDescription: null,
   terminalBranch: null,
   terminalPosProfile: null,
+  shiftExpired: false,
+  shiftBlocked: false,
 
   setTerminalConfig: (config) => {
     set({
@@ -225,6 +237,16 @@ export const usePOSStore = create<POSStore>((set, get) => ({
       terminalPosProfile: config.pos_profile || null,
       selectedRoom: config.room,
     });
+  },
+
+  setShiftExpired: (expired, blocked) => {
+    // Only call set when something actually changed — avoids needless
+    // re-renders from the 60 s polling timer in ShiftHoursBanner.
+    const current = get();
+    if (current.shiftExpired === expired && current.shiftBlocked === blocked) {
+      return;
+    }
+    set({ shiftExpired: expired, shiftBlocked: blocked });
   },
 
   initializeApp: async () => {

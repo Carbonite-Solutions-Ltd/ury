@@ -23,6 +23,10 @@ export interface PosProfileLimited {
   edit_order_type?: number;
   /** Terminal name that resolved this profile — echoed back from the server. */
   terminal?: string | null;
+  /** Shift length in hours. 0 = disabled. */
+  custom_shift_hours?: number;
+  /** When 1, OrderPanel disables new orders once the shift hours are exceeded. */
+  custom_block_orders_after_shift_end?: number;
 }
 
 export interface PosProfileLimitedResponse {
@@ -107,6 +111,8 @@ export interface PosProfileCombined extends PosProfileFull {
   edit_order_type?: number;
   view_all_status?: number;
   custom_daily_pos_close?: number;
+  custom_shift_hours?: number;
+  custom_block_orders_after_shift_end?: number;
 }
 
 export interface Currency {
@@ -161,6 +167,10 @@ export async function getCombinedPosProfile(
     enable_discount: limitedProfile.enable_discount,
     multiple_cashier: limitedProfile.multiple_cashier,
     edit_order_type: limitedProfile.edit_order_type,
+    custom_shift_hours: limitedProfile.custom_shift_hours ?? fullProfile.custom_shift_hours,
+    custom_block_orders_after_shift_end:
+      limitedProfile.custom_block_orders_after_shift_end ??
+      fullProfile.custom_block_orders_after_shift_end,
   };
 
   return combinedProfile;

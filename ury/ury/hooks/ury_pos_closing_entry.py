@@ -1,38 +1,19 @@
 import frappe
 
+
 def before_save(doc, method):
-    sub_pos_close_check(doc, method)
+    # sub_pos_close_check (the "sub cashier must be closed before main
+    # cashier closes" gate) was DELETED on 2026-04-08 as part of the
+    # per-terminal opening-entry revamp. Captain/sub-cashier ordering is
+    # gone; opening entries are now per-terminal (and per-user in
+    # multi_cashier strict mode), so the cross-user closing gate is
+    # meaningless. Do not re-add it. See CLAUDE.md "Fixes log".
+    pass
+
 
 def validate(doc, method):
     calculate_closing_amount(doc, method)
     validate_cashier(doc, method)
-
-
-def sub_pos_close_check(doc,method):
-    cashier = None
-    multiple_cashier = frappe.db.get_value("POS Profile",doc.pos_profile,"custom_enable_multiple_cashier")
-    if multiple_cashier:
-        get_cashier = frappe.get_doc("POS Profile", doc.pos_profile)
-        for user_details in get_cashier.applicable_for_users:
-            if not user_details.custom_main_cashier:
-                cashier = user_details.user
-        if frappe.session.user != cashier:
-            branch=frappe.db.get_value("POS Profile",doc.pos_profile,"branch")
-            pos_opening_list = frappe.get_all(
-                "POS Opening Entry",
-                fields=["name", "docstatus", "status", "posting_date"],
-                filters={"branch": branch,"user":cashier},
-            )
-            flag = 0
-            for pos_opening in pos_opening_list:
-                if pos_opening.status == "Open" and pos_opening.docstatus == 1:
-                    flag = 1
-            if flag == 1:
-                frappe.throw(("Sub Cashier POS  must be closed"), title=("Sub Cashier POS Closing Required"))
-                
-            return flag
-    else:
-        pass
 
 def calculate_closing_amount(doc, method):
     multiple_cashier = frappe.db.get_value("POS Profile",doc.pos_profile,"custom_enable_multiple_cashier")

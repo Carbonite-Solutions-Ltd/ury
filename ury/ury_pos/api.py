@@ -619,41 +619,21 @@ def getPosProfile(terminal=None):
         multiple_cashier = pos_profiles.custom_enable_multiple_cashier
         edit_order_type = pos_profiles.custom_edit_order_type
         enable_kot_reprint = pos_profiles.custom_enable_kot_reprint
-        if multiple_cashier:
-            details = getBranchRoom()
-            room = details[0].get('name') 
-            branch = details[0].get('branch')
+        shift_hours = pos_profiles.get("custom_shift_hours") or 0
+        block_orders_after_shift = (
+            pos_profiles.get("custom_block_orders_after_shift_end") or 0
+        )
+        # Per-terminal scoping makes the cashier/owner resolution trivial:
+        # whoever is logged into the React POS right now IS the cashier
+        # and the owner. The old code did a SQL join through Multiple
+        # Rooms to figure out "who opened the captain entry" — that
+        # whole concept is gone now. Per-invoice attribution still
+        # happens via POS Invoice.owner = frappe.session.user, and
+        # per-terminal attribution via POS Invoice.custom_terminal.
+        # See CLAUDE.md "Fixes log" 2026-04-08.
+        cashier = frappe.session.user
+        owner = frappe.session.user
 
-            pos_opening_list = frappe.db.sql("""
-                SELECT DISTINCT `tabPOS Opening Entry`.name 
-                FROM `tabPOS Opening Entry`
-                INNER JOIN `tabMultiple Rooms` 
-                ON `tabMultiple Rooms`.parent = `tabPOS Opening Entry`.name
-                WHERE `tabPOS Opening Entry`.branch = %s
-                AND `tabPOS Opening Entry`.status = 'Open'
-                AND `tabPOS Opening Entry`.docstatus = 1
-                AND `tabMultiple Rooms`.room = %s
-            """, (branch, room), as_dict=True)
-            if pos_opening_list:
-                pos_opened_cashier = frappe.db.get_value(
-                    "POS Opening Entry",
-                    {"name": pos_opening_list[0].name},
-                    "user",)
-            else:
-                pos_opened_cashier = None
-            for user_details in get_cashier.applicable_for_users:
-                if user_details.custom_main_cashier:
-                    owner = user_details.user
-                
-                if frappe.session.user == owner:
-                    cashier = owner
-                else:
-                    cashier = pos_opened_cashier    
-                
-        else:    
-            cashier = get_cashier.applicable_for_users[0].user
-            owner = get_cashier.applicable_for_users[0].user
-        
         qz_print = pos_profiles.qz_print
         print_type = None
 
@@ -693,6 +673,8 @@ def getPosProfile(terminal=None):
         "owner":owner,
         "edit_order_type":edit_order_type,
         "enable_kot_reprint":enable_kot_reprint,
+        "custom_shift_hours": shift_hours,
+        "custom_block_orders_after_shift_end": block_orders_after_shift,
         # Echo the caller's terminal back so the frontend store has a
         # single source of truth for "which terminal resolved this profile".
         "terminal": terminal or None,
@@ -732,20 +714,306 @@ def getPosInvoiceItems(invoice):
 
 
 @frappe.whitelist()
-def posOpening():
+def posOpening(terminal=None):
+    """Return 1 if the current cashier needs to open POS, 0 otherwise.
+
+    Scope is decided by the POS Profile's ``custom_enable_multiple_cashier``
+    flag (set per profile in the desk):
+
+    - **multi_cashier OFF (shared mode):** one POS Opening Entry per
+      terminal per shift. The first user to arrive on a terminal opens
+      it, everyone else just logs in. Returns 0 (POS is open) as soon
+      as ANY user has an open submitted entry on this terminal.
+    - **multi_cashier ON (strict mode):** each user opens their own
+      entry on the terminal. Returns 0 only if THIS user has an open
+      submitted entry on this terminal. Used when you want strict
+      per-cashier shift accounting.
+
+    See CLAUDE.md "Fixes log" 2026-04-08.
+
+    When ``terminal`` is omitted (legacy Vue POS, Administrator
+    experiments), falls back to the historical branch-only check so
+    older callers don't break.
+    """
     branchName = getBranch()
+
+    if not terminal:
+        # Legacy / Administrator path: scope by branch only.
+        pos_opening_list = frappe.get_all(
+            "POS Opening Entry",
+            fields=["name", "docstatus", "status"],
+            filters={"branch": branchName, "status": "Open", "docstatus": 1},
+            limit=1,
+        )
+        return 0 if pos_opening_list else 1
+
+    # Per-terminal path. Determine scope from the POS Profile.
+    pos_profile = frappe.db.get_value(
+        "URY POS Terminal", terminal, "pos_profile"
+    )
+    multiple_cashier = (
+        frappe.db.get_value(
+            "POS Profile", pos_profile, "custom_enable_multiple_cashier"
+        )
+        if pos_profile
+        else 0
+    )
+
+    filters = {
+        "custom_terminal": terminal,
+        "status": "Open",
+        "docstatus": 1,
+    }
+    if multiple_cashier:
+        filters["user"] = frappe.session.user
+
     pos_opening_list = frappe.get_all(
         "POS Opening Entry",
-        fields=["name", "docstatus", "status", "posting_date"],
-        filters={"branch": branchName},
+        fields=["name"],
+        filters=filters,
+        limit=1,
     )
-    flag = 1
-    for pos_opening in pos_opening_list:
-        if pos_opening.status == "Open" and pos_opening.docstatus == 1:
-            flag = 0
-    if flag == 1:
-        frappe.msgprint(title="Message", indicator="red", msg=("Please Open POS Entry"))
-    return flag
+    return 0 if pos_opening_list else 1
+
+
+@frappe.whitelist()
+def preview_pos_closing_entry(opening_entry):
+    """Build a preview of the POS Closing Entry for the given opening
+    entry, without saving anything.
+
+    Wraps ERPNext's
+    ``erpnext.accounts.doctype.pos_closing_entry.pos_closing_entry.make_closing_entry_from_opening``
+    so the React POS can render an in-POS closing dialog instead of
+    deep-linking to the desk. The wrapper returns a slim dict shape that
+    matches what the dialog actually needs (totals + payment rows), so
+    we don't ship the full doc with all the relations.
+
+    See CLAUDE.md "Fixes log" 2026-04-09.
+    """
+    from erpnext.accounts.doctype.pos_closing_entry.pos_closing_entry import (
+        make_closing_entry_from_opening,
+    )
+
+    if not frappe.db.exists("POS Opening Entry", opening_entry):
+        frappe.throw(
+            _("POS Opening Entry '{0}' not found.").format(opening_entry),
+            frappe.DoesNotExistError,
+        )
+
+    opening_doc = frappe.get_doc("POS Opening Entry", opening_entry)
+    if opening_doc.status != "Open":
+        frappe.throw(
+            _(
+                "POS Opening Entry '{0}' is not open (status: {1}). "
+                "Only open entries can be closed."
+            ).format(opening_entry, opening_doc.status),
+            title=_("Already Closed"),
+        )
+
+    closing_doc = make_closing_entry_from_opening(opening_doc)
+
+    # Carry the opening_amount over from the opening entry's
+    # balance_details (the make_ helper hard-codes opening_amount=0).
+    opening_balances = {
+        b.mode_of_payment: float(b.opening_amount or 0)
+        for b in (opening_doc.balance_details or [])
+    }
+    payments = []
+    for row in closing_doc.payment_reconciliation:
+        opening_amount = opening_balances.get(row.mode_of_payment, 0.0)
+        expected_amount = float(row.expected_amount or 0)
+        payments.append(
+            {
+                "mode_of_payment": row.mode_of_payment,
+                "opening_amount": opening_amount,
+                "expected_amount": expected_amount,
+                # The closing dialog will let the user edit this. We
+                # default it to expected so a one-click "everything
+                # matches" close just works.
+                "closing_amount": expected_amount,
+            }
+        )
+
+    return {
+        "opening_entry": opening_doc.name,
+        "period_start_date": str(opening_doc.period_start_date or ""),
+        "period_end_date": str(closing_doc.period_end_date or ""),
+        "pos_profile": closing_doc.pos_profile,
+        "user": closing_doc.user,
+        "company": closing_doc.company,
+        "grand_total": float(closing_doc.grand_total or 0),
+        "net_total": float(closing_doc.net_total or 0),
+        "total_quantity": float(closing_doc.total_quantity or 0),
+        "total_taxes_and_charges": float(closing_doc.total_taxes_and_charges or 0),
+        "payments": payments,
+        "invoice_count": len(closing_doc.pos_invoices or [])
+        + len(closing_doc.sales_invoices or []),
+    }
+
+
+@frappe.whitelist()
+def submit_pos_closing_entry(opening_entry, closing_amounts):
+    """Create and submit a POS Closing Entry from the given opening
+    entry, using the cashier-supplied closing amounts.
+
+    ``closing_amounts`` is a JSON object mapping mode_of_payment names
+    to the actual cash counted by the cashier (as numbers, not strings).
+    Any payment mode missing from the dict defaults to its expected
+    amount.
+
+    Returns ``{"name": <closing entry name>}`` on success. Errors are
+    propagated as ValidationError so the frontend's standard
+    error-handling pipeline picks them up.
+
+    See CLAUDE.md "Fixes log" 2026-04-09.
+    """
+    import json
+
+    from erpnext.accounts.doctype.pos_closing_entry.pos_closing_entry import (
+        make_closing_entry_from_opening,
+    )
+
+    if isinstance(closing_amounts, str):
+        try:
+            closing_amounts = json.loads(closing_amounts)
+        except Exception:
+            closing_amounts = {}
+    if not isinstance(closing_amounts, dict):
+        closing_amounts = {}
+
+    if not frappe.db.exists("POS Opening Entry", opening_entry):
+        frappe.throw(
+            _("POS Opening Entry '{0}' not found.").format(opening_entry),
+            frappe.DoesNotExistError,
+        )
+
+    opening_doc = frappe.get_doc("POS Opening Entry", opening_entry)
+    if opening_doc.status != "Open":
+        frappe.throw(
+            _(
+                "POS Opening Entry '{0}' is not open (status: {1}). "
+                "Only open entries can be closed."
+            ).format(opening_entry, opening_doc.status),
+            title=_("Already Closed"),
+        )
+
+    closing_doc = make_closing_entry_from_opening(opening_doc)
+
+    # Carry opening_amount over so the closing entry's balance vs
+    # difference math matches what the cashier saw in the dialog.
+    opening_balances = {
+        b.mode_of_payment: float(b.opening_amount or 0)
+        for b in (opening_doc.balance_details or [])
+    }
+    for row in closing_doc.payment_reconciliation:
+        row.opening_amount = opening_balances.get(row.mode_of_payment, 0.0)
+        if row.mode_of_payment in closing_amounts:
+            try:
+                row.closing_amount = float(closing_amounts[row.mode_of_payment])
+            except (TypeError, ValueError):
+                row.closing_amount = float(row.expected_amount or 0)
+        else:
+            row.closing_amount = float(row.expected_amount or 0)
+        row.difference = float(row.closing_amount or 0) - float(
+            row.expected_amount or 0
+        )
+
+    closing_doc.insert()
+    closing_doc.submit()
+
+    return {"name": closing_doc.name}
+
+
+@frappe.whitelist()
+def get_pos_open_entry(terminal=None):
+    """Return metadata about the *currently open* POS Opening Entry that
+    `posOpening()` would consider "this user's session".
+
+    Used by:
+    - The "Existing Open Entry" branch of the React POS opening dialog,
+      so it can deep-link to the specific entry that's blocking a new
+      open. See CLAUDE.md "Fixes log" 2026-04-09.
+    - The Shift Hours watcher, so the frontend can compute "how long has
+      this shift been open" against the profile's `custom_shift_hours`
+      threshold and show a banner.
+
+    Returns ``None`` when there's no matching open entry. Returns
+    ``{name, period_start_date, posting_date, pos_profile, user}`` when
+    there is one.
+
+    Scoping rules mirror ``posOpening()``:
+    - With ``terminal``: per-terminal (and per-user when the profile's
+      ``custom_enable_multiple_cashier`` is on).
+    - Without ``terminal``: legacy branch-only fallback so the old Vue
+      POS / Administrator paths keep working.
+
+    There's also a third lookup mode used by the Existing-Entry dialog:
+    when the per-terminal/per-user check returns nothing BUT ERPNext's
+    standard ``check_open_pos_exists`` would still fire (because some
+    *other* user on this profile has an open entry), the dialog needs
+    to find that other entry to deep-link to it. The frontend passes
+    ``include_profile_match=1`` to opt into this broader lookup.
+    """
+    branch_name = getBranch()
+
+    def _entry(filters):
+        rows = frappe.get_all(
+            "POS Opening Entry",
+            filters=filters,
+            fields=[
+                "name",
+                "period_start_date",
+                "posting_date",
+                "pos_profile",
+                "user",
+            ],
+            order_by="period_start_date desc",
+            limit=1,
+        )
+        return rows[0] if rows else None
+
+    if not terminal:
+        return _entry(
+            {"branch": branch_name, "status": "Open", "docstatus": 1}
+        )
+
+    pos_profile = frappe.db.get_value(
+        "URY POS Terminal", terminal, "pos_profile"
+    )
+    multiple_cashier = (
+        frappe.db.get_value(
+            "POS Profile", pos_profile, "custom_enable_multiple_cashier"
+        )
+        if pos_profile
+        else 0
+    )
+
+    filters = {
+        "custom_terminal": terminal,
+        "status": "Open",
+        "docstatus": 1,
+    }
+    if multiple_cashier:
+        filters["user"] = frappe.session.user
+
+    found = _entry(filters)
+    if found:
+        return found
+
+    # Fallback: ERPNext's POS Opening Entry validate hook blocks new
+    # entries on `(pos_profile, status=Open)` regardless of terminal —
+    # so a same-profile entry from another user/terminal can still
+    # collide. The dialog needs to find that entry to deep-link.
+    if pos_profile:
+        return _entry(
+            {
+                "pos_profile": pos_profile,
+                "status": "Open",
+                "docstatus": 1,
+            }
+        )
+
+    return None
 
 
 @frappe.whitelist()
@@ -803,8 +1071,13 @@ def getAggregatorMOP(aggregator):
 
 
 @frappe.whitelist()
-def validate_pos_close(pos_profile):
+def validate_pos_close(pos_profile, terminal=None):
     """Return the closing status for the previous business day.
+
+    Scoped per-terminal when ``terminal`` is supplied so an unclosed
+    entry on Bar 1 doesn't block the cashier on Restaurant A. When the
+    POS Profile has ``custom_enable_multiple_cashier`` enabled, the
+    check is also scoped per-user (strict per-cashier shift accounting).
 
     Response shape (new — used by the React POS opening dialog so it can
     deep-link directly to the unclosed entry instead of dumping the user
@@ -829,15 +1102,25 @@ def validate_pos_close(pos_profile):
     else:
         previous_day = start_of_day
 
-    unclosed_pos_opening = frappe.db.exists(
-        "POS Opening Entry",
-        {
-            "posting_date": previous_day.date(),
-            "status": "Open",
-            "pos_profile": pos_profile,
-            "docstatus": 1,
-        },
-    )
+    # Match posOpening's scoping rules so the "previous day not closed"
+    # check follows the same per-terminal / per-user model. Without
+    # terminal scoping a single unclosed entry on Bar 1 would also
+    # block Restaurant A on the same branch.
+    filters = {
+        "posting_date": previous_day.date(),
+        "status": "Open",
+        "pos_profile": pos_profile,
+        "docstatus": 1,
+    }
+    if terminal:
+        filters["custom_terminal"] = terminal
+        multiple_cashier = frappe.db.get_value(
+            "POS Profile", pos_profile, "custom_enable_multiple_cashier"
+        )
+        if multiple_cashier:
+            filters["user"] = frappe.session.user
+
+    unclosed_pos_opening = frappe.db.exists("POS Opening Entry", filters)
 
     if unclosed_pos_opening:
         return {"status": "Failed", "unclosed_entry": unclosed_pos_opening}

@@ -6,10 +6,13 @@ import { usePOSStore } from '../store/pos-store';
 import { useRootStore } from '../store/root-store';
 import {
   createAndSubmitPOSOpening,
+  getCurrentPosOpenEntry,
   getOpeningBalanceDetails,
   hasMainCashierOpened,
   type OpeningBalanceRow,
 } from '../lib/pos-opening-api';
+import { extractFrappeServerError } from '../lib/utils';
+import POSClosingDialog from './POSClosingDialog';
 
 type DialogType = 'opening' | 'closing';
 
@@ -53,7 +56,7 @@ const formatLocalDate = (d: Date): string => {
  * backlog.
  */
 const POSOpeningDialog = ({ type, onOpened, unclosedEntry }: POSOpeningDialogProps) => {
-  const { posProfile } = usePOSStore();
+  const { posProfile, terminalName } = usePOSStore();
   const { user } = useRootStore();
 
   // ───── closing-issue branch ─────
@@ -94,7 +97,12 @@ const POSOpeningDialog = ({ type, onOpened, unclosedEntry }: POSOpeningDialogPro
 
   // ───── opening-issue branch ─────
   return (
-    <OpeningBranch posProfile={posProfile} user={user} onOpened={onOpened} />
+    <OpeningBranch
+      posProfile={posProfile}
+      user={user}
+      terminalName={terminalName}
+      onOpened={onOpened}
+    />
   );
 };
 
@@ -106,21 +114,28 @@ const POSOpeningDialog = ({ type, onOpened, unclosedEntry }: POSOpeningDialogPro
 interface OpeningBranchProps {
   posProfile: ReturnType<typeof usePOSStore>['posProfile'];
   user: ReturnType<typeof useRootStore>['user'];
+  terminalName: string | null;
   onOpened: () => void;
 }
 
 type OpeningMode =
   | { kind: 'loading' }
   | { kind: 'main-cashier' } // show full form
-  | { kind: 'sub-cashier-ready' } // show Join Session button
-  | { kind: 'sub-cashier-waiting'; mainCashier: string }; // show waiting screen
+  | { kind: 'sub-cashier-ready' } // show Join Session button (legacy, unreachable under new model)
+  | { kind: 'sub-cashier-waiting'; mainCashier: string } // show waiting screen (legacy, unreachable)
+  | {
+      kind: 'existing-entry';
+      entryName: string | null;
+      message: string;
+    }; // ERPNext rejected with "POS Opening Entry Exists" — deep-link to that entry
 
-const OpeningBranch = ({ posProfile, user, onOpened }: OpeningBranchProps) => {
+const OpeningBranch = ({ posProfile, user, terminalName, onOpened }: OpeningBranchProps) => {
   const [mode, setMode] = useState<OpeningMode>({ kind: 'loading' });
   const [balanceRows, setBalanceRows] = useState<OpeningBalanceRow[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
+  const [showClosingDialog, setShowClosingDialog] = useState(false);
 
   const multiCashier = posProfile?.custom_enable_multiple_cashier === 1;
   const currentUser = user?.name || null;
@@ -212,6 +227,10 @@ const OpeningBranch = ({ posProfile, user, onOpened }: OpeningBranchProps) => {
         branch: posProfile.branch,
         user: currentUser,
         balance_details: balanceRows,
+        // Stamp the registered terminal so the new entry is scoped
+        // to this physical till. Backend `validate_terminal_branch`
+        // hook verifies the terminal's branch matches.
+        ...(terminalName ? { custom_terminal: terminalName } : {}),
       });
 
       // Success state — brief confirmation before the provider reloads.
@@ -223,20 +242,44 @@ const OpeningBranch = ({ posProfile, user, onOpened }: OpeningBranchProps) => {
       setTimeout(onOpened, 700);
     } catch (err: any) {
       console.error('Failed to open POS Entry:', err);
-      // Frappe surfaces the hook's frappe.throw message under _server_messages.
-      let msg = 'Failed to open POS Entry. Please try again.';
-      if (err?._server_messages) {
+
+      // Use the shared parser so we (a) prefer the raise_exception=1
+      // message, (b) strip HTML like ERPNext's <strong>{profile}</strong>
+      // wrapper, (c) get the title for switch-on-title rendering.
+      const parsed = extractFrappeServerError(
+        err,
+        'Failed to open POS Entry. Please try again.'
+      );
+
+      // ERPNext throws this when there's already an open entry for the
+      // same POS Profile (regardless of terminal). Look up which entry
+      // is blocking and switch the dialog to a focused "Existing Open
+      // Entry" mode with a deep-link button. See CLAUDE.md "Fixes log"
+      // 2026-04-09.
+      const titleMatches = parsed.title === 'POS Opening Entry Exists';
+      const msgMatches = /pos opening entry to create a new pos opening/i.test(
+        parsed.message
+      );
+      if (titleMatches || msgMatches) {
         try {
-          const messages = JSON.parse(err._server_messages);
-          const parsed = JSON.parse(messages[0]);
-          msg = parsed.message || msg;
+          const existing = await getCurrentPosOpenEntry(terminalName);
+          setMode({
+            kind: 'existing-entry',
+            entryName: existing?.name || null,
+            message: parsed.message,
+          });
         } catch {
-          /* keep default */
+          setMode({
+            kind: 'existing-entry',
+            entryName: null,
+            message: parsed.message,
+          });
         }
-      } else if (err?.message) {
-        msg = err.message;
+        setSubmitting(false);
+        return;
       }
-      setSubmitError(msg);
+
+      setSubmitError(parsed.message);
       setSubmitting(false);
     }
   };
@@ -331,6 +374,59 @@ const OpeningBranch = ({ posProfile, user, onOpened }: OpeningBranchProps) => {
           )}
         </Button>
       </DialogShell>
+    );
+  }
+
+  // ───── existing open entry blocking the new one ─────
+  // ERPNext's `check_open_pos_exists` rejected the create because the
+  // POS Profile already has an open entry (regardless of terminal). The
+  // user can't open a new shift until that one is closed. Show a focused
+  // card and let them close the entry IN-POS via POSClosingDialog rather
+  // than dropping them onto the desk. See CLAUDE.md "Fixes log" 2026-04-09.
+  if (mode.kind === 'existing-entry') {
+    return (
+      <>
+        <DialogShell
+          icon={<AlertTriangle className="h-8 w-8 text-orange-600" />}
+          iconBg="bg-orange-100"
+          title="Existing Open Entry"
+          subtitle={
+            mode.entryName
+              ? `Entry ${mode.entryName} is still open on this POS Profile. Close it before starting a new shift.`
+              : mode.message
+          }
+        >
+          <Button
+            onClick={() => mode.entryName && setShowClosingDialog(true)}
+            disabled={!mode.entryName}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-lg disabled:opacity-50"
+          >
+            <DoorOpen className="w-5 h-5 mr-2" />
+            Close Existing Entry
+          </Button>
+          <Button
+            onClick={() => window.location.reload()}
+            variant="outline"
+            className="w-full mt-3 border-gray-300 text-gray-700 hover:bg-gray-50 font-medium py-3 px-6 rounded-lg"
+          >
+            <RefreshCw className="w-5 h-5 mr-2" />
+            I've Closed It — Reload
+          </Button>
+        </DialogShell>
+
+        {showClosingDialog && mode.entryName && (
+          <POSClosingDialog
+            openingEntry={mode.entryName}
+            onCancel={() => setShowClosingDialog(false)}
+            onClosed={() => {
+              // Closing succeeded — reload so the opening dialog
+              // re-runs against a now-clean profile.
+              setShowClosingDialog(false);
+              window.location.reload();
+            }}
+          />
+        )}
+      </>
     );
   }
 

@@ -32,12 +32,23 @@ export interface CreatePOSOpeningPayload {
   branch: string;
   user: string;
   balance_details: OpeningBalanceRow[];
+  /**
+   * URY POS Terminal name. Stamped on the entry so subsequent
+   * `posOpening` checks scope to this physical till. Required when
+   * the device has a registered terminal (always true in the React POS).
+   */
+  custom_terminal?: string;
 }
 
-export const checkPOSOpening = async (): Promise<POSOpeningResponse> => {
+export const checkPOSOpening = async (
+  terminal?: string | null
+): Promise<POSOpeningResponse> => {
   try {
+    const params: Record<string, string> = {};
+    if (terminal) params.terminal = terminal;
     const response = await call.get<POSOpeningResponse>(
-      'ury.ury_pos.api.posOpening'
+      'ury.ury_pos.api.posOpening',
+      params
     );
 
     return response;
@@ -48,14 +59,15 @@ export const checkPOSOpening = async (): Promise<POSOpeningResponse> => {
 };
 
 export const validatePOSClose = async (
-  posProfile: string
+  posProfile: string,
+  terminal?: string | null
 ): Promise<POSCloseValidationResponse> => {
   try {
+    const params: Record<string, string> = { pos_profile: posProfile };
+    if (terminal) params.terminal = terminal;
     const response = await call.get<POSCloseValidationResponse>(
       'ury.ury_pos.api.validate_pos_close',
-      {
-        pos_profile: posProfile,
-      }
+      params
     );
 
     return response;
@@ -80,10 +92,14 @@ export const getOpeningBalanceDetails = async (): Promise<OpeningBalanceRow[]> =
 /**
  * Create and submit a POS Opening Entry in one round-trip.
  * Mirrors the legacy Vue POS pattern: createDoc (docstatus 0) then
- * updateDoc (docstatus 1). All validation hooks run on both steps,
- * including the multi-cashier "main cashier must be open" check — so
- * the caller will surface the friendly sub-cashier waiting state based
- * on the error this throws if the main cashier hasn't opened yet.
+ * updateDoc (docstatus 1). The backend `validate_terminal_branch` hook
+ * verifies that `custom_terminal`'s branch matches the entry's branch
+ * before insert, so a malformed payload will throw cleanly.
+ *
+ * The captain-must-be-open gate (`main_pos_open_check`) was removed
+ * on 2026-04-08 — opening entries are now per-terminal (and per-user
+ * in multi_cashier strict mode), so cross-user ordering checks are
+ * gone. See CLAUDE.md "Fixes log".
  */
 export const createAndSubmitPOSOpening = async (
   payload: CreatePOSOpeningPayload
@@ -94,10 +110,49 @@ export const createAndSubmitPOSOpening = async (
 };
 
 /**
- * Check whether the main cashier (`mainCashierUser`) currently has
- * an open + submitted POS Opening Entry for a given POS Profile.
- * Used by the sub-cashier branch of the opening dialog to decide
- * between "Join Session" and "Waiting for main cashier".
+ * Lightweight metadata about the currently-open POS Opening Entry that
+ * `posOpening()` would consider "this user's session" — including a
+ * fallback to the same-profile entry that ERPNext's standard
+ * check_open_pos_exists would block on (used by the dialog's
+ * "Existing Open Entry" branch to deep-link to whatever's blocking).
+ *
+ * Returns null when there's no matching entry. Used by:
+ *   - The Existing-Entry branch of POSOpeningDialog (Fix A).
+ *   - The ShiftHoursBanner (Fix B) to compute shift age.
+ *
+ * See CLAUDE.md "Fixes log" 2026-04-09.
+ */
+export interface CurrentPOSOpenEntry {
+  name: string;
+  period_start_date: string;
+  posting_date: string;
+  pos_profile: string;
+  user: string;
+}
+
+export const getCurrentPosOpenEntry = async (
+  terminal?: string | null
+): Promise<CurrentPOSOpenEntry | null> => {
+  try {
+    const params: Record<string, string> = {};
+    if (terminal) params.terminal = terminal;
+    const res = await call.get<{ message: CurrentPOSOpenEntry | null }>(
+      'ury.ury_pos.api.get_pos_open_entry',
+      params
+    );
+    return res.message || null;
+  } catch (error) {
+    console.error('Error fetching current POS open entry:', error);
+    return null;
+  }
+};
+
+/**
+ * @deprecated Captain/sub-cashier ordering was removed on 2026-04-08
+ * when opening entries became per-terminal. Kept as a no-op-equivalent
+ * helper in case the dialog's "Waiting for Main Cashier" / "Join
+ * Session" branches are re-enabled for a future role-gated workflow.
+ * Under the current model this should never be called.
  */
 export const hasMainCashierOpened = async (
   mainCashierUser: string,

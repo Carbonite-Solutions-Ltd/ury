@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { checkPOSOpening, validatePOSClose } from '../lib/pos-opening-api';
 import { usePOSStore } from '../store/pos-store';
 import POSOpeningDialog from './POSOpeningDialog';
+import ShiftHoursBanner from './ShiftHoursBanner';
 
 interface POSOpeningProviderProps {
   children: React.ReactNode;
@@ -20,23 +21,30 @@ const POSOpeningProvider = ({ children }: POSOpeningProviderProps) => {
     unclosedEntry: null,
   });
   const [isLoading, setIsLoading] = useState(true);
-  const { posProfile } = usePOSStore();
+  const { posProfile, terminalName } = usePOSStore();
 
   const checkPOSStatus = async () => {
     try {
       setIsLoading(true);
 
-      const openingResponse = await checkPOSOpening();
+      // Pass the registered terminal so the backend scopes the
+      // open-check to (terminal, [user]) instead of just branch. See
+      // CLAUDE.md "Fixes log" 2026-04-08.
+      const openingResponse = await checkPOSOpening(terminalName);
       if (openingResponse.message === 1) {
         setValidation({ type: 'opening', unclosedEntry: null });
         return;
       }
 
-      // POS is open for the branch. If the daily-close rule is on, also
-      // verify there's no unclosed previous-day entry for this profile.
+      // POS is open for this terminal. If the daily-close rule is on,
+      // also verify there's no unclosed previous-day entry — also
+      // scoped per-terminal.
       if (posProfile?.custom_daily_pos_close === 1) {
         try {
-          const closeResponse = await validatePOSClose(posProfile.name);
+          const closeResponse = await validatePOSClose(
+            posProfile.name,
+            terminalName
+          );
           const msg = closeResponse.message;
 
           // Backend returns {status, unclosed_entry?} (new) but older
@@ -107,7 +115,12 @@ const POSOpeningProvider = ({ children }: POSOpeningProviderProps) => {
     );
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      <ShiftHoursBanner />
+      {children}
+    </>
+  );
 };
 
 export default POSOpeningProvider;

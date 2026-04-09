@@ -36,7 +36,8 @@ const OrderPanel = () => {
     orderId,
     orderComment,
     setOrderComment,
-    terminalName
+    terminalName,
+    shiftBlocked,
   } = usePOSStore();
   const user = useRootStore((state: RootState) => state.user);
   const [editingItem, setEditingItem] = useState<typeof activeOrders[0] | null>(null);
@@ -84,6 +85,18 @@ const OrderPanel = () => {
 
       if (!user?.name) {
         throw new Error('User not logged in');
+      }
+
+      // Hard block when the POS Profile has
+      // `custom_block_orders_after_shift_end` enabled and the shift
+      // has run past its `custom_shift_hours` limit. The
+      // ShiftHoursBanner already shows a red banner explaining why.
+      // See CLAUDE.md "Fixes log" 2026-04-09.
+      if (shiftBlocked) {
+        showToast.error(
+          'Your shift is over. Close the POS Opening Entry before starting a new one.'
+        );
+        return;
       }
 
       // Validate customer/aggregator details
@@ -218,7 +231,8 @@ const OrderPanel = () => {
     </div>
   );
 
-  const isInteractionDisabled = isOrderInteractionDisabled() || isSubmitting;
+  const isInteractionDisabled =
+    isOrderInteractionDisabled() || isSubmitting || shiftBlocked;
 
   return (
     <div className="w-96 bg-white border-l border-gray-200 flex flex-col h-[calc(100vh-4rem)] fixed right-0 z-10">
