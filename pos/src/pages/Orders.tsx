@@ -10,6 +10,8 @@ import {
   CheckCircle,
   LayoutGrid,
   List as ListIcon,
+  GitMerge,
+  Undo2,
 } from 'lucide-react';
 import { Badge, Button, Card, CardContent } from '../components/ui';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../components/ui/dialog';
@@ -25,6 +27,8 @@ import PaymentDialog from '../components/PaymentDialog';
 import { printOrder } from '../lib/print';
 import { call } from '../lib/frappe-sdk';
 import type { POSInvoice } from '../store/slices/orders-slice';
+import { canMergeOrders, canReprintInvoice } from '../lib/role-utils';
+import '../components/ui/merge-mode.css';
 
 const todayIso = (): string => {
   const d = new Date();
@@ -95,6 +99,15 @@ export default function Orders() {
     hydrateViewMode,
     cashierFilter,
     user,
+    mergeMode,
+    mergeSelection,
+    mergeLoading,
+    selectedOrderMergeLog,
+    enterMergeMode,
+    exitMergeMode,
+    toggleMergeSelection,
+    mergeSelectedOrders,
+    unmergeOrder,
   } = useRootStore();
 
   const posStore = usePOSStore();
@@ -138,8 +151,48 @@ export default function Orders() {
     [cashierFilter]
   );
 
+  const canMerge = useMemo(
+    () => canMergeOrders(user, posStore.posProfile),
+    [user, posStore.posProfile]
+  );
+
+  const canReprint = useMemo(() => canReprintInvoice(user), [user]);
+
+  // An order is mergeable in merge mode only if it's still a Draft
+  // (unpaid). Returns / Paid / Consolidated rows are dimmed and not
+  // selectable. Backend re-validates regardless.
+  const isOrderMergeable = (order: POSInvoice) =>
+    order.status === 'Draft' &&
+    !order.custom_merged_into;
+
   const handleOrderClick = (order: POSInvoice) => {
+    if (mergeMode) {
+      if (!isOrderMergeable(order)) return;
+      toggleMergeSelection(order.name);
+      return;
+    }
     selectOrder(order);
+  };
+
+  const handleMergeSubmit = async () => {
+    const result = await mergeSelectedOrders();
+    if (result?.master) {
+      showToast.success(`Merged into ${result.master}`);
+    } else {
+      const errMsg = useRootStore.getState().error;
+      if (errMsg) showToast.error(errMsg);
+    }
+  };
+
+  const handleUnmerge = async () => {
+    if (!selectedOrderMergeLog) return;
+    const ok = await unmergeOrder(selectedOrderMergeLog.name);
+    if (ok) {
+      showToast.success('Unmerged successfully');
+    } else {
+      const errMsg = useRootStore.getState().error;
+      if (errMsg) showToast.error(errMsg);
+    }
   };
 
   async function handleCancelOrder() {
@@ -258,45 +311,101 @@ export default function Orders() {
 
       {/* Middle Section - Order list / cards */}
       <div className="flex-1 flex flex-col h-screen overflow-hidden pr-96">
-        {/* Top toolbar — view-mode toggle */}
-        <div className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between shrink-0">
-          <div className="text-xs text-gray-500">
-            {orders.length > 0 && (
-              <span>
-                Showing <span className="font-medium text-gray-700">{orders.length}</span>{' '}
-                {orders.length === 1 ? 'order' : 'orders'}
+        {/* Top toolbar — switches into a merge bar when merge mode is on */}
+        {mergeMode ? (
+          <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-3 text-sm text-amber-900">
+              <GitMerge className="w-4 h-4" />
+              <span className="font-semibold">Merge Mode</span>
+              <span className="text-xs text-amber-700">
+                Tap two or more draft orders to merge them.{' '}
+                <span className="font-medium">{mergeSelection.length}</span>{' '}
+                selected
               </span>
-            )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={() => exitMergeMode()}
+                variant="outline"
+                size="sm"
+                className="border-amber-300 text-amber-900 hover:bg-amber-100"
+                disabled={mergeLoading}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleMergeSubmit}
+                size="sm"
+                className="bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-50"
+                disabled={mergeSelection.length < 2 || mergeLoading}
+              >
+                {mergeLoading ? (
+                  <>
+                    <Spinner className="w-3.5 h-3.5 mr-1.5" hideMessage />
+                    Merging…
+                  </>
+                ) : (
+                  <>
+                    <GitMerge className="w-3.5 h-3.5 mr-1.5" />
+                    Merge {mergeSelection.length > 1 ? `${mergeSelection.length} orders` : ''}
+                  </>
+                )}
+              </Button>
+            </div>
           </div>
-          <div className="inline-flex rounded-md border border-gray-200 bg-white shadow-sm overflow-hidden">
-            <button
-              onClick={() => setViewMode('card', user?.name || null)}
-              aria-label="Card view"
-              className={cn(
-                'px-3 py-1.5 inline-flex items-center gap-1.5 text-xs font-medium transition-colors',
-                viewMode === 'card'
-                  ? 'bg-gray-100 text-gray-900'
-                  : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+        ) : (
+          <div className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between shrink-0">
+            <div className="text-xs text-gray-500">
+              {orders.length > 0 && (
+                <span>
+                  Showing <span className="font-medium text-gray-700">{orders.length}</span>{' '}
+                  {orders.length === 1 ? 'order' : 'orders'}
+                </span>
               )}
-            >
-              <LayoutGrid className="w-3.5 h-3.5" />
-              Card
-            </button>
-            <button
-              onClick={() => setViewMode('list', user?.name || null)}
-              aria-label="List view"
-              className={cn(
-                'px-3 py-1.5 inline-flex items-center gap-1.5 text-xs font-medium transition-colors border-l border-gray-200',
-                viewMode === 'list'
-                  ? 'bg-gray-100 text-gray-900'
-                  : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+            </div>
+            <div className="flex items-center gap-2">
+              {canMerge && (
+                <Button
+                  onClick={() => enterMergeMode()}
+                  variant="outline"
+                  size="xs"
+                  className="border-gray-300 text-gray-700 hover:bg-gray-50"
+                >
+                  <GitMerge className="w-3.5 h-3.5 mr-1.5" />
+                  Merge Orders
+                </Button>
               )}
-            >
-              <ListIcon className="w-3.5 h-3.5" />
-              List
-            </button>
+              <div className="inline-flex rounded-md border border-gray-200 bg-white shadow-sm overflow-hidden">
+                <button
+                  onClick={() => setViewMode('card', user?.name || null)}
+                  aria-label="Card view"
+                  className={cn(
+                    'px-3 py-1.5 inline-flex items-center gap-1.5 text-xs font-medium transition-colors',
+                    viewMode === 'card'
+                      ? 'bg-gray-100 text-gray-900'
+                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                  )}
+                >
+                  <LayoutGrid className="w-3.5 h-3.5" />
+                  Card
+                </button>
+                <button
+                  onClick={() => setViewMode('list', user?.name || null)}
+                  aria-label="List view"
+                  className={cn(
+                    'px-3 py-1.5 inline-flex items-center gap-1.5 text-xs font-medium transition-colors border-l border-gray-200',
+                    viewMode === 'list'
+                      ? 'bg-gray-100 text-gray-900'
+                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                  )}
+                >
+                  <ListIcon className="w-3.5 h-3.5" />
+                  List
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
+        )}
 
         <div className="flex-1 overflow-y-auto bg-gray-50 p-4 pb-40">
           {orderLoading ? (
@@ -338,17 +447,32 @@ export default function Orders() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {orders.map((order) => (
+                  {orders.map((order) => {
+                    const mergeable = isOrderMergeable(order);
+                    const isSelectedForMerge =
+                      mergeMode && mergeSelection.includes(order.name);
+                    return (
                     <tr
                       key={order.name}
                       onClick={() => handleOrderClick(order)}
                       className={cn(
-                        'cursor-pointer hover:bg-gray-50 transition-colors',
-                        selectedOrder?.name === order.name && 'bg-blue-50 hover:bg-blue-50'
+                        'transition-colors',
+                        mergeMode && mergeable && 'cursor-pointer hover:bg-amber-50',
+                        mergeMode && !mergeable && 'opacity-40 cursor-not-allowed',
+                        !mergeMode && 'cursor-pointer hover:bg-gray-50',
+                        !mergeMode &&
+                          selectedOrder?.name === order.name &&
+                          'bg-blue-50 hover:bg-blue-50',
+                        isSelectedForMerge && 'bg-amber-50 hover:bg-amber-100'
                       )}
                     >
                       <td className="px-4 py-2 text-gray-900 font-medium" title={order.name}>
-                        <span className="block max-w-[10rem] truncate">{order.name}</span>
+                        <span className="inline-flex items-center gap-2 max-w-[12rem]">
+                          {isSelectedForMerge && (
+                            <CheckCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                          )}
+                          <span className="block truncate">{order.name}</span>
+                        </span>
                       </td>
                       <td className="px-3 py-2 text-gray-700">
                         {order.customer_name || order.customer}
@@ -370,7 +494,22 @@ export default function Orders() {
                         {formatCurrency(getOrderTotal(order))}
                       </td>
                       <td className="px-4 py-2 text-right">
-                        <div className="inline-flex items-center gap-1.5 justify-end">
+                        <div className="inline-flex items-center gap-1.5 justify-end flex-wrap">
+                          {order.merge_log_name && (
+                            <Badge
+                              variant="default"
+                              className="bg-amber-500 hover:bg-amber-600 text-white flex items-center gap-1 px-2 py-0.5"
+                              title={`Merged from ${order.merge_source_count || 0} order${order.merge_source_count === 1 ? '' : 's'} — click to unmerge`}
+                            >
+                              <GitMerge className="w-3 h-3" />
+                              <span className="text-xs">
+                                Merged
+                                {order.merge_source_count && order.merge_source_count > 0
+                                  ? ` +${order.merge_source_count}`
+                                  : ''}
+                              </span>
+                            </Badge>
+                          )}
                           {order.custom_order_status === 'Served' && (
                             <Badge
                               variant="default"
@@ -386,21 +525,35 @@ export default function Orders() {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-w-screen-xl mx-auto">
-              {orders.map((order) => (
+              {orders.map((order, idx) => {
+                const mergeable = isOrderMergeable(order);
+                const isSelectedForMerge = mergeMode && mergeSelection.includes(order.name);
+                return (
                 <Card
                   key={order.name}
-                  className={`p-0 bg-white hover:shadow-md transition-shadow flex flex-col overflow-hidden cursor-pointer ${
-                    selectedOrder?.name === order.name ? 'ring-2 ring-blue-500 shadow-lg' : ''
-                  }`}
+                  className={cn(
+                    'relative p-0 bg-white hover:shadow-md transition-shadow flex flex-col overflow-hidden',
+                    selectedOrder?.name === order.name && !mergeMode && 'ring-2 ring-blue-500 shadow-lg',
+                    mergeMode && mergeable && `ury-wobble ury-wobble-delay-${idx % 6} cursor-pointer`,
+                    mergeMode && !mergeable && 'opacity-40 cursor-not-allowed',
+                    !mergeMode && 'cursor-pointer',
+                    isSelectedForMerge && 'ring-2 ring-amber-500 shadow-lg'
+                  )}
                   onClick={() => handleOrderClick(order)}
                 >
                   <CardContent className="p-0 flex flex-col h-full">
+                    {isSelectedForMerge && (
+                      <div className="absolute top-2 right-2 z-10 flex items-center justify-center w-6 h-6 rounded-full bg-amber-500 text-white shadow">
+                        <CheckCircle className="w-4 h-4" />
+                      </div>
+                    )}
                     <div className="p-3 bg-gray-50 border-b">
                       <h3 className="font-medium text-gray-900 text-sm truncate" title={order.name}>
                         {order.name}
@@ -411,7 +564,26 @@ export default function Orders() {
                             {order.restaurant_table ? `Table ${order.restaurant_table} • ` : ''}{order.order_type}
                           </p>
                         </div>
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                          {/* Merged badge — set on master invoices that
+                              have an Active URY Order Merge Log. Click
+                              the card to open the right panel and use
+                              the Unmerge button. */}
+                          {order.merge_log_name && (
+                            <Badge
+                              variant="default"
+                              className="bg-amber-500 hover:bg-amber-600 text-white flex items-center gap-1 px-2 py-0.5"
+                              title={`Merged from ${order.merge_source_count || 0} order${order.merge_source_count === 1 ? '' : 's'} — click to unmerge`}
+                            >
+                              <GitMerge className="w-3 h-3" />
+                              <span className="text-xs">
+                                Merged
+                                {order.merge_source_count && order.merge_source_count > 0
+                                  ? ` +${order.merge_source_count}`
+                                  : ''}
+                              </span>
+                            </Badge>
+                          )}
                           {/* Served Badge */}
                           {order.custom_order_status === 'Served' && (
                             <Badge variant="default" className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-1 px-2 py-0.5">
@@ -457,7 +629,8 @@ export default function Orders() {
                     </div>
                   </CardContent>
                 </Card>
-              ))}
+                );
+              })}
             </div>
           )}
           {/* Pagination Controls */}
@@ -656,20 +829,61 @@ export default function Orders() {
               )}
             </div>
 
+            {/* Unmerge banner — shown when this invoice is the master
+                of an Active URY Order Merge Log AND it's still unpaid. */}
+            {selectedOrderMergeLog &&
+              selectedOrder.status === 'Draft' && (
+                <div className="border-t border-amber-200 bg-amber-50 px-6 py-3 sticky bottom-[88px] left-0 right-0 z-10">
+                  <div className="flex items-center gap-3">
+                    <GitMerge className="w-4 h-4 text-amber-700 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-amber-900">
+                        Merged from {selectedOrderMergeLog.source_count}{' '}
+                        {selectedOrderMergeLog.source_count === 1
+                          ? 'order'
+                          : 'orders'}
+                      </p>
+                      <p className="text-[11px] text-amber-700 truncate">
+                        by {selectedOrderMergeLog.merged_by_full_name || selectedOrderMergeLog.merged_by}
+                      </p>
+                    </div>
+                    <Button
+                      onClick={handleUnmerge}
+                      variant="outline"
+                      size="xs"
+                      disabled={mergeLoading}
+                      className="border-amber-300 text-amber-900 hover:bg-amber-100 shrink-0"
+                    >
+                      {mergeLoading ? (
+                        <Spinner className="w-3 h-3" hideMessage />
+                      ) : (
+                        <>
+                          <Undo2 className="w-3 h-3 mr-1" />
+                          Unmerge
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
             {/* Sticky Bottom Section - Single Row: Print | Payment | Total */}
             <div className="border-t border-gray-200 p-6 bg-gray-50 sticky bottom-0 left-0 right-0 z-10">
               <div className="flex items-center gap-3 w-full">
-                {/* Print Icon Button */}
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="flex-shrink-0"
-                  onClick={handlePrintOrder}
-                  aria-label="Print"
-                  disabled={isPrinting}
-                >
-                  {isPrinting ? <Spinner className="w-5 h-5" hideMessage /> : <Printer className="w-5 h-5" />}
-                </Button>
+                {/* Print Icon Button — hidden after first print for cashiers.
+                    Captains / Managers / Admins can always re-print. */}
+                {(selectedOrder.invoice_printed === 0 || canReprint) && (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="flex-shrink-0"
+                    onClick={handlePrintOrder}
+                    aria-label="Print"
+                    disabled={isPrinting}
+                  >
+                    {isPrinting ? <Spinner className="w-5 h-5" hideMessage /> : <Printer className="w-5 h-5" />}
+                  </Button>
+                )}
                 {/* Payment Button - Only show for Draft, Unbilled, and Recently Paid orders */}
                 {(selectedOrder.status === 'Draft' || selectedOrder.status === 'Unbilled' || selectedOrder.status === 'Recently Paid') && (
                   <Button

@@ -24,11 +24,52 @@ export interface POSInvoice {
   owner?: string;
   /** Friendly name from JOIN to tabUser. */
   owner_full_name?: string;
+  /**
+   * Set when this invoice has been merged into another (the master).
+   * The Orders page filters out invoices with this set so the dormant
+   * sources don't clutter the list. Cleared on unmerge.
+   */
+  custom_merged_into?: string | null;
+  /**
+   * Set on master invoices that have an Active URY Order Merge Log.
+   * Powers the "Merged" badge on cards/list rows so the user can spot
+   * merged orders at a glance. Populated by getPosInvoice's correlated
+   * subquery (no extra round-trip).
+   */
+  merge_log_name?: string | null;
+  /** Number of source invoices in the active merge log. */
+  merge_source_count?: number;
 }
 
 export interface CashierUser {
   user: string;
   full_name: string;
+}
+
+/**
+ * Compact summary of an active URY Order Merge Log returned by
+ * `get_active_merge_log_for_invoice`. The right panel uses this to
+ * decide whether to render the Unmerge button.
+ */
+export interface ActiveMergeLog {
+  name: string;
+  merged_at: string | null;
+  merged_by: string;
+  merged_by_full_name: string;
+  source_count: number;
+  source_invoices: string[];
+}
+
+export interface MergeResult {
+  merge_log: string;
+  master_invoice: string;
+  merged_count: number;
+}
+
+export interface UnmergeResult {
+  merge_log: string;
+  master_invoice: string;
+  unmerged_count: number;
 }
 
 export interface POSInvoiceItem {
@@ -100,6 +141,62 @@ export async function getPOSInvoices({
   } catch (error) {
     console.error('Error fetching POS invoices:', error);
     throw new Error('Failed to fetch POS invoices');
+  }
+}
+
+/**
+ * Merge a list of POS Invoices into a single master. The first
+ * invoice in the list becomes the master; the rest are flagged via
+ * `custom_merged_into` and their items appended. Backend creates a
+ * `URY Order Merge Log` with snapshots so the operation can be
+ * reversed via `unmergeOrders`.
+ */
+export async function mergeOrders(
+  invoiceNames: string[],
+  notes?: string
+): Promise<MergeResult> {
+  const res = await call.post<{ message: MergeResult }>(
+    'ury.ury_pos.api.merge_pos_invoices',
+    {
+      invoices: invoiceNames,
+      notes: notes || null,
+    }
+  );
+  return res.message;
+}
+
+/**
+ * Reverse a previous merge by its log name. Restores the master's
+ * pre-merge items and clears `custom_merged_into` on each source.
+ * Only allowed while the master is still unpaid (Draft, docstatus 0).
+ */
+export async function unmergeOrders(mergeLogName: string): Promise<UnmergeResult> {
+  const res = await call.post<{ message: UnmergeResult }>(
+    'ury.ury_pos.api.unmerge_pos_invoices',
+    { merge_log: mergeLogName }
+  );
+  return res.message;
+}
+
+/**
+ * Look up the most recent Active URY Order Merge Log where this
+ * invoice is the master. Returns null when there isn't one. Used by
+ * the right panel of the Orders page to decide whether to render
+ * the Unmerge button.
+ */
+export async function getActiveMergeLogForInvoice(
+  invoiceName: string | null
+): Promise<ActiveMergeLog | null> {
+  if (!invoiceName) return null;
+  try {
+    const res = await call.get<{ message: ActiveMergeLog | null }>(
+      'ury.ury_pos.api.get_active_merge_log_for_invoice',
+      { invoice: invoiceName }
+    );
+    return res.message || null;
+  } catch (error) {
+    console.error('Error fetching active merge log:', error);
+    return null;
   }
 }
 

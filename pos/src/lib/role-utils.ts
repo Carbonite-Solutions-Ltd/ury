@@ -53,3 +53,48 @@ export const canSeeAllTerminalOrders = (user: User | null): boolean => {
   const allowed = ['System Manager', 'URY Manager', 'URY Captain'];
   return user.roles.some((role) => allowed.includes(role));
 };
+
+/**
+ * Whether the current user can re-print an already-printed POS Invoice.
+ * Cashiers can print once (the print button hides after invoice_printed
+ * goes to 1). Captains / managers / admins can re-print at will. The
+ * first print is allowed for everyone — this gate only kicks in for
+ * the *re*-print.
+ */
+export const canReprintInvoice = (user: User | null): boolean => {
+  if (!user) return false;
+  if (user.name === 'Administrator') return true;
+  if (!user.roles) return false;
+  const allowed = ['System Manager', 'URY Manager', 'URY Captain'];
+  return user.roles.some((role) => allowed.includes(role));
+};
+
+/**
+ * Whether the current user can use the Merge Orders feature on this
+ * POS Profile. Two layers of gating:
+ *   1. The user must have URY Cashier or higher.
+ *   2. If `posProfile.custom_restrict_merge_to_captain === 1`, only
+ *      captains / managers / admins can merge — cashiers see no
+ *      Merge Orders button.
+ *
+ * Backend re-validates the same logic in `_user_can_merge_orders` and
+ * additionally enforces "cashiers can only merge their own orders".
+ */
+export const canMergeOrders = (
+  user: User | null,
+  posProfile: PosProfileCombined | null
+): boolean => {
+  if (!user) return false;
+  if (user.name === 'Administrator') return true;
+  if (!user.roles) return false;
+
+  const captainRoles = ['System Manager', 'URY Manager', 'URY Captain'];
+  const isCaptain = user.roles.some((role) => captainRoles.includes(role));
+  if (isCaptain) return true;
+
+  // Captain restriction is on — non-captains can't merge.
+  if (posProfile?.custom_restrict_merge_to_captain === 1) return false;
+
+  // Otherwise URY Cashier is enough.
+  return user.roles.includes('URY Cashier');
+};

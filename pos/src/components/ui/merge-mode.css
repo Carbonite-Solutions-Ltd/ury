@@ -1,0 +1,35 @@
+/* Subtle wobble animation for cards/rows in merge mode.
+ * Stronger than a pulse, gentler than the iOS shake-to-delete.
+ * See CLAUDE.md "Fixes log" 2026-04-09 (merge orders feature). */
+@keyframes ury-wobble {
+  0% {
+    transform: rotate(-0.6deg) translateY(0);
+  }
+  50% {
+    transform: rotate(0.6deg) translateY(-1px);
+  }
+  100% {
+    transform: rotate(-0.6deg) translateY(0);
+  }
+}
+
+.ury-wobble {
+  animation: ury-wobble 0.45s ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* Slight stagger by index so a grid of cards doesn't look like one
+ * giant clock pendulum. Multiplied via inline style on the card. */
+.ury-wobble-delay-0 { animation-delay: 0ms; }
+.ury-wobble-delay-1 { animation-delay: 60ms; }
+.ury-wobble-delay-2 { animation-delay: 120ms; }
+.ury-wobble-delay-3 { animation-delay: 180ms; }
+.ury-wobble-delay-4 { animation-delay: 240ms; }
+.ury-wobble-delay-5 { animation-delay: 30ms; }
+
+/* Respect reduced-motion preference. */
+@media (prefers-reduced-motion: reduce) {
+  .ury-wobble {
+    animation: none;
+  }
+}

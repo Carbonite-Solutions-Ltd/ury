@@ -1,0 +1,96 @@
+{
+ "actions": [],
+ "creation": "2026-04-09 16:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "source_invoice",
+  "original_status",
+  "original_grand_total",
+  "column_break_1",
+  "original_customer",
+  "original_customer_name",
+  "original_restaurant_table",
+  "section_break_snapshot",
+  "original_items_json",
+  "original_payments_json"
+ ],
+ "fields": [
+  {
+   "fieldname": "source_invoice",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Source Invoice",
+   "read_only": 1
+  },
+  {
+   "fieldname": "original_status",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Original Status",
+   "read_only": 1
+  },
+  {
+   "fieldname": "original_grand_total",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Original Grand Total",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "original_customer",
+   "fieldtype": "Data",
+   "label": "Original Customer",
+   "read_only": 1
+  },
+  {
+   "fieldname": "original_customer_name",
+   "fieldtype": "Data",
+   "label": "Original Customer Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "original_restaurant_table",
+   "fieldtype": "Data",
+   "label": "Original Restaurant Table",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_snapshot",
+   "fieldtype": "Section Break",
+   "label": "Snapshot (JSON)"
+  },
+  {
+   "description": "JSON snapshot of the source invoice's items at merge time. Used to restore the source on unmerge.",
+   "fieldname": "original_items_json",
+   "fieldtype": "Long Text",
+   "label": "Original Items (JSON)",
+   "read_only": 1
+  },
+  {
+   "description": "JSON snapshot of the source invoice's payments at merge time.",
+   "fieldname": "original_payments_json",
+   "fieldtype": "Long Text",
+   "label": "Original Payments (JSON)",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-04-09 16:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "URY",
+ "name": "URY Order Merge Source",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

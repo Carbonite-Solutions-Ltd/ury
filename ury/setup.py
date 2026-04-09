@@ -132,10 +132,26 @@ def get_custom_fields():
 					"print_hide_if_no_value": 1,
 					"description": "Physical terminal (till) that rang this invoice. Stamped automatically from the React POS session.",
 				},
+				# Set when this invoice has been merged into another
+				# (the master). Hidden from the Orders page list. Cleared
+				# on unmerge. See CLAUDE.md "Fixes log" 2026-04-09 (merge
+				# orders feature).
+				{
+					"fieldname": "custom_merged_into",
+					"fieldtype": "Link",
+					"insert_after": "custom_terminal",
+					"label": "Merged Into",
+					"options": "POS Invoice",
+					"read_only": 1,
+					"in_standard_filter": 1,
+					"print_hide": 1,
+					"print_hide_if_no_value": 1,
+					"description": "Set when this invoice has been merged into another (the master). Hidden from the Orders page list. Cleared on unmerge.",
+				},
 				{
 					"fieldname": "column_break_gd1mq",
 					"fieldtype": "Column Break",
-					"insert_after": "custom_terminal",
+					"insert_after": "custom_merged_into",
 				},
 				{
 					"fieldname": "arrived_time",
@@ -331,6 +347,19 @@ def get_custom_fields():
 				"default": "0",
 				"depends_on": "eval:doc.custom_shift_hours > 0",
 				"description": "When the shift length is exceeded, also block new orders until the cashier closes the shift.",
+			},
+			# Restrict the merge-orders button to captains only. When
+			# checked, only URY Captain / URY Manager / Administrator
+			# users see the merge button on the Orders page; when
+			# unchecked, cashiers can merge their own orders too.
+			# See CLAUDE.md "Fixes log" 2026-04-09 (merge orders feature).
+			{
+				"fieldname": "custom_restrict_merge_to_captain",
+				"fieldtype": "Check",
+				"insert_after": "custom_block_orders_after_shift_end",
+				"label": "Restrict Merge Orders to Captain",
+				"default": "0",
+				"description": "When checked, only URY Captain / URY Manager / Administrator users can merge orders on this terminal.",
 			},
 		],
   

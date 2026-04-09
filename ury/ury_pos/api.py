@@ -1,4 +1,5 @@
 import frappe
+import json
 from frappe import _
 from datetime import date, datetime, timedelta
 
@@ -485,6 +486,12 @@ def getPosInvoice(
     where_parts = ["pi.branch = %s", "pi.status = %s"]
     params = [branch, db_status]
 
+    # Hide invoices that have been merged into another. The master
+    # remains visible; only the dormant sources are filtered out.
+    where_parts.append(
+        "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')"
+    )
+
     if terminal:
         # Defensive null fallback: orders that pre-date the
         # custom_terminal field (or that somehow slipped through
@@ -518,7 +525,21 @@ def getPosInvoice(
             pi.status, pi.mobile_number, pi.posting_date, pi.rounded_total,
             pi.order_type, pi.custom_order_status, pi.custom_terminal,
             pi.owner,
-            u.full_name AS owner_full_name
+            u.full_name AS owner_full_name,
+            (
+                SELECT ml.name
+                FROM `tabURY Order Merge Log` AS ml
+                WHERE ml.master_invoice = pi.name AND ml.status = 'Active'
+                ORDER BY ml.merged_at DESC
+                LIMIT 1
+            ) AS merge_log_name,
+            (
+                SELECT COUNT(s.name)
+                FROM `tabURY Order Merge Source` AS s
+                INNER JOIN `tabURY Order Merge Log` AS ml2
+                  ON ml2.name = s.parent
+                WHERE ml2.master_invoice = pi.name AND ml2.status = 'Active'
+            ) AS merge_source_count
         FROM `tabPOS Invoice` AS pi
         LEFT JOIN `tabUser` AS u ON u.name = pi.owner
         WHERE {where_sql}
@@ -562,6 +583,12 @@ def searchPosInvoice(
     where_parts = ["pi.branch = %s", "pi.status = %s"]
     params = [branch, db_status]
 
+    # Hide merged-source invoices from search results too — same rule
+    # as getPosInvoice.
+    where_parts.append(
+        "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')"
+    )
+
     if status == "Unbilled":
         where_parts.append("pi.restaurant_table IS NOT NULL")
         where_parts.append("pi.invoice_printed = 0")
@@ -594,7 +621,21 @@ def searchPosInvoice(
             pi.restaurant_table, pi.status, pi.rounded_total, pi.net_total,
             pi.mobile_number, pi.cashier, pi.waiter, pi.invoice_printed,
             pi.custom_order_status, pi.custom_terminal, pi.owner,
-            u.full_name AS owner_full_name
+            u.full_name AS owner_full_name,
+            (
+                SELECT ml.name
+                FROM `tabURY Order Merge Log` AS ml
+                WHERE ml.master_invoice = pi.name AND ml.status = 'Active'
+                ORDER BY ml.merged_at DESC
+                LIMIT 1
+            ) AS merge_log_name,
+            (
+                SELECT COUNT(s.name)
+                FROM `tabURY Order Merge Source` AS s
+                INNER JOIN `tabURY Order Merge Log` AS ml2
+                  ON ml2.name = s.parent
+                WHERE ml2.master_invoice = pi.name AND ml2.status = 'Active'
+            ) AS merge_source_count
         FROM `tabPOS Invoice` AS pi
         LEFT JOIN `tabUser` AS u ON u.name = pi.owner
         WHERE {" AND ".join(where_parts)}
@@ -819,6 +860,9 @@ def getPosProfile(terminal=None):
         block_orders_after_shift = (
             pos_profiles.get("custom_block_orders_after_shift_end") or 0
         )
+        restrict_merge_to_captain = (
+            pos_profiles.get("custom_restrict_merge_to_captain") or 0
+        )
         # Per-terminal scoping makes the cashier/owner resolution trivial:
         # whoever is logged into the React POS right now IS the cashier
         # and the owner. The old code did a SQL join through Multiple
@@ -871,6 +915,7 @@ def getPosProfile(terminal=None):
         "enable_kot_reprint":enable_kot_reprint,
         "custom_shift_hours": shift_hours,
         "custom_block_orders_after_shift_end": block_orders_after_shift,
+        "custom_restrict_merge_to_captain": restrict_merge_to_captain,
         # Echo the caller's terminal back so the frontend store has a
         # single source of truth for "which terminal resolved this profile".
         "terminal": terminal or None,
@@ -1691,4 +1736,462 @@ def get_terminal_config(terminal):
         "branch": doc.branch,
         "description": doc.description,
         "pos_profile": doc.pos_profile,
+    }
+
+
+# ───────────────────────────────────────────────────────────────────
+# POS Invoice merge / unmerge
+# ───────────────────────────────────────────────────────────────────
+
+
+def _serialise_invoice_items(invoice_doc) -> str:
+    """JSON snapshot of an invoice's `items` child table. Used by the
+    merge log so unmerge can restore master/source state losslessly.
+    Stores enough fields to recreate the row, not the full ORM object.
+    """
+    rows = []
+    for item in invoice_doc.items or []:
+        rows.append(
+            {
+                "item_code": item.item_code,
+                "item_name": item.item_name,
+                "qty": float(item.qty or 0),
+                "rate": float(item.rate or 0),
+                "amount": float(item.amount or 0),
+                "price_list_rate": float(item.price_list_rate or 0),
+                "base_price_list_rate": float(item.base_price_list_rate or 0),
+                "warehouse": item.warehouse,
+                "cost_center": item.cost_center,
+                "income_account": item.income_account,
+                "expense_account": item.expense_account,
+                "uom": item.uom,
+                "stock_uom": item.stock_uom,
+                "conversion_factor": float(item.conversion_factor or 1),
+                "comment": getattr(item, "comment", None),
+                "custom_course": getattr(item, "custom_course", None),
+            }
+        )
+    return json.dumps(rows)
+
+
+def _serialise_invoice_payments(invoice_doc) -> str:
+    rows = []
+    for payment in invoice_doc.payments or []:
+        rows.append(
+            {
+                "mode_of_payment": payment.mode_of_payment,
+                "amount": float(payment.amount or 0),
+                "account": payment.account,
+                "type": payment.type,
+            }
+        )
+    return json.dumps(rows)
+
+
+def _restore_invoice_items(invoice_doc, items_json: str) -> None:
+    """Replace an invoice's `items` child table with the rows from a
+    snapshot. Caller is responsible for save() afterwards.
+    """
+    if not items_json:
+        invoice_doc.items = []
+        return
+    try:
+        rows = json.loads(items_json)
+    except Exception:
+        rows = []
+    invoice_doc.items = []
+    for row in rows:
+        # Filter the snapshot dict down to fields that exist on POS
+        # Invoice Item to avoid Frappe complaining about unknown keys.
+        invoice_doc.append("items", row)
+
+
+def _user_can_merge_orders(pos_profile_name: str | None) -> tuple[bool, bool]:
+    """Return (can_merge, requesting_user_is_captain).
+
+    `can_merge` is True if the requesting user is allowed to merge at
+    all on this profile. The captain-only restriction is per-profile
+    via `custom_restrict_merge_to_captain`. URY Cashier can merge own
+    orders unless the restriction is on. URY Captain / URY Manager /
+    Administrator can always merge.
+    """
+    user = frappe.session.user
+    roles = set(frappe.get_roles(user))
+    captain_roles = {"Administrator", "System Manager", "URY Manager", "URY Captain"}
+    is_captain = user == "Administrator" or bool(roles & captain_roles)
+
+    restrict = 0
+    if pos_profile_name:
+        restrict = (
+            frappe.db.get_value(
+                "POS Profile", pos_profile_name, "custom_restrict_merge_to_captain"
+            )
+            or 0
+        )
+
+    if is_captain:
+        return True, True
+    if restrict:
+        # Only captains can merge on this profile and the requester isn't one.
+        return False, False
+    if "URY Cashier" in roles:
+        return True, False
+    return False, False
+
+
+@frappe.whitelist()
+def merge_pos_invoices(invoices, notes=None):
+    """Merge a list of POS Invoices into a single master.
+
+    The first invoice in ``invoices`` becomes the master. The rest are
+    flagged via ``custom_merged_into`` (hidden from the Orders page
+    list) and their items are appended to the master. A
+    ``URY Order Merge Log`` doctype is created with snapshots that let
+    `unmerge_pos_invoices` reverse the operation cleanly.
+
+    Validation:
+    - All invoices must exist, all on the same branch + same terminal,
+      all docstatus 0, status Draft, none already merged.
+    - Caller must satisfy `_user_can_merge_orders` for the master's
+      POS Profile (handles the captain-only restriction).
+    - Cashiers can only merge their OWN orders. Captains can merge
+      any cashier's orders on the same terminal.
+
+    See CLAUDE.md "Fixes log" 2026-04-09 (merge orders feature).
+    """
+    if isinstance(invoices, str):
+        try:
+            invoices = json.loads(invoices)
+        except Exception:
+            invoices = [invoices]
+    if not isinstance(invoices, list) or len(invoices) < 2:
+        frappe.throw(
+            _("Select at least two orders to merge."),
+            title=_("Not Enough Orders"),
+        )
+
+    # Deduplicate while preserving order — first occurrence becomes the master.
+    seen = []
+    for name in invoices:
+        if name not in seen:
+            seen.append(name)
+    invoices = seen
+    if len(invoices) < 2:
+        frappe.throw(
+            _("Select at least two distinct orders to merge."),
+            title=_("Not Enough Orders"),
+        )
+
+    master_name = invoices[0]
+    source_names = invoices[1:]
+
+    if not frappe.db.exists("POS Invoice", master_name):
+        frappe.throw(
+            _("Master invoice '{0}' not found.").format(master_name),
+            frappe.DoesNotExistError,
+        )
+    master = frappe.get_doc("POS Invoice", master_name)
+
+    can_merge, is_captain = _user_can_merge_orders(master.pos_profile)
+    if not can_merge:
+        frappe.throw(
+            _(
+                "You are not allowed to merge orders on this POS Profile. "
+                "The 'Restrict Merge Orders to Captain' setting is enabled — "
+                "ask a captain or manager."
+            ),
+            title=_("Merge Not Allowed"),
+            exc=frappe.PermissionError,
+        )
+
+    requesting_user = frappe.session.user
+
+    # Validate the master itself before touching anything.
+    if master.docstatus != 0 or master.status != "Draft":
+        frappe.throw(
+            _("Master invoice '{0}' is not a draft order. Only unpaid drafts can be merged.").format(master_name),
+            title=_("Cannot Merge"),
+        )
+    if master.get("custom_merged_into"):
+        frappe.throw(
+            _("Master invoice '{0}' is already merged into '{1}'. Pick a different master.").format(master_name, master.get("custom_merged_into")),
+            title=_("Cannot Merge"),
+        )
+    if not is_captain and master.owner != requesting_user:
+        frappe.throw(
+            _("You can only merge your own orders.").format(),
+            title=_("Merge Not Allowed"),
+            exc=frappe.PermissionError,
+        )
+
+    master_terminal = master.get("custom_terminal")
+    master_branch = master.branch
+    if not master_branch:
+        master_branch = frappe.db.get_value(
+            "POS Profile", master.pos_profile, "branch"
+        )
+
+    # Validate every source.
+    source_docs = []
+    for src_name in source_names:
+        if not frappe.db.exists("POS Invoice", src_name):
+            frappe.throw(
+                _("Source invoice '{0}' not found.").format(src_name),
+                frappe.DoesNotExistError,
+            )
+        src = frappe.get_doc("POS Invoice", src_name)
+        if src.docstatus != 0 or src.status != "Draft":
+            frappe.throw(
+                _("Order '{0}' is not a draft. Only unpaid drafts can be merged.").format(src_name),
+                title=_("Cannot Merge"),
+            )
+        if src.get("custom_merged_into"):
+            frappe.throw(
+                _("Order '{0}' has already been merged into '{1}'.").format(src_name, src.get("custom_merged_into")),
+                title=_("Cannot Merge"),
+            )
+        src_branch = src.branch or frappe.db.get_value(
+            "POS Profile", src.pos_profile, "branch"
+        )
+        if src_branch != master_branch:
+            frappe.throw(
+                _("Order '{0}' is on a different branch ({1}) than the master ({2}). Only same-branch merges are allowed.").format(src_name, src_branch, master_branch),
+                title=_("Cannot Merge"),
+            )
+        if (src.get("custom_terminal") or None) != (master_terminal or None):
+            frappe.throw(
+                _("Order '{0}' is on a different terminal ({1}) than the master ({2}). Only same-terminal merges are allowed.").format(src_name, src.get("custom_terminal") or "(none)", master_terminal or "(none)"),
+                title=_("Cannot Merge"),
+            )
+        if not is_captain and src.owner != requesting_user:
+            frappe.throw(
+                _("You can only merge your own orders. Order '{0}' was rung by another cashier.").format(src_name),
+                title=_("Merge Not Allowed"),
+                exc=frappe.PermissionError,
+            )
+        source_docs.append(src)
+
+    # Snapshot the master's pre-merge state for the unmerge path.
+    master_pre_merge_items_json = _serialise_invoice_items(master)
+
+    # Build the merge log first (in memory) so we have all the source
+    # snapshots collected before we touch any docs.
+    log = frappe.new_doc("URY Order Merge Log")
+    log.master_invoice = master.name
+    log.status = "Active"
+    log.branch = master_branch
+    log.custom_terminal = master_terminal
+    log.merged_at = frappe.utils.now_datetime()
+    log.merged_by = requesting_user
+    log.merged_by_full_name = (
+        frappe.db.get_value("User", requesting_user, "full_name") or ""
+    )
+    log.notes = notes
+    log.master_pre_merge_items_json = master_pre_merge_items_json
+
+    # For each source: snapshot, append items to master, free table,
+    # and stamp custom_merged_into.
+    for src in source_docs:
+        log.append(
+            "source_invoices",
+            {
+                "source_invoice": src.name,
+                "original_status": src.status,
+                "original_grand_total": float(src.grand_total or 0),
+                "original_customer": src.customer,
+                "original_customer_name": src.customer_name,
+                "original_restaurant_table": src.restaurant_table,
+                "original_items_json": _serialise_invoice_items(src),
+                "original_payments_json": _serialise_invoice_payments(src),
+            },
+        )
+
+        # Append source items to master. ERPNext will recompute totals
+        # on save based on the new combined item list.
+        for item in src.items or []:
+            master.append(
+                "items",
+                {
+                    "item_code": item.item_code,
+                    "item_name": item.item_name,
+                    "qty": item.qty,
+                    "rate": item.rate,
+                    "price_list_rate": item.price_list_rate,
+                    "base_price_list_rate": item.base_price_list_rate,
+                    "warehouse": item.warehouse,
+                    "cost_center": item.cost_center,
+                    "income_account": item.income_account,
+                    "expense_account": item.expense_account,
+                    "uom": item.uom,
+                    "stock_uom": item.stock_uom,
+                    "conversion_factor": item.conversion_factor,
+                    "comment": getattr(item, "comment", None),
+                    "custom_course": getattr(item, "custom_course", None),
+                },
+            )
+
+        # Free the source's table (if any) — the master keeps its own.
+        if src.restaurant_table:
+            try:
+                frappe.db.set_value(
+                    "URY Table",
+                    src.restaurant_table,
+                    {"occupied": 0, "latest_invoice_time": None},
+                )
+            except Exception:
+                pass
+
+        # Flag the source as merged into the master.
+        src.custom_merged_into = master.name
+        src.flags.ignore_validate_update_after_submit = True
+        src.save(ignore_permissions=True)
+
+    # Save the master AFTER its items list is fully composed so the
+    # totals get recalculated once.
+    master.save(ignore_permissions=True)
+
+    # Persist the log.
+    log.insert(ignore_permissions=True)
+    frappe.db.commit()
+
+    return {
+        "merge_log": log.name,
+        "master_invoice": master.name,
+        "merged_count": len(source_docs),
+    }
+
+
+@frappe.whitelist()
+def unmerge_pos_invoices(merge_log):
+    """Reverse a previous merge. Restores the master's pre-merge items
+    and clears `custom_merged_into` on each source. Re-occupies any
+    tables the sources had freed.
+
+    Constraints:
+    - The merge log must be in 'Active' status (not already unmerged).
+    - The master invoice must still be unpaid (docstatus 0, status
+      Draft). Once the master has been paid, the merge is locked in.
+    - Caller must be allowed to merge on this POS Profile (same role
+      check as `merge_pos_invoices`).
+
+    See CLAUDE.md "Fixes log" 2026-04-09 (merge orders feature).
+    """
+    if not merge_log:
+        frappe.throw(
+            _("Merge log name is required."),
+            title=_("Missing Argument"),
+        )
+
+    if not frappe.db.exists("URY Order Merge Log", merge_log):
+        frappe.throw(
+            _("Merge log '{0}' not found.").format(merge_log),
+            frappe.DoesNotExistError,
+        )
+
+    log = frappe.get_doc("URY Order Merge Log", merge_log)
+    if log.status != "Active":
+        frappe.throw(
+            _("Merge log '{0}' is already unmerged.").format(merge_log),
+            title=_("Already Unmerged"),
+        )
+
+    if not frappe.db.exists("POS Invoice", log.master_invoice):
+        frappe.throw(
+            _("Master invoice '{0}' no longer exists.").format(log.master_invoice),
+            frappe.DoesNotExistError,
+        )
+
+    master = frappe.get_doc("POS Invoice", log.master_invoice)
+    if master.docstatus != 0 or master.status != "Draft":
+        frappe.throw(
+            _("Master invoice '{0}' is no longer a draft. Once an order is paid, the merge can't be reversed.").format(log.master_invoice),
+            title=_("Cannot Unmerge"),
+        )
+
+    can_merge, is_captain = _user_can_merge_orders(master.pos_profile)
+    if not can_merge:
+        frappe.throw(
+            _("You are not allowed to unmerge orders on this POS Profile."),
+            title=_("Unmerge Not Allowed"),
+            exc=frappe.PermissionError,
+        )
+
+    requesting_user = frappe.session.user
+    if not is_captain and master.owner != requesting_user:
+        frappe.throw(
+            _("You can only unmerge your own orders."),
+            title=_("Unmerge Not Allowed"),
+            exc=frappe.PermissionError,
+        )
+
+    # Restore the master's items from the snapshot.
+    _restore_invoice_items(master, log.master_pre_merge_items_json)
+    master.save(ignore_permissions=True)
+
+    # Restore each source.
+    for src_row in log.source_invoices or []:
+        src_name = src_row.source_invoice
+        if not frappe.db.exists("POS Invoice", src_name):
+            # Source was deleted somehow — skip but keep going.
+            continue
+        src = frappe.get_doc("POS Invoice", src_name)
+        src.custom_merged_into = None
+        # Re-occupy the source's table if it had one.
+        if src_row.original_restaurant_table:
+            try:
+                frappe.db.set_value(
+                    "URY Table",
+                    src_row.original_restaurant_table,
+                    {"occupied": 1, "latest_invoice_time": src.creation},
+                )
+            except Exception:
+                pass
+        src.flags.ignore_validate_update_after_submit = True
+        src.save(ignore_permissions=True)
+
+    log.status = "Unmerged"
+    log.unmerged_at = frappe.utils.now_datetime()
+    log.unmerged_by = requesting_user
+    log.unmerged_by_full_name = (
+        frappe.db.get_value("User", requesting_user, "full_name") or ""
+    )
+    log.flags.ignore_permissions = True
+    log.save()
+    frappe.db.commit()
+
+    return {
+        "merge_log": log.name,
+        "master_invoice": master.name,
+        "unmerged_count": len(log.source_invoices or []),
+    }
+
+
+@frappe.whitelist()
+def get_active_merge_log_for_invoice(invoice):
+    """Return the most recent Active merge log where the given invoice
+    is the master, or None. Used by the right panel of the React POS
+    Orders page to decide whether to show the Unmerge button.
+    """
+    if not invoice:
+        return None
+    rows = frappe.get_all(
+        "URY Order Merge Log",
+        filters={"master_invoice": invoice, "status": "Active"},
+        fields=["name", "merged_at", "merged_by", "merged_by_full_name"],
+        order_by="merged_at desc",
+        limit=1,
+    )
+    if not rows:
+        return None
+    log_name = rows[0].name
+    log = frappe.get_doc("URY Order Merge Log", log_name)
+    return {
+        "name": log.name,
+        "merged_at": str(log.merged_at) if log.merged_at else None,
+        "merged_by": log.merged_by,
+        "merged_by_full_name": log.merged_by_full_name,
+        "source_count": len(log.source_invoices or []),
+        "source_invoices": [
+            row.source_invoice for row in (log.source_invoices or [])
+        ],
     }

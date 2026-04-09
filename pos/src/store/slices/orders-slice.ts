@@ -5,9 +5,13 @@ import {
   getPOSInvoices,
   getPOSInvoiceItems,
   getCashierUsersForTerminal,
+  getActiveMergeLogForInvoice,
+  mergeOrders,
+  unmergeOrders,
   POSInvoiceItem,
   POSInvoiceTax,
   CashierUser,
+  ActiveMergeLog,
 } from '../../lib/invoice-api';
 import { searchPosInvoice } from '../../lib/invoice-api';
 import { getSavedTerminal } from '../../lib/terminal-api';
@@ -36,6 +40,12 @@ export interface POSInvoice {
   owner?: string;
   /** Friendly name from JOIN to tabUser. */
   owner_full_name?: string;
+  /** Set when this invoice has been merged into another. Hidden from list. */
+  custom_merged_into?: string | null;
+  /** Active merge log name when this invoice is the master of a merge. */
+  merge_log_name?: string | null;
+  /** Number of source invoices in the active merge log. */
+  merge_source_count?: number;
 }
 
 export type OrdersViewMode = 'card' | 'list';
@@ -91,6 +101,18 @@ export interface OrdersState {
   /** Cashier dropdown options for the captain's filter. */
   cashierUsers: CashierUser[];
   cashierUsersLoading: boolean;
+  /** When true, the Orders page is in "merge mode" — cards wobble + are selectable. */
+  mergeMode: boolean;
+  /** Selected invoice names while in merge mode. */
+  mergeSelection: string[];
+  /** A merge or unmerge call is in flight. */
+  mergeLoading: boolean;
+  /**
+   * The most recent Active merge log where `selectedOrder` is the
+   * master, or null. Set when an order is selected. Used by the right
+   * panel to render the Unmerge button.
+   */
+  selectedOrderMergeLog: ActiveMergeLog | null;
 }
 
 export interface OrdersActions {
@@ -108,6 +130,11 @@ export interface OrdersActions {
   hydrateViewMode: (userName: string | null) => void;
   setCashierFilter: (filter: OrdersCashierFilter) => Promise<void>;
   fetchCashierUsers: () => Promise<void>;
+  enterMergeMode: () => void;
+  exitMergeMode: () => void;
+  toggleMergeSelection: (invoiceName: string) => void;
+  mergeSelectedOrders: (notes?: string) => Promise<{ master: string } | null>;
+  unmergeOrder: (mergeLogName: string) => Promise<boolean>;
 }
 
 export type OrdersSlice = OrdersState & OrdersActions;
@@ -141,6 +168,10 @@ export const createOrdersSlice: StateCreator<
   cashierFilter: 'mine',
   cashierUsers: [],
   cashierUsersLoading: false,
+  mergeMode: false,
+  mergeSelection: [],
+  mergeLoading: false,
+  selectedOrderMergeLog: null,
 
   // Actions
   fetchOrders: async (page = 1) => {
@@ -269,33 +300,50 @@ export const createOrdersSlice: StateCreator<
 
   selectOrder: async (order) => {
     try {
-      set({ 
+      set({
         selectedOrder: order,
-        selectedOrderLoading: true, 
-        selectedOrderError: null 
+        selectedOrderLoading: true,
+        selectedOrderError: null,
+        selectedOrderMergeLog: null,
       });
 
       const { items, taxes } = await getPOSInvoiceItems(order.name);
-      
-      set({ 
+
+      set({
         selectedOrderItems: items,
         selectedOrderTaxes: taxes,
-        selectedOrderLoading: false 
+        selectedOrderLoading: false,
       });
+
+      // Fire-and-forget: ask the backend if this invoice is the master
+      // of an Active merge log so the right panel can show the
+      // Unmerge button. Doesn't gate selection — if it fails we just
+      // don't show the button.
+      try {
+        const mergeLog = await getActiveMergeLogForInvoice(order.name);
+        // Only apply if the user hasn't switched to a different order
+        // in the meantime.
+        if (get().selectedOrder?.name === order.name) {
+          set({ selectedOrderMergeLog: mergeLog });
+        }
+      } catch (err) {
+        console.error('Error fetching merge log:', err);
+      }
     } catch (error) {
-      set({ 
+      set({
         selectedOrderError: error instanceof Error ? error.message : 'Failed to fetch order details',
-        selectedOrderLoading: false 
+        selectedOrderLoading: false,
       });
     }
   },
 
   clearSelectedOrder: () => {
-    set({ 
+    set({
       selectedOrder: null,
       selectedOrderItems: [],
       selectedOrderTaxes: [],
-      selectedOrderError: null 
+      selectedOrderError: null,
+      selectedOrderMergeLog: null,
     });
   },
 
@@ -321,4 +369,98 @@ export const createOrdersSlice: StateCreator<
   },
 
   setOrderSearchQuery: (query) => set({ orderSearchQuery: query }),
-}); 
+
+  // ───── Merge / Unmerge ─────
+
+  enterMergeMode: () => {
+    set({ mergeMode: true, mergeSelection: [] });
+    // Drop any selected order — the right panel makes no sense in merge mode.
+    get().clearSelectedOrder();
+  },
+
+  exitMergeMode: () => {
+    set({ mergeMode: false, mergeSelection: [] });
+  },
+
+  toggleMergeSelection: (invoiceName) => {
+    const { mergeSelection } = get();
+    if (mergeSelection.includes(invoiceName)) {
+      set({ mergeSelection: mergeSelection.filter((n) => n !== invoiceName) });
+    } else {
+      set({ mergeSelection: [...mergeSelection, invoiceName] });
+    }
+  },
+
+  mergeSelectedOrders: async (notes) => {
+    const { mergeSelection } = get();
+    if (mergeSelection.length < 2) {
+      set({
+        error: 'Select at least two orders to merge.',
+      });
+      return null;
+    }
+    try {
+      set({ mergeLoading: true, error: null });
+      const result = await mergeOrders(mergeSelection, notes);
+      set({
+        mergeMode: false,
+        mergeSelection: [],
+        mergeLoading: false,
+      });
+      // Refresh the list so the merged sources disappear and the master
+      // shows its new combined item count / total.
+      await get().fetchOrders(1);
+      return { master: result.master_invoice };
+    } catch (error: unknown) {
+      const anyErr = error as {
+        _server_messages?: string;
+        message?: string;
+      };
+      let msg = 'Failed to merge orders.';
+      if (anyErr?._server_messages) {
+        try {
+          const parsed = JSON.parse(anyErr._server_messages);
+          const first = JSON.parse(parsed[parsed.length - 1]);
+          msg = first?.message || msg;
+        } catch {
+          /* keep default */
+        }
+      } else if (anyErr?.message) {
+        msg = anyErr.message;
+      }
+      set({ error: msg, mergeLoading: false });
+      return null;
+    }
+  },
+
+  unmergeOrder: async (mergeLogName) => {
+    try {
+      set({ mergeLoading: true, error: null });
+      await unmergeOrders(mergeLogName);
+      // Drop the selection — the master invoice's content has changed.
+      get().clearSelectedOrder();
+      await get().fetchOrders(1);
+      set({ mergeLoading: false });
+      return true;
+    } catch (error: unknown) {
+      const anyErr = error as {
+        _server_messages?: string;
+        message?: string;
+      };
+      let msg = 'Failed to unmerge order.';
+      if (anyErr?._server_messages) {
+        try {
+          const parsed = JSON.parse(anyErr._server_messages);
+          const first = JSON.parse(parsed[parsed.length - 1]);
+          msg = first?.message || msg;
+        } catch {
+          /* keep default */
+        }
+      } else if (anyErr?.message) {
+        msg = anyErr.message;
+      }
+      set({ error: msg, mergeLoading: false });
+      return false;
+    }
+  },
+});

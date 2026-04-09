@@ -42,7 +42,12 @@ export const DEFAULT_PAYMENT_MODE="Cash"
 
 export type OrderStatusType = "Draft" | "Unbilled" | "Recently Paid" | "Paid" | "Consolidated" | "Return";
 
-// Base status types that are always available
+// Base status types that are always available.
+// "Paid" was moved out of EXTENDED_ORDER_STATUS_TYPES on 2026-04-09
+// per user request — cashiers need it unconditionally to see what
+// they closed today, and gating it behind the POS Profile
+// view_all_status flag was an unnecessary speed bump. Consolidated
+// and Return stay in EXTENDED because they're admin-y.
 export const BASE_ORDER_STATUS_TYPES = [
     {
         label: "Draft",
@@ -51,6 +56,10 @@ export const BASE_ORDER_STATUS_TYPES = [
     {
         label: "Unbilled",
         value: "Unbilled"
+    },
+    {
+        label: "Paid",
+        value: "Paid"
     }
 ];
 
@@ -64,10 +73,6 @@ export const RECENTLY_PAID_STATUS_TYPE = [
 
 // Extended status types that are only available when view_all_status is enabled
 export const EXTENDED_ORDER_STATUS_TYPES = [
-    {
-        label: "Paid",
-        value: "Paid"
-    },
     {
         label: "Consolidated",
         value: "Consolidated"

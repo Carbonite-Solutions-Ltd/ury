@@ -27,6 +27,8 @@ export interface PosProfileLimited {
   custom_shift_hours?: number;
   /** When 1, OrderPanel disables new orders once the shift hours are exceeded. */
   custom_block_orders_after_shift_end?: number;
+  /** When 1, only captains/managers can use the Orders page Merge Orders button. */
+  custom_restrict_merge_to_captain?: number;
 }
 
 export interface PosProfileLimitedResponse {
