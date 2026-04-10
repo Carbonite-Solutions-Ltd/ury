@@ -37,6 +37,11 @@ app_include_js = [
 page_js = {"point-of-sale": ["public/js/pos_extend.js"]}
 
 # include js in doctype views
+doctype_js = {
+    "POS Invoice":   "public/js/pos_invoice_folio.js",
+    # Same folio UI logic applies when POS runs in Sales Invoice mode
+    "Sales Invoice": "public/js/pos_invoice_folio.js",
+}
 # doctype_js = {"POS Invoive" : "public/js/pos_print.js"}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
@@ -124,14 +129,19 @@ doc_events = {
         "validate": "ury.ury.hooks.ury_pos_invoice.validate",
         "after_insert":"ury.ury.api.ury_kot_order_number.set_order_number",
         "before_submit": "ury.ury.hooks.ury_pos_invoice.before_submit",
-        "on_cancel": "ury.ury.hooks.ury_pos_invoice.on_trash",
+        "on_submit": "ury.ury.hooks.ury_pos_invoice.on_submit",
+        "on_cancel": "ury.ury.hooks.ury_pos_invoice.on_cancel",
         "on_trash": "ury.ury.hooks.ury_pos_invoice.on_trash",
     },
     "POS Profile": {"validate": "ury.ury.hooks.ury_pos_profile.validate"},
     "Sales Invoice": {
-        "before_insert": "ury.ury.hooks.ury_sales_invoice.before_insert",
-        "on_update":"ury.ury.hooks.ury_sales_invoice.on_update",
-        },
+        "before_insert":  "ury.ury.hooks.ury_sales_invoice.before_insert",
+        "validate":       "ury.ury.hooks.ury_sales_invoice.validate",
+        "before_submit":  "ury.ury.hooks.ury_sales_invoice.before_submit",
+        "on_submit":      "ury.ury.hooks.ury_sales_invoice.on_submit",
+        "on_cancel":      "ury.ury.hooks.ury_sales_invoice.on_cancel",
+        "on_update":      "ury.ury.hooks.ury_sales_invoice.on_update",
+    },
     "Customer": {"before_save": "ury.ury.hooks.ury_customer.before_insert"},
     "Item": {"validate": "ury.ury.hooks.ury_item.validate"},
     "POS Opening Entry": {
@@ -265,6 +275,10 @@ fixtures = [
                     "POS Invoice-invoice_printed",
                     "POS Invoice-invoice_created",
                     "POS Invoice-custom_aggregator_id",
+                    "POS Invoice-custom_charge_to_room",
+                    "POS Invoice-custom_ihotel_room",
+                    "POS Invoice-custom_ihotel_profile",
+                    "POS Invoice-custom_guest",
                     "POS Invoice-restaurant_info",
                     "POS Invoice-restaurant",
                     "POS Invoice-branch",
@@ -294,6 +308,10 @@ fixtures = [
                     "Sales Invoice-arrived_time",
                     "Sales Invoice-total_spend_time",
                     "Sales Invoice-custom_aggregator_id",
+                    "Sales Invoice-custom_charge_to_room",
+                    "Sales Invoice-custom_ihotel_room",
+                    "Sales Invoice-custom_ihotel_profile",
+                    "Sales Invoice-custom_guest",
                     "Sales Invoice Item-custom_course",
                     "POS Profile-restaurant_info",
                     "POS Profile-restaurant",
