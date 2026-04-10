@@ -1,11 +1,45 @@
 import frappe
 
+# Import folio helpers so Sales Invoice (POS Sales Invoice mode) can also post room charges
+from ury.ury.hooks.ury_pos_invoice import (
+    validate_folio_charge_details,
+    apply_room_charge_payment,
+    post_folio_charge,
+    reverse_folio_charge,
+)
+
 
 def before_insert(doc, method):
     sales_invoice_naming(doc, method)
 
-def on_update(doc,method):
-    aggregator_unpaid(doc,method)
+
+def validate(doc, method):
+    # Only validate folio fields when this Sales Invoice came from POS
+    if doc.is_pos:
+        validate_folio_charge_details(doc, method)
+
+
+def before_submit(doc, method):
+    # Settle the outstanding amount via "Room Charge" so the partial-payment
+    # guard in ERPNext does not block submission.
+    if doc.is_pos:
+        apply_room_charge_payment(doc)
+
+
+def on_submit(doc, method):
+    # Post the F&B charge to the guest folio when Sales Invoice mode is active in POS
+    if doc.is_pos:
+        post_folio_charge(doc, method)
+
+
+def on_cancel(doc, method):
+    # Reverse the folio charge on cancellation (creates a negative line for audit trail)
+    if doc.is_pos:
+        reverse_folio_charge(doc, method)
+
+
+def on_update(doc, method):
+    aggregator_unpaid(doc, method)
     
 def sales_invoice_naming(doc, method):
     if not doc.is_pos:
