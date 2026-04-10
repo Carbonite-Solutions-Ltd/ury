@@ -620,12 +620,17 @@ def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDisc
     # invoice.owner = owner  # REMOVE THIS LINE
     
     invoice.save()
-    try:
-        invoice.submit()
-    except Exception as e:
-        frappe.throw(f"Error while settling order: {e}")
-    
-    
+    # Do NOT wrap submit() in try/except: frappe.throw(f"...{e}").
+    # That pattern strips ERPNext's error title, indicator, and
+    # raise_exception flag, leaving the frontend with a generic
+    # "There was an error" wrapper instead of the real diagnostic
+    # ("Item Out of Stock", "Insufficient Permission", etc.). Let
+    # the original ValidationError propagate cleanly so the React
+    # POS's extractFrappeServerError() can pick out the title and
+    # render an actionable rich toast. Same surgery already done
+    # on sync_order — see CLAUDE.md "Fixes log" 2026-04-08.
+    invoice.submit()
+
 
 # Cancel KOT Doc Creation
 def cancel_kot(invoice_id):

@@ -361,6 +361,20 @@ def get_custom_fields():
 				"default": "0",
 				"description": "When checked, only URY Captain / URY Manager / Administrator users can merge orders on this terminal.",
 			},
+			# Per-profile escape hatch for the "no stock in warehouse"
+			# blocker on Payment. When checked, the on_update hook walks
+			# every URY Menu Item linked to the profile's restaurant and
+			# flips Item.allow_negative_stock = 1 on each Item master that
+			# has is_stock_item = 1. Unchecking reverses the flip on the
+			# same set. See CLAUDE.md "Fixes log" 2026-04-10.
+			{
+				"fieldname": "custom_allow_negative_stock_on_menu_items",
+				"fieldtype": "Check",
+				"insert_after": "custom_restrict_merge_to_captain",
+				"label": "Allow Negative Stock on Menu Items",
+				"default": "0",
+				"description": "When checked, every stock-tracked item on this profile's restaurant menus is allowed to go negative on stock. Saving the profile walks all menus tied to the restaurant and flips Item.allow_negative_stock on each Item master. Unchecking reverses the flip. Note: this is a per-Item flag, so two POS Profiles sharing the same item will fight (last save wins).",
+			},
 		],
   
 		"POS Opening Entry": [

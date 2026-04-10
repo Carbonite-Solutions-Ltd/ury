@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { X, Percent, Coins } from 'lucide-react';
 import { usePOSStore } from '../store/pos-store';
-import { cn, formatCurrency } from '../lib/utils';
+import { cn, formatCurrency, extractFrappeServerError } from '../lib/utils';
 import { Button, Input, Dialog, DialogContent } from './ui';
+import { showToast } from './ui/toast';
 import { call } from '../lib/frappe-sdk';
 import { DEFAULT_PAYMENT_MODE } from '../data/order-types';
 
@@ -121,15 +122,23 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
         pos_profile: posProfile,
         table,
       });
-      // Show toast and reload orders (assume showToast and reload available globally)
-      if (typeof window !== 'undefined' && (window as any).showToast) {
-        (window as any).showToast.success('Payment successful');
-      }
+      showToast.success('Payment successful');
       onClose();
       clearSelectedOrder();
       await fetchOrders();
     } catch (err) {
-      setError((err as Error).message);
+      // frappe-js-sdk throws a plain Error whose `.message` is just
+      // the HTTP status phrase ("There was an error."). The real
+      // ValidationError lives inside `_server_messages` on the
+      // response body. Use the shared extractor so cashiers see
+      // ERPNext's actual title + message (e.g. "Item Out of Stock")
+      // instead of the generic wrapper. Same pattern as OrderPanel.
+      const parsed = extractFrappeServerError(err, 'Payment failed.');
+      setError(parsed.message);
+      showToast.error({
+        title: parsed.title || 'Payment Failed',
+        description: parsed.message,
+      });
     } finally {
       setIsProcessing(false);
     }

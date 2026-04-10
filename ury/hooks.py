@@ -128,7 +128,10 @@ doc_events = {
         "on_cancel": "ury.ury.hooks.ury_pos_invoice.on_trash",
         "on_trash": "ury.ury.hooks.ury_pos_invoice.on_trash",
     },
-    "POS Profile": {"validate": "ury.ury.hooks.ury_pos_profile.validate"},
+    "POS Profile": {
+        "validate": "ury.ury.hooks.ury_pos_profile.validate",
+        "on_update": "ury.ury.hooks.ury_pos_profile.on_update",
+    },
     "Sales Invoice": {
         "before_insert": "ury.ury.hooks.ury_sales_invoice.before_insert",
         "on_update":"ury.ury.hooks.ury_sales_invoice.on_update",
@@ -317,6 +320,7 @@ fixtures = [
                     "POS Profile-custom_shift_hours",
                     "POS Profile-custom_block_orders_after_shift_end",
                     "POS Profile-custom_restrict_merge_to_captain",
+                    "POS Profile-custom_allow_negative_stock_on_menu_items",
                     "POS Profile-paid_limit",
                     "POS Profile-table_attention_time",
                     "POS Opening Entry-restaurant_info",
