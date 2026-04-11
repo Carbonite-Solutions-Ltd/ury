@@ -98,3 +98,51 @@ export const canMergeOrders = (
   // Otherwise URY Cashier is enough.
   return user.roles.includes('URY Cashier');
 };
+
+/**
+ * Whether the current user can access admin-ish actions in the user
+ * menu dropdown — specifically "Change Terminal" and "Switch to Desk".
+ * Cashiers can't switch terminals (they're bound to the one they were
+ * registered on) and shouldn't be dropped into the Frappe desk where
+ * they can touch unrelated masters.
+ *
+ * Allowed: Administrator, System Manager, URY Manager, URY Captain.
+ * Denied: URY Cashier.
+ */
+export const canAccessDeskAndTerminalSwitch = (
+  user: User | null
+): boolean => {
+  if (!user) return false;
+  if (user.name === 'Administrator') return true;
+  if (!user.roles) return false;
+  const allowed = ['System Manager', 'URY Manager', 'URY Captain'];
+  return user.roles.some((role) => allowed.includes(role));
+};
+
+/**
+ * Whether the current user can return orders on this POS Profile.
+ * Defaults to captain-only: `custom_restrict_returns_to_captain` starts
+ * at 1 (ON) and can be flipped OFF per profile to let cashiers return
+ * their own orders. Captains / managers / admins can always return.
+ *
+ * Backend re-validates the same gate in `_user_can_return_orders`.
+ */
+export const canReturnOrders = (
+  user: User | null,
+  posProfile: PosProfileCombined | null
+): boolean => {
+  if (!user) return false;
+  if (user.name === 'Administrator') return true;
+  if (!user.roles) return false;
+
+  const captainRoles = ['System Manager', 'URY Manager', 'URY Captain'];
+  const isCaptain = user.roles.some((role) => captainRoles.includes(role));
+  if (isCaptain) return true;
+
+  // Default ON (undefined) is treated as restricted, matching the backend.
+  const restrict =
+    posProfile?.custom_restrict_returns_to_captain ?? 1;
+  if (restrict === 1) return false;
+
+  return user.roles.includes('URY Cashier');
+};

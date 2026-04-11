@@ -46,6 +46,12 @@ export interface POSInvoice {
   merge_log_name?: string | null;
   /** Number of source invoices in the active merge log. */
   merge_source_count?: number;
+  /** ERPNext native — 1 when this invoice itself is a return doc. */
+  is_return?: number;
+  /** Original invoice this return was issued against. */
+  return_against?: string | null;
+  /** Count of active (docstatus=1) returns written against this invoice. */
+  active_return_count?: number;
 }
 
 export type OrdersViewMode = 'card' | 'list';

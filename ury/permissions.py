@@ -91,6 +91,34 @@ WRITE_DOCTYPES = [
         "POS Closing Entry",
         {"read": 1, "write": 1, "create": 1, "submit": 1, "select": 1},
     ),
+    # Sales Invoice + POS Invoice Merge Log are needed for the close-
+    # shift consolidation chain. When a POS Closing Entry is submitted,
+    # ERPNext's `consolidate_pos_invoices` hook creates a POS Invoice
+    # Merge Log for each customer and that merge log on submit creates
+    # a Sales Invoice by merging the POS Invoice rows. Both steps run
+    # under the calling user's permission context — so URY Cashier /
+    # Captain / Manager must be able to create + submit both. Without
+    # these, closing a shift throws "No permission for Sales Invoice"
+    # and rolls back with a confusing cascade of link errors (the
+    # partial closing entry tries to add a Failed-status comment on a
+    # doc that was never inserted). See CLAUDE.md "Fixes log"
+    # 2026-04-10.
+    (
+        "Sales Invoice",
+        {
+            "read": 1,
+            "write": 1,
+            "create": 1,
+            "submit": 1,
+            "select": 1,
+            "print": 1,
+            "report": 1,
+        },
+    ),
+    (
+        "POS Invoice Merge Log",
+        {"read": 1, "write": 1, "create": 1, "submit": 1, "select": 1},
+    ),
     (
         "URY KOT",
         {"read": 1, "write": 1, "create": 1, "submit": 1, "select": 1},

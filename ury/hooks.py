@@ -37,7 +37,9 @@ app_include_js = [
 page_js = {"point-of-sale": ["public/js/pos_extend.js"]}
 
 # include js in doctype views
-# doctype_js = {"POS Invoive" : "public/js/pos_print.js"}
+doctype_js = {
+    "POS Profile": "public/js/pos_profile_geofence.js",
+}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
@@ -134,7 +136,7 @@ doc_events = {
     },
     "Sales Invoice": {
         "before_insert": "ury.ury.hooks.ury_sales_invoice.before_insert",
-        "on_update":"ury.ury.hooks.ury_sales_invoice.on_update",
+        "on_update": "ury.ury.hooks.ury_sales_invoice.on_update",
         },
     "Customer": {"before_save": "ury.ury.hooks.ury_customer.before_insert"},
     "Item": {"validate": "ury.ury.hooks.ury_item.validate"},
@@ -321,6 +323,12 @@ fixtures = [
                     "POS Profile-custom_block_orders_after_shift_end",
                     "POS Profile-custom_restrict_merge_to_captain",
                     "POS Profile-custom_allow_negative_stock_on_menu_items",
+                    "POS Profile-custom_restrict_returns_to_captain",
+                    "POS Profile-custom_geofence_section",
+                    "POS Profile-custom_geofence_enabled",
+                    "POS Profile-custom_company_latitude",
+                    "POS Profile-custom_company_longitude",
+                    "POS Profile-custom_geofence_radius_meters",
                     "POS Profile-paid_limit",
                     "POS Profile-table_attention_time",
                     "POS Opening Entry-restaurant_info",

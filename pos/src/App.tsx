@@ -21,7 +21,13 @@ import {
   getTerminals,
   TerminalConfig,
 } from './lib/terminal-api';
-import { Monitor, MapPin } from 'lucide-react';
+import { getLoggedUser, logout } from './lib/auth-api';
+import {
+  getBrowserPosition,
+  getGeofenceConfig,
+  validateGeofence,
+} from './lib/geofence-api';
+import { Monitor, MapPin, LogIn, MapPinOff, ShieldAlert } from 'lucide-react';
 import { extractFrappeServerError } from './lib/utils';
 
 
@@ -31,9 +37,37 @@ function App() {
   const [terminalError, setTerminalError] = useState<string | null>(null);
   const [terminalLoading, setTerminalLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [isGuest, setIsGuest] = useState(false);
+  const [geofenceChecking, setGeofenceChecking] = useState(false);
+  const [geofenceError, setGeofenceError] = useState<string | null>(null);
+  const [geofencePassed, setGeofencePassed] = useState(false);
+  const [geofenceAttempt, setGeofenceAttempt] = useState(0);
+
+  // Pre-flight auth check. Before touching any whitelisted endpoint
+  // we ask Frappe "who am I?" via the guest-safe
+  // `frappe.auth.get_logged_user`. If the answer is "Guest" we short-
+  // circuit the whole app into the unauthenticated landing screen so
+  // the cashier sees a clean "Sign in to continue" button instead of
+  // the raw "Function ury.ury_pos.api.get_terminals is not whitelisted"
+  // error that used to surface when Guest hit the terminal-setup
+  // screen. The redirect brings the user back to /pos after login.
+  useEffect(() => {
+    (async () => {
+      try {
+        const u = await getLoggedUser();
+        setIsGuest(!u || u === 'Guest');
+      } catch {
+        setIsGuest(true);
+      } finally {
+        setAuthChecked(true);
+      }
+    })();
+  }, []);
 
   // Resolve terminal: check localStorage first, then validate with server
   useEffect(() => {
+    if (!authChecked || isGuest) return;
     const resolve = async () => {
       const saved = getSavedTerminal();
 
@@ -57,11 +91,60 @@ function App() {
     };
 
     resolve();
-  }, [setTerminalConfig]);
+  }, [authChecked, isGuest, setTerminalConfig]);
 
-  // Initialize app once terminal is resolved
+  // Geofence check — runs once, right after the terminal resolves
+  // and before we boot the rest of the app. When the POS Profile has
+  // `custom_geofence_enabled = 0` the backend returns `{enabled: 0}`
+  // and we skip the whole flow (no browser permission prompt shown).
+  // When enabled, we ask the browser for a GPS fix, POST it to the
+  // backend, and block the POS if the user is too far from the
+  // allowed coordinates. See CLAUDE.md "Fixes log" 2026-04-10.
   useEffect(() => {
-    if (terminal) {
+    if (!terminal || geofencePassed) return;
+    let cancelled = false;
+    setGeofenceChecking(true);
+    setGeofenceError(null);
+    (async () => {
+      try {
+        const cfg = await getGeofenceConfig(terminal.terminal);
+        if (cancelled) return;
+        if (!cfg.enabled) {
+          setGeofencePassed(true);
+          return;
+        }
+        // Feature is on — ask the browser for a position.
+        const pos = await getBrowserPosition();
+        if (cancelled) return;
+        await validateGeofence(
+          pos.coords.latitude,
+          pos.coords.longitude,
+          terminal.terminal
+        );
+        if (cancelled) return;
+        setGeofencePassed(true);
+      } catch (err) {
+        if (cancelled) return;
+        // ValidationError from the backend flows through the standard
+        // frappe-js-sdk error pipeline; native browser errors come
+        // through getBrowserPosition with plain-string messages.
+        const parsed = extractFrappeServerError(
+          err,
+          (err as Error)?.message || 'Failed to verify your location.'
+        );
+        setGeofenceError(parsed.message);
+      } finally {
+        if (!cancelled) setGeofenceChecking(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [terminal, geofencePassed, geofenceAttempt]);
+
+  // Initialize app once terminal is resolved AND geofence passed.
+  useEffect(() => {
+    if (terminal && geofencePassed) {
       initializeApp();
       setupKotListener();
       initPosDisplay();
@@ -69,7 +152,7 @@ function App() {
         destroyPosDisplay();
       };
     }
-  }, [initializeApp, terminal]);
+  }, [initializeApp, terminal, geofencePassed]);
 
   const handleTerminalSelected = async (terminalName: string) => {
     try {
@@ -91,6 +174,18 @@ function App() {
       setTerminalError(msg);
     }
   };
+
+  if (!authChecked) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-50">
+        <div className="text-gray-400 animate-pulse">Checking session…</div>
+      </div>
+    );
+  }
+
+  if (isGuest) {
+    return <UnauthenticatedLanding />;
+  }
 
   if (terminalLoading) {
     return (
@@ -116,6 +211,62 @@ function App() {
 
   if (needsSetup) {
     return <TerminalSetupScreen onSelect={handleTerminalSelected} />;
+  }
+
+  if (terminal && geofenceChecking && !geofencePassed) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-50">
+        <div className="max-w-md w-full mx-4 bg-white rounded-2xl shadow-lg p-8 text-center">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-50 mb-4">
+            <MapPin className="w-8 h-8 text-blue-600 animate-pulse" />
+          </div>
+          <h2 className="text-xl font-bold text-gray-900 mb-2">
+            Verifying Your Location
+          </h2>
+          <p className="text-gray-600 text-sm">
+            Please allow location access in your browser so we can confirm
+            you're on site. This only happens once per session.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (terminal && geofenceError && !geofencePassed) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-50">
+        <div className="max-w-md w-full mx-4 bg-white rounded-2xl shadow-lg p-8 text-center">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-red-50 mb-4">
+            <ShieldAlert className="w-8 h-8 text-red-600" />
+          </div>
+          <h2 className="text-xl font-bold text-gray-900 mb-2">
+            Location Check Failed
+          </h2>
+          <p className="text-gray-600 text-sm mb-6">{geofenceError}</p>
+          <div className="flex items-center gap-3 justify-center">
+            <button
+              onClick={() => setGeofenceAttempt((n) => n + 1)}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors flex items-center gap-2"
+            >
+              <MapPinOff className="w-4 h-4" />
+              Try Again
+            </button>
+            <button
+              onClick={async () => {
+                try {
+                  await logout();
+                } finally {
+                  window.location.href = '/login?redirect-to=%2Fpos';
+                }
+              }}
+              className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-semibold rounded-lg transition-colors"
+            >
+              Sign Out
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -328,6 +479,43 @@ function TerminalSetupScreen({ onSelect }: { onSelect: (terminal: string) => voi
             This setting is saved on this device. To change it, use "Change Terminal" from the user menu.
           </p>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Landing screen shown when an unauthenticated user hits /pos. Replaces
+ * the raw "Function ury.ury_pos.api.get_terminals is not whitelisted"
+ * error that used to surface. The Sign In button deep-links to Frappe's
+ * login page with a `redirect-to=/pos` query param so the user lands
+ * back on the POS after authenticating.
+ */
+function UnauthenticatedLanding() {
+  const handleSignIn = () => {
+    window.location.href = '/login?redirect-to=%2Fpos';
+  };
+  return (
+    <div className="flex items-center justify-center min-h-screen bg-gray-50">
+      <div className="max-w-md w-full mx-4 bg-white rounded-2xl shadow-lg p-8 text-center">
+        <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-50 mb-4">
+          <LogIn className="w-8 h-8 text-blue-600" />
+        </div>
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">
+          Sign in to continue
+        </h2>
+        <p className="text-gray-600 mb-6">
+          You need to log in to your ExPOS account before you can open the
+          POS. Click the button below to go to the login page — you'll
+          come right back here once you've signed in.
+        </p>
+        <button
+          onClick={handleSignIn}
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center gap-2"
+        >
+          <LogIn className="w-5 h-5" />
+          Go to Login
+        </button>
       </div>
     </div>
   );

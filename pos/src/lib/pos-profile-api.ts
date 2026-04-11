@@ -29,6 +29,11 @@ export interface PosProfileLimited {
   custom_block_orders_after_shift_end?: number;
   /** When 1, only captains/managers can use the Orders page Merge Orders button. */
   custom_restrict_merge_to_captain?: number;
+  /**
+   * When 1 (default), only captains/managers can return orders from the
+   * Orders page right panel. Flip to 0 to let cashiers return their own.
+   */
+  custom_restrict_returns_to_captain?: number;
 }
 
 export interface PosProfileLimitedResponse {
@@ -115,6 +120,8 @@ export interface PosProfileCombined extends PosProfileFull {
   custom_daily_pos_close?: number;
   custom_shift_hours?: number;
   custom_block_orders_after_shift_end?: number;
+  custom_restrict_merge_to_captain?: number;
+  custom_restrict_returns_to_captain?: number;
 }
 
 export interface Currency {
@@ -189,6 +196,10 @@ export async function getCombinedPosProfile(
     custom_block_orders_after_shift_end:
       limitedProfile.custom_block_orders_after_shift_end ??
       fullProfile.custom_block_orders_after_shift_end,
+    custom_restrict_merge_to_captain:
+      limitedProfile.custom_restrict_merge_to_captain,
+    custom_restrict_returns_to_captain:
+      limitedProfile.custom_restrict_returns_to_captain,
   };
 
   return combinedProfile;

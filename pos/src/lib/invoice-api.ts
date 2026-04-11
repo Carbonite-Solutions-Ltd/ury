@@ -39,6 +39,17 @@ export interface POSInvoice {
   merge_log_name?: string | null;
   /** Number of source invoices in the active merge log. */
   merge_source_count?: number;
+  /** ERPNext native — 1 when this invoice itself is a return doc. */
+  is_return?: number;
+  /** Original invoice this return was issued against. */
+  return_against?: string | null;
+  /**
+   * Count of submitted return invoices written against this invoice.
+   * Powers the "Returned" badge on paid cards / list rows / right panel.
+   * A cancelled return (docstatus=2) is excluded, so reversing a return
+   * removes the badge.
+   */
+  active_return_count?: number;
 }
 
 export interface CashierUser {
@@ -70,6 +81,50 @@ export interface UnmergeResult {
   merge_log: string;
   master_invoice: string;
   unmerged_count: number;
+}
+
+export interface ReturnPreviewItem {
+  row_name: string;
+  item_code: string;
+  item_name: string;
+  /** Original qty on the invoice. */
+  qty: number;
+  /** Qty already returned via earlier submitted return invoices. */
+  qty_already_returned: number;
+  /** How much of this row is still returnable (original - already). */
+  qty_remaining: number;
+  rate: number;
+  amount: number;
+  uom: string;
+  warehouse: string;
+}
+
+export interface ReturnPreviewPayment {
+  mode_of_payment: string;
+  amount: number;
+}
+
+export interface ReturnPreview {
+  invoice: string;
+  customer: string;
+  customer_name: string;
+  grand_total: number;
+  currency: string;
+  items: ReturnPreviewItem[];
+  payments: ReturnPreviewPayment[];
+  /** 1 when every row's qty_remaining is 0 — nothing more can be returned. */
+  fully_returned: number;
+}
+
+export interface ReturnResult {
+  return_invoice: string;
+  original_invoice: string;
+  refund_amount: number;
+}
+
+export interface ReverseReturnResult {
+  return_invoice: string;
+  original_invoice: string;
 }
 
 export interface POSInvoiceItem {
@@ -198,6 +253,61 @@ export async function getActiveMergeLogForInvoice(
     console.error('Error fetching active merge log:', error);
     return null;
   }
+}
+
+/**
+ * Fetch the item list + payment breakdown for a paid POS Invoice so
+ * the ReturnDialog can render a qty-picker per row. Backend enforces
+ * the `custom_restrict_returns_to_captain` gate; a cashier without
+ * permission will get a thrown ValidationError here.
+ */
+export async function getReturnPreview(
+  invoiceName: string
+): Promise<ReturnPreview> {
+  const res = await call.get<{ message: ReturnPreview }>(
+    'ury.ury_pos.api.get_return_preview',
+    { invoice: invoiceName }
+  );
+  return res.message;
+}
+
+/**
+ * Create and submit a return POS Invoice against `invoiceName`. `items`
+ * is the per-row pick: each entry is `{row_name, qty}` where qty is the
+ * POSITIVE quantity to refund (the backend flips the sign). `refund_mode`
+ * is the single Mode of Payment the customer is being refunded in.
+ */
+export async function createPosReturn(
+  invoiceName: string,
+  items: Array<{ row_name: string; qty: number }>,
+  refundMode: string,
+  notes?: string
+): Promise<ReturnResult> {
+  const res = await call.post<{ message: ReturnResult }>(
+    'ury.ury_pos.api.create_pos_return',
+    {
+      invoice: invoiceName,
+      items,
+      refund_mode: refundMode,
+      notes: notes || null,
+    }
+  );
+  return res.message;
+}
+
+/**
+ * Reverse a submitted return POS Invoice. Calls ERPNext's native
+ * cancel() so all GL / stock entries get reversed automatically.
+ * The original invoice is untouched.
+ */
+export async function reversePosReturn(
+  returnInvoiceName: string
+): Promise<ReverseReturnResult> {
+  const res = await call.post<{ message: ReverseReturnResult }>(
+    'ury.ury_pos.api.reverse_pos_return',
+    { return_invoice: returnInvoiceName }
+  );
+  return res.message;
 }
 
 /**

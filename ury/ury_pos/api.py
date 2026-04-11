@@ -366,11 +366,13 @@ def _resolve_orders_scope(terminal, cashier):
         )
         if not terminal_branch:
             return mine_clause
-        cashier_users = _get_cashier_users_on_branch(terminal_branch)
-        if not cashier_users:
+        cashier_user_ids = [
+            c["user"] for c in _get_cashier_users_on_branch(terminal_branch)
+        ]
+        if not cashier_user_ids:
             return mine_clause
-        placeholders = ", ".join(["%s"] * len(cashier_users))
-        return (f"owner IN ({placeholders})", list(cashier_users))
+        placeholders = ", ".join(["%s"] * len(cashier_user_ids))
+        return (f"owner IN ({placeholders})", cashier_user_ids)
 
     # Specific user — verify they're a real cashier on this branch
     # before honouring the request. Anything else downgrades to mine.
@@ -381,20 +383,26 @@ def _resolve_orders_scope(terminal, cashier):
     )
     if not terminal_branch:
         return mine_clause
-    cashier_users = _get_cashier_users_on_branch(terminal_branch)
-    if cashier not in cashier_users:
+    cashier_user_ids = {
+        c["user"] for c in _get_cashier_users_on_branch(terminal_branch)
+    }
+    if cashier not in cashier_user_ids:
         return mine_clause
     return ("owner = %s", [cashier])
 
 
 def _get_cashier_users_on_branch(branch_name):
-    """Return enabled User names that (a) appear in the URY User child
-    table for this Branch and (b) have URY Cashier or URY Captain role.
-    Used by both the orders scope helper and the cashier-list endpoint.
+    """Return enabled cashier users listed in the Branch's URY User
+    child table who also have URY Cashier or URY Captain role.
+
+    Returns a list of ``{user, full_name}`` dicts so callers that need
+    a friendly display name (closing dialog transfer picker, Orders
+    page cashier dropdown) don't have to make N+1 lookups. Callers
+    that only care about the user id can read `c["user"]`.
     """
     rows = frappe.db.sql(
         """
-        SELECT DISTINCT u.name
+        SELECT DISTINCT u.name AS user, u.full_name AS full_name
         FROM `tabURY User` AS uu
         INNER JOIN `tabBranch` AS b ON uu.parent = b.name
         INNER JOIN `tabUser` AS u ON u.name = uu.user
@@ -402,10 +410,14 @@ def _get_cashier_users_on_branch(branch_name):
         WHERE b.branch = %s
         AND hr.role IN ('URY Cashier', 'URY Captain')
         AND u.enabled = 1
+        ORDER BY u.full_name, u.name
         """,
         (branch_name,),
+        as_dict=True,
     )
-    return [r[0] for r in rows]
+    return [
+        {"user": r.user, "full_name": r.full_name or r.user} for r in rows
+    ]
 
 
 @frappe.whitelist()
@@ -424,22 +436,7 @@ def get_cashier_users_for_terminal(terminal):
     if not terminal_branch:
         return []
 
-    rows = frappe.db.sql(
-        """
-        SELECT DISTINCT u.name AS user, u.full_name
-        FROM `tabURY User` AS uu
-        INNER JOIN `tabBranch` AS b ON uu.parent = b.name
-        INNER JOIN `tabUser` AS u ON u.name = uu.user
-        INNER JOIN `tabHas Role` AS hr ON hr.parent = u.name
-        WHERE b.branch = %s
-        AND hr.role IN ('URY Cashier', 'URY Captain')
-        AND u.enabled = 1
-        ORDER BY u.full_name
-        """,
-        (terminal_branch,),
-        as_dict=True,
-    )
-    return rows
+    return _get_cashier_users_on_branch(terminal_branch)
 
 
 @frappe.whitelist()
@@ -524,7 +521,7 @@ def getPosInvoice(
             pi.total_taxes_and_charges, pi.customer, pi.customer_name,
             pi.status, pi.mobile_number, pi.posting_date, pi.rounded_total,
             pi.order_type, pi.custom_order_status, pi.custom_terminal,
-            pi.owner,
+            pi.owner, pi.is_return, pi.return_against,
             u.full_name AS owner_full_name,
             (
                 SELECT ml.name
@@ -539,7 +536,14 @@ def getPosInvoice(
                 INNER JOIN `tabURY Order Merge Log` AS ml2
                   ON ml2.name = s.parent
                 WHERE ml2.master_invoice = pi.name AND ml2.status = 'Active'
-            ) AS merge_source_count
+            ) AS merge_source_count,
+            (
+                SELECT COUNT(r.name)
+                FROM `tabPOS Invoice` AS r
+                WHERE r.return_against = pi.name
+                  AND r.is_return = 1
+                  AND r.docstatus = 1
+            ) AS active_return_count
         FROM `tabPOS Invoice` AS pi
         LEFT JOIN `tabUser` AS u ON u.name = pi.owner
         WHERE {where_sql}
@@ -621,6 +625,7 @@ def searchPosInvoice(
             pi.restaurant_table, pi.status, pi.rounded_total, pi.net_total,
             pi.mobile_number, pi.cashier, pi.waiter, pi.invoice_printed,
             pi.custom_order_status, pi.custom_terminal, pi.owner,
+            pi.is_return, pi.return_against,
             u.full_name AS owner_full_name,
             (
                 SELECT ml.name
@@ -635,7 +640,14 @@ def searchPosInvoice(
                 INNER JOIN `tabURY Order Merge Log` AS ml2
                   ON ml2.name = s.parent
                 WHERE ml2.master_invoice = pi.name AND ml2.status = 'Active'
-            ) AS merge_source_count
+            ) AS merge_source_count,
+            (
+                SELECT COUNT(r.name)
+                FROM `tabPOS Invoice` AS r
+                WHERE r.return_against = pi.name
+                  AND r.is_return = 1
+                  AND r.docstatus = 1
+            ) AS active_return_count
         FROM `tabPOS Invoice` AS pi
         LEFT JOIN `tabUser` AS u ON u.name = pi.owner
         WHERE {" AND ".join(where_parts)}
@@ -863,6 +875,11 @@ def getPosProfile(terminal=None):
         restrict_merge_to_captain = (
             pos_profiles.get("custom_restrict_merge_to_captain") or 0
         )
+        # Returns default to captain-only (field default = 1).
+        raw_restrict_returns = pos_profiles.get("custom_restrict_returns_to_captain")
+        restrict_returns_to_captain = (
+            1 if raw_restrict_returns is None else int(raw_restrict_returns or 0)
+        )
         # Per-terminal scoping makes the cashier/owner resolution trivial:
         # whoever is logged into the React POS right now IS the cashier
         # and the owner. The old code did a SQL join through Multiple
@@ -916,6 +933,7 @@ def getPosProfile(terminal=None):
         "custom_shift_hours": shift_hours,
         "custom_block_orders_after_shift_end": block_orders_after_shift,
         "custom_restrict_merge_to_captain": restrict_merge_to_captain,
+        "custom_restrict_returns_to_captain": restrict_returns_to_captain,
         # Echo the caller's terminal back so the frontend store has a
         # single source of truth for "which terminal resolved this profile".
         "terminal": terminal or None,
@@ -1018,23 +1036,174 @@ def posOpening(terminal=None):
 
 
 @frappe.whitelist()
+def _scope_invoices_for_opening_entry(opening_doc):
+    """Return the SQL WHERE clause + params that match POS Invoices
+    belonging to the given opening entry's shift.
+
+    Scope:
+      * Same pos_profile.
+      * Same owner (the user who opened the shift).
+      * Not a consolidated invoice.
+      * When `custom_terminal` is set on the opening entry, also scope
+        to invoices stamped with that terminal.
+      * Created on or after the opening entry's creation — defensive
+        against timestamp drift caused by backdated posting_date or
+        pre-opening test data polluting the shift.
+
+    NOTE: we use `creation` (row insert timestamp), not
+    `posting_date + posting_time`, which ERPNext's native helper does.
+    Cashiers sometimes backdate posting_date to match late-entered
+    orders, which would make ERPNext's timestamp-based filter exclude
+    those invoices from the close. Our filter is honest about the
+    invoice's actual creation time on this device.
+    """
+    where = [
+        "pi.pos_profile = %s",
+        "pi.owner = %s",
+        "(pi.consolidated_invoice IS NULL OR pi.consolidated_invoice = '')",
+        "pi.creation >= %s",
+    ]
+    params = [
+        opening_doc.pos_profile,
+        opening_doc.user,
+        opening_doc.creation,
+    ]
+    terminal = getattr(opening_doc, "custom_terminal", None)
+    if terminal:
+        # Defensive null fallback (same pattern as getPosInvoice): an
+        # invoice that predates the custom_terminal column is still
+        # counted if it's otherwise in scope.
+        where.append(
+            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
+        )
+        params.append(terminal)
+    return " AND ".join(where), params
+
+
+def _get_shift_invoice_breakdown(opening_doc):
+    """Return paid + draft invoice lists for the given opening entry.
+
+    Each invoice dict carries enough fields for the closing dialog to
+    render a draft list (name, customer_name, grand_total,
+    restaurant_table). Drafts exclude invoices already merged into a
+    master.
+
+    **Orphan-original handling:** when a return invoice is in scope
+    but its `return_against` original isn't (typically because the
+    original was paid in a previous unclosed shift), we pull the
+    original in as an extra row — provided it's unconsolidated. Without
+    this, ERPNext's `consolidate_pos_invoices` hook on POS Closing
+    Entry submission throws `"Row #1: The original Invoice X of return
+    invoice Y is not consolidated"` and rolls back the whole close.
+    """
+    where_sql, params = _scope_invoices_for_opening_entry(opening_doc)
+
+    paid = frappe.db.sql(
+        f"""
+        SELECT
+            pi.name, pi.customer, pi.customer_name,
+            pi.posting_date, pi.grand_total, pi.net_total, pi.total_qty,
+            pi.total_taxes_and_charges, pi.restaurant_table,
+            pi.is_return, pi.return_against
+        FROM `tabPOS Invoice` AS pi
+        WHERE {where_sql}
+          AND pi.docstatus = 1
+          AND pi.status IN ('Paid', 'Consolidated', 'Return')
+        ORDER BY pi.creation ASC
+        """,
+        tuple(params),
+        as_dict=True,
+    )
+
+    # Pull in orphan originals: any return in `paid` whose
+    # `return_against` isn't already in `paid`, provided the original is
+    # itself unconsolidated. Skipping this makes ERPNext's consolidation
+    # hook fail on a cross-shift return.
+    existing_names = {row["name"] for row in paid}
+    orphan_names = {
+        row["return_against"]
+        for row in paid
+        if row.get("is_return")
+        and row.get("return_against")
+        and row["return_against"] not in existing_names
+    }
+    if orphan_names:
+        orphan_rows = frappe.db.sql(
+            """
+            SELECT
+                pi.name, pi.customer, pi.customer_name,
+                pi.posting_date, pi.grand_total, pi.net_total, pi.total_qty,
+                pi.total_taxes_and_charges, pi.restaurant_table,
+                pi.is_return, pi.return_against
+            FROM `tabPOS Invoice` AS pi
+            WHERE pi.name IN %(names)s
+              AND pi.docstatus = 1
+              AND (pi.consolidated_invoice IS NULL OR pi.consolidated_invoice = '')
+              AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
+            """,
+            {"names": tuple(orphan_names)},
+            as_dict=True,
+        )
+        # Prepend so the closing entry lists the original before its
+        # return — matches ERPNext's expectation in consolidate_pos_invoices.
+        paid = list(orphan_rows) + paid
+
+    draft = frappe.db.sql(
+        f"""
+        SELECT
+            pi.name, pi.customer, pi.customer_name,
+            pi.grand_total, pi.net_total, pi.restaurant_table,
+            pi.invoice_printed, pi.custom_order_status
+        FROM `tabPOS Invoice` AS pi
+        WHERE {where_sql}
+          AND pi.docstatus = 0
+          AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
+        ORDER BY pi.creation ASC
+        """,
+        tuple(params),
+        as_dict=True,
+    )
+
+    return paid, draft
+
+
+def _sum_payments_for_paid_invoices(paid_invoices):
+    """Group Sales Invoice Payment rows by mode_of_payment and sum."""
+    if not paid_invoices:
+        return {}
+    names = [row["name"] for row in paid_invoices]
+    rows = frappe.db.sql(
+        """
+        SELECT sip.mode_of_payment, SUM(sip.amount) AS total
+        FROM `tabSales Invoice Payment` AS sip
+        WHERE sip.parenttype IN ('POS Invoice', 'Sales Invoice')
+          AND sip.parent IN %(names)s
+        GROUP BY sip.mode_of_payment
+        """,
+        {"names": tuple(names)},
+        as_dict=True,
+    )
+    return {r.mode_of_payment: float(r.total or 0) for r in rows}
+
+
+@frappe.whitelist()
 def preview_pos_closing_entry(opening_entry):
     """Build a preview of the POS Closing Entry for the given opening
     entry, without saving anything.
 
-    Wraps ERPNext's
-    ``erpnext.accounts.doctype.pos_closing_entry.pos_closing_entry.make_closing_entry_from_opening``
-    so the React POS can render an in-POS closing dialog instead of
-    deep-linking to the desk. The wrapper returns a slim dict shape that
-    matches what the dialog actually needs (totals + payment rows), so
-    we don't ship the full doc with all the relations.
+    Rewritten 2026-04-10: we run our own invoice-scope query instead of
+    leaning on ERPNext's ``make_closing_entry_from_opening`` because
+    that helper filters by ``posting_date + posting_time`` in a window
+    between ``period_start_date`` and ``now`` — which silently drops
+    any invoice whose posting_date was backdated (see the "Outdated
+    POS Opening Entry" flow). The result was a preview that showed
+    "2 invoices, ₵0 total" instead of the real breakdown.
 
-    See CLAUDE.md "Fixes log" 2026-04-09.
+    The new preview also splits paid vs draft invoices so the closing
+    dialog can force the cashier to transfer drafts to another cashier
+    before closing. See the companion ``submit_pos_closing_entry``
+    rewrite for the transfer flow. CLAUDE.md "Fixes log" 2026-04-10.
     """
-    from erpnext.accounts.doctype.pos_closing_entry.pos_closing_entry import (
-        make_closing_entry_from_opening,
-    )
-
     if not frappe.db.exists("POS Opening Entry", opening_entry):
         frappe.throw(
             _("POS Opening Entry '{0}' not found.").format(opening_entry),
@@ -1051,68 +1220,112 @@ def preview_pos_closing_entry(opening_entry):
             title=_("Already Closed"),
         )
 
-    closing_doc = make_closing_entry_from_opening(opening_doc)
+    paid, draft = _get_shift_invoice_breakdown(opening_doc)
 
-    # Carry the opening_amount over from the opening entry's
-    # balance_details (the make_ helper hard-codes opening_amount=0).
+    # Sum totals from the paid invoices (non-return rows count positive,
+    # return rows count negative — ERPNext stores return grand_total as
+    # a negative number already so plain sum is correct).
+    grand_total = sum(float(row.get("grand_total") or 0) for row in paid)
+    net_total = sum(float(row.get("net_total") or 0) for row in paid)
+    total_qty = sum(float(row.get("total_qty") or 0) for row in paid)
+    total_tax = sum(
+        float(row.get("total_taxes_and_charges") or 0) for row in paid
+    )
+
+    # Payment reconciliation — group all paid invoices' payment rows by
+    # mode and sum. Seed rows from the opening entry's balance_details
+    # so modes with an opening float show up even when nothing was
+    # collected in that mode during the shift.
+    paid_by_mode = _sum_payments_for_paid_invoices(paid)
     opening_balances = {
         b.mode_of_payment: float(b.opening_amount or 0)
         for b in (opening_doc.balance_details or [])
     }
+    all_modes = set(paid_by_mode.keys()) | set(opening_balances.keys())
     payments = []
-    for row in closing_doc.payment_reconciliation:
-        opening_amount = opening_balances.get(row.mode_of_payment, 0.0)
-        expected_amount = float(row.expected_amount or 0)
+    for mode in sorted(all_modes):
+        opening_amount = opening_balances.get(mode, 0.0)
+        expected_amount = paid_by_mode.get(mode, 0.0)
         payments.append(
             {
-                "mode_of_payment": row.mode_of_payment,
+                "mode_of_payment": mode,
                 "opening_amount": opening_amount,
                 "expected_amount": expected_amount,
-                # The closing dialog will let the user edit this. We
-                # default it to expected so a one-click "everything
-                # matches" close just works.
+                # Default the counted amount to the expected so a
+                # "everything matches" close is one click.
                 "closing_amount": expected_amount,
             }
         )
 
+    # Draft list for the transfer-before-close UI.
+    draft_list = [
+        {
+            "name": row["name"],
+            "customer": row.get("customer"),
+            "customer_name": row.get("customer_name") or row.get("customer"),
+            "grand_total": float(row.get("grand_total") or 0),
+            "restaurant_table": row.get("restaurant_table"),
+            "invoice_printed": int(row.get("invoice_printed") or 0),
+        }
+        for row in draft
+    ]
+    draft_grand_total = sum(r["grand_total"] for r in draft_list)
+
+    # Transfer-target candidates: other cashiers on the same branch who
+    # have URY Cashier or URY Captain role. We exclude the current user
+    # (you can't transfer to yourself) and System Manager / Admin
+    # because those aren't regular cashiers in the URY sense.
+    transfer_candidates = _get_cashier_users_on_branch(opening_doc.branch)
+    me = frappe.session.user
+    transfer_candidates = [
+        c for c in transfer_candidates if c["user"] != me
+    ]
+
     return {
         "opening_entry": opening_doc.name,
         "period_start_date": str(opening_doc.period_start_date or ""),
-        "period_end_date": str(closing_doc.period_end_date or ""),
-        "pos_profile": closing_doc.pos_profile,
-        "user": closing_doc.user,
-        "company": closing_doc.company,
-        "grand_total": float(closing_doc.grand_total or 0),
-        "net_total": float(closing_doc.net_total or 0),
-        "total_quantity": float(closing_doc.total_quantity or 0),
-        "total_taxes_and_charges": float(closing_doc.total_taxes_and_charges or 0),
+        "period_end_date": str(frappe.utils.now_datetime()),
+        "pos_profile": opening_doc.pos_profile,
+        "user": opening_doc.user,
+        "company": opening_doc.company,
+        # Paid-side totals (this is what the closing entry will record).
+        "grand_total": grand_total,
+        "net_total": net_total,
+        "total_quantity": total_qty,
+        "total_taxes_and_charges": total_tax,
+        "invoice_count": len(paid),
         "payments": payments,
-        "invoice_count": len(closing_doc.pos_invoices or [])
-        + len(closing_doc.sales_invoices or []),
+        # Draft-side state drives the transfer-before-close UI.
+        "draft_count": len(draft_list),
+        "draft_grand_total": draft_grand_total,
+        "draft_invoices": draft_list,
+        "transfer_candidates": transfer_candidates,
     }
 
 
 @frappe.whitelist()
-def submit_pos_closing_entry(opening_entry, closing_amounts):
+def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
     """Create and submit a POS Closing Entry from the given opening
     entry, using the cashier-supplied closing amounts.
 
     ``closing_amounts`` is a JSON object mapping mode_of_payment names
-    to the actual cash counted by the cashier (as numbers, not strings).
-    Any payment mode missing from the dict defaults to its expected
-    amount.
+    to the actual cash counted by the cashier.
 
-    Returns ``{"name": <closing entry name>}`` on success. Errors are
-    propagated as ValidationError so the frontend's standard
-    error-handling pipeline picks them up.
+    ``transfer_to`` is an optional user id. If the shift has any draft
+    (unpaid) POS Invoices, the caller MUST pass a ``transfer_to`` user
+    who will inherit those invoices. The backend re-home the drafts by
+    updating their ``owner`` (and mirrors the name on the ``cashier``
+    custom field) so they show up in the target cashier's "My Orders"
+    filter on next page load. If drafts exist and ``transfer_to`` is
+    omitted, the close is rejected with a clear error and a list of
+    draft names so the cashier knows what's blocking them.
 
-    See CLAUDE.md "Fixes log" 2026-04-09.
+    Rewritten 2026-04-10 to compute totals ourselves (see the preview
+    docstring) AND to enforce the transfer-drafts-before-close rule.
+
+    See CLAUDE.md "Fixes log" 2026-04-10.
     """
     import json
-
-    from erpnext.accounts.doctype.pos_closing_entry.pos_closing_entry import (
-        make_closing_entry_from_opening,
-    )
 
     if isinstance(closing_amounts, str):
         try:
@@ -1138,31 +1351,279 @@ def submit_pos_closing_entry(opening_entry, closing_amounts):
             title=_("Already Closed"),
         )
 
-    closing_doc = make_closing_entry_from_opening(opening_doc)
+    paid, draft = _get_shift_invoice_breakdown(opening_doc)
 
-    # Carry opening_amount over so the closing entry's balance vs
-    # difference math matches what the cashier saw in the dialog.
+    # --- Transfer-before-close guard ----------------------------------
+    if draft:
+        if not transfer_to:
+            draft_names = ", ".join(row["name"] for row in draft[:5])
+            more = (
+                f" (+{len(draft) - 5} more)" if len(draft) > 5 else ""
+            )
+            frappe.throw(
+                _(
+                    "You have {0} unpaid order(s) on this shift: {1}{2}. "
+                    "Select a cashier to transfer them to before closing."
+                ).format(len(draft), draft_names, more),
+                title=_("Transfer Required"),
+            )
+
+        # Validate the target user: must be a URY Cashier / URY Captain
+        # on the same branch, and not the current user themselves.
+        me = frappe.session.user
+        if transfer_to == me:
+            frappe.throw(
+                _("You can't transfer orders to yourself."),
+                title=_("Invalid Transfer Target"),
+            )
+        candidates = {
+            c["user"]
+            for c in _get_cashier_users_on_branch(opening_doc.branch)
+        }
+        if transfer_to not in candidates:
+            frappe.throw(
+                _(
+                    "Selected cashier {0} isn't listed as a URY Cashier or "
+                    "URY Captain on branch {1}."
+                ).format(transfer_to, opening_doc.branch),
+                title=_("Invalid Transfer Target"),
+            )
+
+        # Re-home the drafts. Changing `owner` reassigns ERPNext's
+        # creator back-ref, which is what our `_resolve_orders_scope`
+        # filter in the Orders page reads for the "mine" / "all" /
+        # specific-user filter. We also stamp the `cashier` custom
+        # field (used in some URY print paths) and set a transfer
+        # audit note via the `remarks` field.
+        target_full_name = (
+            frappe.db.get_value("User", transfer_to, "full_name") or transfer_to
+        )
+        transfer_note = (
+            f"Transferred from {me} on shift close ({opening_doc.name})"
+        )
+        for row in draft:
+            frappe.db.set_value(
+                "POS Invoice",
+                row["name"],
+                {
+                    "owner": transfer_to,
+                    "cashier": target_full_name,
+                    "remarks": transfer_note,
+                },
+                update_modified=True,
+            )
+        frappe.db.commit()
+
+    # --- Build + insert the closing entry ------------------------------
+    total_qty = sum(float(row.get("total_qty") or 0) for row in paid)
+    grand_total = sum(float(row.get("grand_total") or 0) for row in paid)
+    net_total = sum(float(row.get("net_total") or 0) for row in paid)
+    total_tax = sum(
+        float(row.get("total_taxes_and_charges") or 0) for row in paid
+    )
+
+    paid_by_mode = _sum_payments_for_paid_invoices(paid)
     opening_balances = {
         b.mode_of_payment: float(b.opening_amount or 0)
         for b in (opening_doc.balance_details or [])
     }
-    for row in closing_doc.payment_reconciliation:
-        row.opening_amount = opening_balances.get(row.mode_of_payment, 0.0)
-        if row.mode_of_payment in closing_amounts:
-            try:
-                row.closing_amount = float(closing_amounts[row.mode_of_payment])
-            except (TypeError, ValueError):
-                row.closing_amount = float(row.expected_amount or 0)
-        else:
-            row.closing_amount = float(row.expected_amount or 0)
-        row.difference = float(row.closing_amount or 0) - float(
-            row.expected_amount or 0
+    all_modes = set(paid_by_mode.keys()) | set(opening_balances.keys())
+
+    # Pre-flight validation: sanity-check the data the close depends
+    # on so cashiers get actionable errors BEFORE ERPNext's deeply
+    # nested consolidation chain throws something opaque. Each check
+    # throws with a clear title + message naming the exact document
+    # that's misconfigured. See CLAUDE.md "Fixes log" 2026-04-11.
+    _validate_close_preflight(paid, opening_doc.company)
+
+    closing_doc = frappe.new_doc("POS Closing Entry")
+    closing_doc.pos_opening_entry = opening_doc.name
+    closing_doc.period_start_date = opening_doc.period_start_date
+    closing_doc.period_end_date = frappe.utils.now_datetime()
+    closing_doc.pos_profile = opening_doc.pos_profile
+    closing_doc.user = opening_doc.user
+    closing_doc.company = opening_doc.company
+    closing_doc.grand_total = grand_total
+    closing_doc.net_total = net_total
+    closing_doc.total_quantity = total_qty
+    closing_doc.total_taxes_and_charges = total_tax
+
+    for row in paid:
+        closing_doc.append(
+            "pos_invoices",
+            {
+                "pos_invoice": row["name"],
+                "posting_date": row.get("posting_date"),
+                "grand_total": float(row.get("grand_total") or 0),
+                "customer": row.get("customer"),
+                "is_return": int(row.get("is_return") or 0),
+                "return_against": row.get("return_against"),
+            },
         )
 
-    closing_doc.insert()
-    closing_doc.submit()
+    for mode in sorted(all_modes):
+        opening_amount = opening_balances.get(mode, 0.0)
+        expected_amount = paid_by_mode.get(mode, 0.0)
+        if mode in closing_amounts:
+            try:
+                counted = float(closing_amounts[mode])
+            except (TypeError, ValueError):
+                counted = expected_amount
+        else:
+            counted = expected_amount
+        closing_doc.append(
+            "payment_reconciliation",
+            {
+                "mode_of_payment": mode,
+                "opening_amount": opening_amount,
+                "expected_amount": expected_amount,
+                "closing_amount": counted,
+                "difference": counted - expected_amount,
+            },
+        )
 
-    return {"name": closing_doc.name}
+    # URY Cashier / Captain don't have DocPerms on every doctype in
+    # the long tail that ERPNext's consolidation touches (GL Entry,
+    # Stock Ledger Entry, Payment Ledger Entry, Customer balance
+    # updates, etc.). Running insert + submit with
+    # `ignore_permissions=True` is the standard Frappe escape hatch
+    # for "the caller has already been authorized at a higher level,
+    # trust the internal bookkeeping downstream". The caller of this
+    # method already passed the whitelist check and the upstream
+    # draft-transfer guard, so this is safe.
+    try:
+        closing_doc.insert(ignore_permissions=True)
+        closing_doc.submit()
+    except Exception as err:
+        # Catch the consolidation-time cascade and re-throw with a
+        # pointer to the most common root causes — Mode of Payment
+        # account misconfig, missing customer fields, etc. Preserves
+        # the original error text for the full diagnostic trail but
+        # prepends a hint so cashiers don't have to dig through the
+        # traceback to know what to check.
+        raise _wrap_close_error(err, opening_doc.company)
+
+    return {
+        "name": closing_doc.name,
+        "transferred": len(draft),
+        "transfer_to": transfer_to if draft else None,
+    }
+
+
+def _validate_close_preflight(paid_invoices, company):
+    """Sanity-check the data the close depends on and throw clean
+    errors for the common misconfigurations that otherwise surface as
+    ERPNext cascade failures during consolidation.
+
+    Checks (in order):
+      1. Every paid invoice has a `customer` set.
+      2. Every `Mode of Payment` used on these invoices has an
+         `account` configured for the company AND that account isn't
+         a Receivable account (which is what triggered the "Customer
+         is required against Receivable account" bug on 2026-04-10 —
+         Credit Card's account was set to Debtors).
+    """
+    if not paid_invoices:
+        return
+
+    # Check 1: customer on every invoice.
+    missing_customer = [
+        row["name"] for row in paid_invoices if not row.get("customer")
+    ]
+    if missing_customer:
+        frappe.throw(
+            _(
+                "Cannot close this shift: {0} paid invoice(s) have no "
+                "customer set — {1}. Open each invoice in the desk "
+                "and set a customer before closing."
+            ).format(len(missing_customer), ", ".join(missing_customer[:5])),
+            title=_("Invoice Missing Customer"),
+        )
+
+    # Check 2: mode of payment accounts on each invoice.
+    names = [row["name"] for row in paid_invoices]
+    payment_rows = frappe.db.sql(
+        """
+        SELECT DISTINCT sip.mode_of_payment, sip.account
+        FROM `tabSales Invoice Payment` AS sip
+        WHERE sip.parenttype = 'POS Invoice'
+          AND sip.parent IN %(names)s
+          AND sip.amount != 0
+        """,
+        {"names": tuple(names)},
+        as_dict=True,
+    )
+    bad_mops = []
+    for row in payment_rows:
+        if not row.account:
+            bad_mops.append((row.mode_of_payment, "no account"))
+            continue
+        account_type = frappe.db.get_value("Account", row.account, "account_type")
+        if account_type == "Receivable":
+            bad_mops.append(
+                (
+                    row.mode_of_payment,
+                    f"account '{row.account}' is a Receivable account",
+                )
+            )
+    if bad_mops:
+        lines = [f"- {mop}: {reason}" for mop, reason in bad_mops]
+        frappe.throw(
+            _(
+                "Cannot close this shift: one or more Modes of Payment "
+                "are misconfigured for company '{0}'.\n\n{1}\n\n"
+                "Open 'Mode of Payment' in the desk for each listed "
+                "mode and set its Default Account to a Bank or Cash "
+                "account (not a Receivable account like Debtors). "
+                "Save the Mode of Payment, then reload the close dialog."
+            ).format(company, "\n".join(lines)),
+            title=_("Mode of Payment Account Misconfigured"),
+        )
+
+
+def _wrap_close_error(err, company):
+    """Re-throw a consolidation-time error with a hint pointing at
+    the most common root causes. Called from the exception handler
+    around `closing_doc.submit()` — by the time we get here, the
+    pre-flight checks have already passed, so the error is likely
+    something pre-flight didn't cover (new ERPNext edge case, data
+    corruption, etc.) and the cashier still needs a breadcrumb.
+    """
+    msg = str(err)
+    lower = msg.lower()
+
+    if "customer is required against receivable account" in lower:
+        hint = _(
+            "Hint: this usually means a Mode of Payment's Default Account "
+            "is pointing at a Receivable account instead of a Bank / Cash "
+            "account. Check 'Mode of Payment' for company '{0}' in the desk."
+        ).format(company)
+    elif "debit_to" in lower or "receivable account" in lower:
+        hint = _(
+            "Hint: check the POS Profile's Write Off / Receivable Account "
+            "configuration and the Mode of Payment account mappings for "
+            "company '{0}'."
+        ).format(company)
+    elif "no permission" in lower or "permission" in lower:
+        hint = _(
+            "Hint: your user role is missing a DocType permission. This "
+            "shouldn't happen on a URY role — contact an admin to re-run "
+            "'bench migrate' which refreshes the URY permission baseline."
+        )
+    elif "customer_group" in lower or "territory" in lower:
+        hint = _(
+            "Hint: one of your Customers has an invalid record (missing "
+            "Customer Group or Territory). Open the Customer in the desk "
+            "and fill in the missing fields."
+        )
+    else:
+        hint = _(
+            "If this keeps happening, check the Error Log in the desk "
+            "for the full traceback and fix any misconfigured Mode of "
+            "Payment accounts or Customer records referenced there."
+        )
+
+    return frappe.ValidationError(f"{msg}\n\n{hint}")
 
 
 @frappe.whitelist()
@@ -2195,3 +2656,578 @@ def get_active_merge_log_for_invoice(invoice):
             row.source_invoice for row in (log.source_invoices or [])
         ],
     }
+
+
+# ---------------------------------------------------------------------
+# Return Orders (paid-invoice refund + reversal)
+# ---------------------------------------------------------------------
+
+
+def _get_returned_qty_per_row(source_invoice_name):
+    """Return `{source_row_name: total_returned_qty}` for a POS Invoice.
+
+    Sums the (positive) quantities of every POS Invoice Item row that
+    points back at this source via `pos_invoice_item`, across every
+    active (docstatus=1) return invoice that has `return_against =
+    <source>`. Cancelled returns (docstatus=2) are excluded so a
+    reversed return restores the capacity to return again.
+    """
+    if not source_invoice_name:
+        return {}
+    rows = frappe.db.sql(
+        """
+        SELECT ri.pos_invoice_item, SUM(ABS(ri.qty)) AS returned_qty
+        FROM `tabPOS Invoice Item` ri
+        INNER JOIN `tabPOS Invoice` r ON r.name = ri.parent
+        WHERE r.return_against = %s
+          AND r.is_return = 1
+          AND r.docstatus = 1
+          AND ri.pos_invoice_item IS NOT NULL
+        GROUP BY ri.pos_invoice_item
+        """,
+        (source_invoice_name,),
+        as_dict=True,
+    )
+    return {row.pos_invoice_item: float(row.returned_qty or 0) for row in rows}
+
+
+def _user_can_return_orders(pos_profile_name):
+    """Return (can_return, is_captain).
+
+    Captains/Managers/Admin can always return. Cashiers can return
+    only when the profile's `custom_restrict_returns_to_captain` is 0.
+    Default is 1 (captain-only) — returns are sensitive (refunds +
+    stock reversal), so the gate is conservative out of the box.
+    """
+    user = frappe.session.user
+    roles = set(frappe.get_roles(user))
+    captain_roles = {"Administrator", "System Manager", "URY Manager", "URY Captain"}
+    is_captain = user == "Administrator" or bool(roles & captain_roles)
+
+    # Default ON when the field isn't set (fresh install hasn't migrated
+    # yet). The conservative default matches the field's default.
+    restrict = 1
+    if pos_profile_name:
+        raw = frappe.db.get_value(
+            "POS Profile", pos_profile_name, "custom_restrict_returns_to_captain"
+        )
+        if raw is not None:
+            restrict = int(raw or 0)
+
+    if is_captain:
+        return True, True
+    if restrict:
+        return False, False
+    if "URY Cashier" in roles:
+        return True, False
+    return False, False
+
+
+@frappe.whitelist()
+def get_return_preview(invoice):
+    """Return an item list suitable for the ReturnDialog.
+
+    Reads the original POS Invoice and returns each item row with the
+    fields the frontend needs to render a qty stepper: item_code,
+    item_name, qty (original), rate, amount, uom, warehouse, and the
+    POS Invoice Item row `name` so we can correlate picks back to the
+    source row on submit. Also returns the original's payment modes
+    so the cashier can see how the customer originally paid.
+    """
+    if not frappe.db.exists("POS Invoice", invoice):
+        frappe.throw(_("Invoice {0} not found.").format(invoice))
+
+    doc = frappe.get_doc("POS Invoice", invoice)
+
+    can_return, _is_captain = _user_can_return_orders(doc.pos_profile)
+    if not can_return:
+        frappe.throw(
+            _("You don't have permission to issue returns on this terminal."),
+            title=_("Return Not Allowed"),
+        )
+
+    if doc.is_return:
+        frappe.throw(
+            _("This invoice is already a return document."),
+            title=_("Cannot Return a Return"),
+        )
+    if doc.docstatus != 1:
+        frappe.throw(
+            _("Only submitted (paid) invoices can be returned."),
+            title=_("Invoice Not Submitted"),
+        )
+    if doc.status not in ("Paid", "Consolidated"):
+        frappe.throw(
+            _("Only paid orders can be returned. Current status: {0}").format(doc.status),
+            title=_("Invalid Status for Return"),
+        )
+
+    # How much of each row has already been returned across previously-
+    # submitted return invoices. Used to bound the qty picker so the
+    # cashier can't return more than what's physically left on the row.
+    returned_map = _get_returned_qty_per_row(doc.name)
+
+    items = []
+    for row in doc.items:
+        original_qty = float(row.qty or 0)
+        already_returned = returned_map.get(row.name, 0.0)
+        qty_remaining = max(0.0, original_qty - already_returned)
+        items.append(
+            {
+                "row_name": row.name,
+                "item_code": row.item_code,
+                "item_name": row.item_name,
+                "qty": original_qty,
+                "qty_already_returned": already_returned,
+                "qty_remaining": qty_remaining,
+                "rate": float(row.rate or 0),
+                "amount": float(row.amount or 0),
+                "uom": row.uom,
+                "warehouse": row.warehouse,
+            }
+        )
+
+    payments = [
+        {
+            "mode_of_payment": p.mode_of_payment,
+            "amount": float(p.amount or 0),
+        }
+        for p in (doc.payments or [])
+    ]
+
+    fully_returned = all(item["qty_remaining"] <= 0 for item in items) if items else False
+
+    return {
+        "invoice": doc.name,
+        "customer": doc.customer,
+        "customer_name": doc.customer_name,
+        "grand_total": float(doc.grand_total or 0),
+        "currency": doc.currency,
+        "items": items,
+        "payments": payments,
+        "fully_returned": 1 if fully_returned else 0,
+    }
+
+
+@frappe.whitelist()
+def create_pos_return(invoice, items, refund_mode, notes=None):
+    """Create and submit a return POS Invoice against the original.
+
+    Args:
+        invoice: the original POS Invoice name being returned.
+        items: JSON list of ``{row_name, qty}`` entries where ``qty`` is
+            the POSITIVE quantity the cashier wants to refund. Items
+            with qty=0 are skipped; the return doc only contains the
+            rows the cashier actually picked.
+        refund_mode: the Mode of Payment to use for the refund. Single
+            mode per return keeps the accounting simple and matches how
+            a real cash drawer works (you refund in one way).
+        notes: optional free-text remarks on the return.
+
+    Uses ERPNext's `make_return_doc` helper as the base so all the
+    accounting gymnastics (negative taxes, negative stock moves,
+    GL entries) work automatically. We only override:
+    - the items (to match the cashier's selection)
+    - the payments (to use the single chosen refund mode)
+    """
+    from erpnext.controllers.sales_and_purchase_return import make_return_doc
+
+    if isinstance(items, str):
+        items = json.loads(items)
+    if not items:
+        frappe.throw(_("No items selected to return."))
+
+    if not refund_mode:
+        frappe.throw(_("Select a refund mode of payment."))
+
+    source_doc = frappe.get_doc("POS Invoice", invoice)
+
+    can_return, _is_captain = _user_can_return_orders(source_doc.pos_profile)
+    if not can_return:
+        frappe.throw(
+            _("You don't have permission to issue returns on this terminal."),
+            title=_("Return Not Allowed"),
+        )
+
+    if source_doc.is_return:
+        frappe.throw(
+            _("Cannot return a return document."),
+            title=_("Cannot Return a Return"),
+        )
+    if source_doc.docstatus != 1:
+        frappe.throw(
+            _("Only submitted (paid) invoices can be returned."),
+            title=_("Invoice Not Submitted"),
+        )
+
+    # Map POS Invoice Item row name -> qty to return (positive).
+    pick_by_row = {}
+    for entry in items:
+        row_name = entry.get("row_name")
+        qty = float(entry.get("qty") or 0)
+        if row_name and qty > 0:
+            pick_by_row[row_name] = qty
+
+    if not pick_by_row:
+        frappe.throw(_("No items selected to return."))
+
+    # Validate: can't return more than `original_qty - already_returned`
+    # per row, and each picked row must actually exist on the source.
+    # The already-returned subtraction is what blocks "return the same
+    # item twice" — the failure mode that shipped in the first round.
+    source_rows = {row.name: row for row in source_doc.items}
+    returned_map = _get_returned_qty_per_row(invoice)
+    for row_name, qty in pick_by_row.items():
+        if row_name not in source_rows:
+            frappe.throw(
+                _("Row {0} is not part of invoice {1}.").format(row_name, invoice)
+            )
+        original_qty = float(source_rows[row_name].qty or 0)
+        already_returned = returned_map.get(row_name, 0.0)
+        remaining = original_qty - already_returned
+        if qty > remaining + 1e-6:  # tiny float tolerance
+            frappe.throw(
+                _(
+                    "Cannot return {0} of {1} — only {2} left after previous returns (original {3}, already returned {4})."
+                ).format(
+                    qty,
+                    source_rows[row_name].item_name,
+                    remaining,
+                    original_qty,
+                    already_returned,
+                )
+            )
+
+    # Validate refund_mode is a real Mode of Payment.
+    if not frappe.db.exists("Mode of Payment", refund_mode):
+        frappe.throw(_("Unknown Mode of Payment: {0}").format(refund_mode))
+
+    # Build the return doc using ERPNext's helper.
+    return_doc = make_return_doc("POS Invoice", invoice)
+
+    # Filter the return_doc's items down to just the rows the cashier
+    # picked, adjusting qty to match. The helper gives us a full copy
+    # of the original rows with negative qtys; we replace that.
+    filtered_items = []
+    for item in return_doc.items:
+        # `make_return_doc` populates each item with source_row info.
+        # Find the matching source row by item_code + rate as a fallback
+        # because the row name itself is regenerated on the new doc.
+        # ERPNext sets `pos_invoice_item` on each return item pointing
+        # back at the source row name.
+        source_row_name = getattr(item, "pos_invoice_item", None)
+        if source_row_name and source_row_name in pick_by_row:
+            pick_qty = pick_by_row[source_row_name]
+            item.qty = -pick_qty
+            # stock_qty mirrors qty when uom_conversion_factor is 1.
+            if hasattr(item, "stock_qty"):
+                item.stock_qty = -pick_qty
+            filtered_items.append(item)
+
+    if not filtered_items:
+        frappe.throw(
+            _("Couldn't map any selected items to the source invoice. "
+              "Try refreshing the Orders page."),
+        )
+    return_doc.items = filtered_items
+
+    # Replace the auto-generated payments with one row for the
+    # chosen refund mode. `make_return_doc` already flipped the signs
+    # of the original payments; we toss them and use the total of the
+    # filtered items as the refund amount.
+    return_doc.payments = []
+    return_doc.append(
+        "payments",
+        {
+            "mode_of_payment": refund_mode,
+            "amount": 0,  # populated below after totals recompute
+        },
+    )
+
+    if notes:
+        existing = return_doc.get("remarks") or ""
+        return_doc.remarks = (existing + "\n" if existing else "") + str(notes)
+
+    # Compute totals so we know how much to refund, then update the
+    # payment row with the grand_total (which is negative because qtys
+    # are negative).
+    return_doc.run_method("calculate_taxes_and_totals")
+
+    refund_amount = float(return_doc.grand_total or 0)
+    if return_doc.payments:
+        return_doc.payments[0].amount = refund_amount
+    return_doc.paid_amount = refund_amount
+
+    return_doc.insert(ignore_permissions=False)
+    return_doc.submit()
+
+    return {
+        "return_invoice": return_doc.name,
+        "original_invoice": invoice,
+        "refund_amount": refund_amount,
+    }
+
+
+# ---------------------------------------------------------------------
+# Geofence (per-POS Profile location gate for login)
+# ---------------------------------------------------------------------
+
+
+def _haversine_meters(lat1, lon1, lat2, lon2):
+    """Great-circle distance between two WGS-84 points, in meters."""
+    import math
+
+    R = 6371000.0  # Earth mean radius in meters
+    phi1 = math.radians(float(lat1))
+    phi2 = math.radians(float(lat2))
+    dphi = math.radians(float(lat2) - float(lat1))
+    dlambda = math.radians(float(lon2) - float(lon1))
+    a = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    )
+    c = 2 * math.asin(math.sqrt(a))
+    return R * c
+
+
+def _resolve_user_geofence(pos_profile_name):
+    """Figure out which coordinates + radius to check the current user
+    against for this POS Profile.
+
+    Returns `(target_lat, target_lon, radius_meters, source_label)`
+    or None when the feature is off / not configured.
+
+    Resolution order:
+      1. The POS Profile's `custom_geofence_enabled` must be 1.
+      2. Find a URY User row for this session's user on the profile's
+         Branch (ExPOS Users table). If the row has
+         `custom_use_company_location = 0` AND explicit lat/lon, use
+         those (with an optional per-user radius override).
+      3. Otherwise fall back to the POS Profile's company coordinates.
+
+    If the POS Profile has geofencing enabled but no company coords
+    set (and the user doesn't have per-user coords either), the
+    function returns None and the endpoint treats the check as "not
+    configured" — which means no block. The admin should either
+    configure the coords or disable the feature.
+    """
+    if not pos_profile_name:
+        return None
+
+    profile = frappe.db.get_value(
+        "POS Profile",
+        pos_profile_name,
+        [
+            "custom_geofence_enabled",
+            "custom_company_latitude",
+            "custom_company_longitude",
+            "custom_geofence_radius_meters",
+            "branch",
+        ],
+        as_dict=True,
+    )
+    if not profile or not int(profile.get("custom_geofence_enabled") or 0):
+        return None
+
+    default_radius = int(profile.get("custom_geofence_radius_meters") or 0) or 200
+
+    branch_name = profile.get("branch")
+    user = frappe.session.user
+
+    # Per-user row lookup on the branch's ExPOS Users child table.
+    if branch_name:
+        rows = frappe.db.sql(
+            """
+            SELECT
+                custom_use_company_location,
+                custom_latitude,
+                custom_longitude,
+                custom_geofence_radius_meters
+            FROM `tabURY User`
+            WHERE parenttype = 'Branch' AND parent = %s AND user = %s
+            LIMIT 1
+            """,
+            (branch_name, user),
+            as_dict=True,
+        )
+        if rows:
+            row = rows[0]
+            use_company = int(row.get("custom_use_company_location") or 0)
+            if not use_company:
+                per_lat = row.get("custom_latitude")
+                per_lon = row.get("custom_longitude")
+                if per_lat and per_lon:
+                    per_radius = int(row.get("custom_geofence_radius_meters") or 0)
+                    return (
+                        float(per_lat),
+                        float(per_lon),
+                        per_radius or default_radius,
+                        "user",
+                    )
+
+    company_lat = profile.get("custom_company_latitude")
+    company_lon = profile.get("custom_company_longitude")
+    if company_lat and company_lon:
+        return (
+            float(company_lat),
+            float(company_lon),
+            default_radius,
+            "company",
+        )
+
+    # Geofence is ON but nothing is configured — treat as "not
+    # configured" so the admin gets an actionable state instead of an
+    # unexplained block.
+    return None
+
+
+@frappe.whitelist()
+def get_geofence_config(terminal=None):
+    """Return `{enabled, radius_meters, source}` for the current session
+    so the React POS can decide whether to request geolocation.
+
+    Resolved against the terminal's POS Profile when possible. Returns
+    `{enabled: 0}` when the feature is off — the frontend skips the
+    whole geolocation dance in that case, so no browser permission
+    prompt is shown.
+    """
+    pos_profile_name = None
+    if terminal:
+        pos_profile_name = frappe.db.get_value(
+            "URY POS Terminal", terminal, "pos_profile"
+        )
+    if not pos_profile_name:
+        # Fall back to first enabled profile on the user's branch so
+        # Administrator / setup flows don't break.
+        try:
+            branch_name = getBranch()
+            pos_profile_name = frappe.db.get_value(
+                "POS Profile", {"branch": branch_name, "disabled": 0}, "name"
+            )
+        except Exception:
+            pos_profile_name = None
+
+    resolved = _resolve_user_geofence(pos_profile_name)
+    if not resolved:
+        return {"enabled": 0, "radius_meters": 0, "source": None}
+
+    _lat, _lon, radius, source = resolved
+    return {
+        "enabled": 1,
+        "radius_meters": radius,
+        "source": source,
+    }
+
+
+@frappe.whitelist()
+def validate_geofence(latitude, longitude, terminal=None):
+    """Block login when the current user is outside the allowed radius.
+
+    Call this from the React POS right after resolving the terminal
+    but before any other privileged endpoints. Raises a ValidationError
+    when the user is too far from the allowed location. Returns
+    `{ok: 1, distance_meters, radius_meters, source}` on success, or
+    `{ok: 1, enabled: 0}` when geofencing is disabled for this profile.
+
+    Security note: the backend trusts the coordinates the browser sends.
+    A determined user can spoof geolocation via devtools. This is a
+    policy control, not a cryptographic one — it keeps honest cashiers
+    in their branch and raises the bar for anyone trying to abuse a
+    shared credential from off-site.
+    """
+    try:
+        current_lat = float(latitude)
+        current_lon = float(longitude)
+    except (TypeError, ValueError):
+        frappe.throw(
+            _("Location data is missing or invalid."),
+            title=_("Location Required"),
+        )
+
+    pos_profile_name = None
+    if terminal:
+        pos_profile_name = frappe.db.get_value(
+            "URY POS Terminal", terminal, "pos_profile"
+        )
+    if not pos_profile_name:
+        try:
+            branch_name = getBranch()
+            pos_profile_name = frappe.db.get_value(
+                "POS Profile", {"branch": branch_name, "disabled": 0}, "name"
+            )
+        except Exception:
+            pos_profile_name = None
+
+    resolved = _resolve_user_geofence(pos_profile_name)
+    if not resolved:
+        return {"ok": 1, "enabled": 0}
+
+    target_lat, target_lon, radius, source = resolved
+    distance = _haversine_meters(current_lat, current_lon, target_lat, target_lon)
+    if distance > radius:
+        frappe.throw(
+            _(
+                "You are {0} m away from the allowed location (limit {1} m). "
+                "Please sign in from within your assigned work area."
+            ).format(int(round(distance)), int(radius)),
+            title=_("Outside Allowed Location"),
+        )
+
+    return {
+        "ok": 1,
+        "enabled": 1,
+        "distance_meters": round(distance, 1),
+        "radius_meters": int(radius),
+        "source": source,
+    }
+
+
+@frappe.whitelist()
+def reverse_pos_return(return_invoice):
+    """Cancel a submitted return POS Invoice to undo a return.
+
+    Uses ERPNext's native `cancel()` which creates a docstatus=2 state
+    and reverses all the GL / stock entries. The original (non-return)
+    invoice is untouched — its status stays as it was.
+
+    Validation:
+    - The doc must exist, be a return (`is_return=1`), and be currently
+      submitted (`docstatus=1`). Already-cancelled returns throw.
+    - The caller must satisfy `_user_can_return_orders` for the
+      return's POS Profile.
+    """
+    if not frappe.db.exists("POS Invoice", return_invoice):
+        frappe.throw(_("Invoice {0} not found.").format(return_invoice))
+
+    doc = frappe.get_doc("POS Invoice", return_invoice)
+
+    if not doc.is_return:
+        frappe.throw(
+            _("Invoice {0} is not a return document.").format(return_invoice),
+            title=_("Not a Return"),
+        )
+    if doc.docstatus != 1:
+        frappe.throw(
+            _("Invoice {0} is not submitted (docstatus {1}). Nothing to reverse.").format(
+                return_invoice, doc.docstatus
+            ),
+            title=_("Cannot Reverse"),
+        )
+
+    can_return, _is_captain = _user_can_return_orders(doc.pos_profile)
+    if not can_return:
+        frappe.throw(
+            _("You don't have permission to reverse returns on this terminal."),
+            title=_("Reverse Not Allowed"),
+        )
+
+    # Let ERPNext's cancel() do the heavy lifting. ValidationErrors
+    # (e.g. consolidated into a period close) propagate cleanly so the
+    # frontend toast surfaces the real reason.
+    doc.cancel()
+
+    return {
+        "return_invoice": return_invoice,
+        "original_invoice": doc.return_against,
+    }
+
