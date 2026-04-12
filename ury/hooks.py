@@ -329,6 +329,7 @@ fixtures = [
                     "POS Profile-custom_company_latitude",
                     "POS Profile-custom_company_longitude",
                     "POS Profile-custom_geofence_radius_meters",
+                    "POS Profile-custom_allow_unmerge_after_new_orders",
                     "POS Profile-paid_limit",
                     "POS Profile-table_attention_time",
                     "POS Opening Entry-restaurant_info",

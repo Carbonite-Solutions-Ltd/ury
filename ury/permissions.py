@@ -127,6 +127,10 @@ WRITE_DOCTYPES = [
         "URY Order Merge Log",
         {"read": 1, "write": 1, "create": 1, "select": 1, "report": 1},
     ),
+    (
+        "URY Table Merge Log",
+        {"read": 1, "write": 1, "create": 1, "select": 1, "report": 1},
+    ),
 ]
 
 # Captain-extras: things a captain may legitimately need to do that a

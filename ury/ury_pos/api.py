@@ -7,12 +7,45 @@ from datetime import date, datetime, timedelta
 
 @frappe.whitelist()
 def getTable(room):
-    branch_name = getBranch()   
-    tables = frappe.get_all(
-        "URY Table",
-        fields=["name", "occupied", "latest_invoice_time", "is_take_away", "restaurant_room","table_shape","no_of_seats"],
-        filters={"branch": branch_name,"restaurant_room":room,}
-    )    
+    """Return the top-level tables in `room` for the current branch.
+
+    Merged sources (tables whose `merged_into` is set) are excluded so
+    the POS grid only shows master tables. Each row also carries a
+    `merge_info` object for master tables that have an Active merge
+    log, so the frontend can render the "Merged +N" badge without an
+    extra round-trip. See CLAUDE.md "Fixes log" 2026-04-11.
+    """
+    branch_name = getBranch()
+    tables = frappe.db.sql(
+        """
+        SELECT
+            t.name, t.occupied, t.latest_invoice_time, t.is_take_away,
+            t.restaurant_room, t.table_shape, t.no_of_seats,
+            t.merged_into,
+            (
+                SELECT ml.name
+                FROM `tabURY Table Merge Log` AS ml
+                WHERE ml.master_table = t.name
+                  AND ml.status = 'Active'
+                ORDER BY ml.merged_at DESC
+                LIMIT 1
+            ) AS merge_log_name,
+            (
+                SELECT COUNT(ms.name)
+                FROM `tabURY Table Merge Source` AS ms
+                INNER JOIN `tabURY Table Merge Log` AS ml2
+                  ON ml2.name = ms.parent
+                WHERE ml2.master_table = t.name AND ml2.status = 'Active'
+            ) AS merge_source_count
+        FROM `tabURY Table` AS t
+        WHERE t.branch = %s
+          AND t.restaurant_room = %s
+          AND (t.merged_into IS NULL OR t.merged_into = '')
+        ORDER BY t.name
+        """,
+        (branch_name, room),
+        as_dict=True,
+    )
     return tables
 
 
@@ -3230,4 +3263,810 @@ def reverse_pos_return(return_invoice):
         "return_invoice": return_invoice,
         "original_invoice": doc.return_against,
     }
+
+
+# ---------------------------------------------------------------------
+# Table merge / unmerge (cross-room, same-branch, optional order merge)
+# ---------------------------------------------------------------------
+
+
+def _get_top_level_master_table(table_name):
+    """Walk the `merged_into` chain until we find a URY Table that
+    isn't merged anywhere. Returns the final top-level master name.
+
+    Nested merges are supported: if A → B and B → C, calling this with
+    A returns C. Defends against cycles by capping the walk at 20 hops.
+    """
+    if not table_name:
+        return None
+    current = table_name
+    seen = set()
+    for _ in range(20):
+        if current in seen:
+            # Cycle — shouldn't happen, bail.
+            return current
+        seen.add(current)
+        merged_into = frappe.db.get_value("URY Table", current, "merged_into")
+        if not merged_into:
+            return current
+        current = merged_into
+    return current
+
+
+def _get_active_drafts_on_table(table_name):
+    """Return draft POS Invoices currently sitting on this table (or
+    any table in its merged-into chain). Used by the merge validator
+    to decide whether to force merge_orders=1.
+    """
+    if not table_name:
+        return []
+    return frappe.db.sql(
+        """
+        SELECT name, owner, custom_terminal, grand_total, customer,
+               customer_name, creation
+        FROM `tabPOS Invoice`
+        WHERE restaurant_table = %s
+          AND docstatus = 0
+          AND (custom_merged_into IS NULL OR custom_merged_into = '')
+        ORDER BY creation
+        """,
+        (table_name,),
+        as_dict=True,
+    )
+
+
+@frappe.whitelist()
+def merge_tables(
+    tables,
+    merge_orders=0,
+    master=None,
+    notes=None,
+    freed_sources=None,
+):
+    """Merge several URY Tables into one master.
+
+    Args:
+        tables: list of URY Table names (or JSON-encoded). Must contain
+            at least two distinct entries.
+        merge_orders: 1 to also merge any draft POS Invoices sitting
+            on the selected tables into the master's draft. When any
+            source table has a draft, the frontend should force this
+            to 1 — the backend will throw if not.
+        master: optional explicit master table name. Defaults to the
+            first entry in ``tables``. Must itself be in the list.
+        notes: optional free-text note stored on the merge log.
+        freed_sources: optional list of source table names that the
+            customer has vacated — those tables will be marked as
+            NOT merged-into (kept available for new customers) while
+            their orders are still combined onto the master. The
+            default behavior (source NOT in this list) keeps the
+            source hidden from the grid so ONE physical table hosts
+            the combined order.
+
+    Validation:
+      - All tables must exist, all on the same branch.
+      - Every selected table must currently have an active draft
+        order on it. Empty/available tables can't participate — there
+        would be nothing to merge. This catches the "why are you
+        merging empty tables?" bug where cashiers accidentally merge
+        Available tables and silently lose track of them.
+      - None of the selected tables can already be merged into another
+        (the sources must be top-level). The master CAN be a table
+        that itself was previously a master — nested merges are fine.
+      - Caller must satisfy `_user_can_merge_orders` for the master's
+        POS Profile (reuses the order-merge captain gate).
+      - Cross-room is allowed; cross-branch is banned.
+
+    Orders side: when ``merge_orders=1``, delegates the order merge
+    to ``merge_pos_invoices`` so both flows share the same code path
+    (and produce a URY Order Merge Log alongside the URY Table Merge
+    Log, linked via ``order_merge_log``).
+
+    See CLAUDE.md "Fixes log" 2026-04-11.
+    """
+    if isinstance(tables, str):
+        try:
+            tables = json.loads(tables)
+        except Exception:
+            tables = [tables]
+    if not isinstance(tables, list) or len(tables) < 2:
+        frappe.throw(
+            _("Select at least two tables to merge."),
+            title=_("Not Enough Tables"),
+        )
+    merge_orders = int(merge_orders or 0)
+
+    if isinstance(freed_sources, str):
+        try:
+            freed_sources = json.loads(freed_sources)
+        except Exception:
+            freed_sources = []
+    freed_sources_set = set(freed_sources or [])
+
+    # Dedup while preserving order.
+    seen = []
+    for name in tables:
+        if name and name not in seen:
+            seen.append(name)
+    tables = seen
+    if len(tables) < 2:
+        frappe.throw(
+            _("Select at least two distinct tables to merge."),
+            title=_("Not Enough Tables"),
+        )
+
+    # Resolve master.
+    master_name = master if master and master in tables else tables[0]
+    source_names = [t for t in tables if t != master_name]
+
+    if not frappe.db.exists("URY Table", master_name):
+        frappe.throw(
+            _("Master table '{0}' not found.").format(master_name),
+            frappe.DoesNotExistError,
+        )
+    master_doc = frappe.get_doc("URY Table", master_name)
+
+    # The master CAN already be merged into another table — in which
+    # case we walk the chain to find the real top-level master and
+    # redirect the merge to that. This supports "merge B (a master) into
+    # C (also a master)" — functionally equivalent to merging B's
+    # whole tree onto C.
+    if master_doc.merged_into:
+        top = _get_top_level_master_table(master_doc.name)
+        if top and top != master_doc.name:
+            master_doc = frappe.get_doc("URY Table", top)
+            master_name = master_doc.name
+
+    master_branch = master_doc.branch
+    master_pos_profile = frappe.db.get_value(
+        "POS Profile", {"branch": master_branch, "disabled": 0}, "name"
+    )
+    can_merge, is_captain = _user_can_merge_orders(master_pos_profile)
+    if not can_merge:
+        frappe.throw(
+            _(
+                "You are not allowed to merge tables on this POS Profile. "
+                "The 'Restrict Merge Orders to Captain' setting is enabled "
+                "\u2014 ask a captain or manager."
+            ),
+            title=_("Merge Not Allowed"),
+            exc=frappe.PermissionError,
+        )
+
+    requesting_user = frappe.session.user
+
+    # The master must have an active draft too — we're combining
+    # orders into it, so an empty master isn't meaningful.
+    master_drafts = _get_active_drafts_on_table(master_doc.name)
+    if not master_drafts:
+        frappe.throw(
+            _(
+                "Table '{0}' has no active order. Only tables that "
+                "currently have an open order can be merged \u2014 pick "
+                "a table with a customer on it."
+            ).format(master_doc.name),
+            title=_("Table Is Available"),
+        )
+
+    # Validate every source table.
+    source_docs = []
+    source_drafts = {}  # source_name -> list of draft invoices
+    empty_sources = []
+    for src_name in source_names:
+        if not frappe.db.exists("URY Table", src_name):
+            frappe.throw(
+                _("Table '{0}' not found.").format(src_name),
+                frappe.DoesNotExistError,
+            )
+        src = frappe.get_doc("URY Table", src_name)
+        if src.branch != master_branch:
+            frappe.throw(
+                _(
+                    "Table '{0}' is on branch '{1}' but the master is on '{2}'. "
+                    "Only same-branch merges are allowed."
+                ).format(src_name, src.branch, master_branch),
+                title=_("Cross-Branch Merge Blocked"),
+            )
+        if src.merged_into:
+            frappe.throw(
+                _(
+                    "Table '{0}' is already merged into '{1}'. Pick a "
+                    "top-level table instead."
+                ).format(src_name, src.merged_into),
+                title=_("Already Merged"),
+            )
+        drafts = _get_active_drafts_on_table(src_name)
+        if not drafts:
+            empty_sources.append(src_name)
+        source_drafts[src_name] = drafts
+        source_docs.append(src)
+
+    # Every selected source must have at least one draft. Empty tables
+    # have nothing to merge — the cashier almost certainly clicked
+    # them by mistake.
+    if empty_sources:
+        frappe.throw(
+            _(
+                "These tables are available (no active order), so "
+                "there's nothing to merge: {0}. Pick only tables that "
+                "currently have a customer on them."
+            ).format(", ".join(empty_sources[:10])),
+            title=_("Empty Tables Selected"),
+        )
+
+    # The "orders must be merged" path is implicit now — every
+    # selected table has a draft by the checks above, so we always
+    # proceed with the order merge. Keep the flag for backward compat
+    # but force it on.
+    merge_orders = 1
+
+    # When captain-restricted, cashiers can only merge tables where
+    # every draft on every source is their own.
+    if not is_captain:
+        stranger_drafts = []
+        for src_name, drafts in source_drafts.items():
+            for d in drafts:
+                if d["owner"] != requesting_user:
+                    stranger_drafts.append(d["name"])
+        if stranger_drafts:
+            frappe.throw(
+                _(
+                    "Some of the orders on the selected tables belong to "
+                    "other cashiers: {0}. Only a captain can merge across "
+                    "cashiers."
+                ).format(", ".join(stranger_drafts[:5])),
+                title=_("Merge Not Allowed"),
+                exc=frappe.PermissionError,
+            )
+
+    # Validate freed_sources against the selection.
+    unknown_freed = [
+        n for n in freed_sources_set if n not in source_names
+    ]
+    if unknown_freed:
+        frappe.throw(
+            _(
+                "freed_sources must reference the selected source tables. "
+                "Unknown entries: {0}"
+            ).format(", ".join(unknown_freed[:5])),
+            title=_("Invalid Input"),
+        )
+
+    # Build the table merge log.
+    log = frappe.new_doc("URY Table Merge Log")
+    log.master_table = master_doc.name
+    log.status = "Active"
+    log.branch = master_branch
+    log.pos_profile = master_pos_profile
+    log.merged_at = frappe.utils.now_datetime()
+    log.merged_by = requesting_user
+    log.merged_by_full_name = (
+        frappe.db.get_value("User", requesting_user, "full_name") or ""
+    )
+    log.notes = notes
+    log.master_pre_merge_occupied = int(master_doc.occupied or 0)
+    log.merged_orders = 0  # updated below once we run the order merge
+
+    # Collect every draft across master + sources for the order merge.
+    # The first one becomes the order merge master — prefer the
+    # master's own draft.
+    all_drafts = list(master_drafts)
+    for src in source_docs:
+        all_drafts.extend(source_drafts.get(src.name, []))
+    draft_names = [d["name"] for d in all_drafts]
+    seen_inv = []
+    for n in draft_names:
+        if n not in seen_inv:
+            seen_inv.append(n)
+    order_merge_result = None
+    if len(seen_inv) >= 2:
+        ordered = [master_drafts[0]["name"]] + [
+            n for n in seen_inv if n != master_drafts[0]["name"]
+        ]
+        order_merge_result = merge_pos_invoices(
+            ordered,
+            notes=_("Auto-merged alongside table merge {0}").format(
+                log.name if log.name else ""
+            ),
+        )
+        # Re-home the order merge master's `restaurant_table` onto
+        # the table merge master (so the resulting combined order
+        # sits on the final chosen table).
+        try:
+            frappe.db.set_value(
+                "POS Invoice",
+                order_merge_result["master_invoice"],
+                "restaurant_table",
+                master_doc.name,
+            )
+        except Exception:
+            pass
+        log.merged_orders = 1
+        log.order_merge_log = order_merge_result["merge_log"]
+
+    # Snapshot each source and flip its merged_into (or free it when
+    # the cashier told us the customers vacated that table).
+    for src in source_docs:
+        had_draft = bool(source_drafts.get(src.name))
+        original_invoice = None
+        if had_draft:
+            original_invoice = source_drafts[src.name][0]["name"]
+        freed = src.name in freed_sources_set
+        log.append(
+            "source_tables",
+            {
+                "source_table": src.name,
+                "original_room": src.restaurant_room,
+                "original_occupied": int(src.occupied or 0),
+                "had_active_order": int(had_draft),
+                "original_invoice": original_invoice,
+            },
+        )
+        if freed:
+            # Customers vacated this table — keep it AVAILABLE in the
+            # grid for the next customer. We do NOT set `merged_into`
+            # because the table isn't logically under the master; its
+            # old order is on the master now but the physical table
+            # is free. Unmerge will restore the order onto the source
+            # and re-occupy it at that point.
+            frappe.db.set_value(
+                "URY Table",
+                src.name,
+                {
+                    "merged_into": None,
+                    "occupied": 0,
+                    "latest_invoice_time": None,
+                },
+            )
+        else:
+            # Customers still sitting at this table. Hide it behind
+            # the master: `merged_into` is set, so `getTable` filters
+            # it out of the grid. The cashier interacts with the
+            # master from now on.
+            frappe.db.set_value(
+                "URY Table",
+                src.name,
+                {
+                    "merged_into": master_doc.name,
+                    "occupied": 0,
+                    "latest_invoice_time": None,
+                },
+            )
+
+    # The master now holds the combined order — mark it occupied.
+    frappe.db.set_value(
+        "URY Table",
+        master_doc.name,
+        {"occupied": 1},
+    )
+
+    log.insert(ignore_permissions=True)
+    frappe.db.commit()
+
+    return {
+        "merge_log": log.name,
+        "master_table": master_doc.name,
+        "merged_count": len(source_docs),
+        "freed_count": len(freed_sources_set),
+        "order_merge_log": (
+            order_merge_result["merge_log"] if order_merge_result else None
+        ),
+        "order_master": (
+            order_merge_result["master_invoice"] if order_merge_result else None
+        ),
+    }
+
+
+def _get_post_merge_invoices(master_table, merged_at):
+    """Return the list of POS Invoice docs on `master_table` that were
+    created AFTER `merged_at`. Used by the unmerge flow to decide
+    whether the unmerge is allowed (when the profile's
+    ``custom_allow_unmerge_after_new_orders`` is off) and, if so, to
+    ask the cashier which destination table each new order should go
+    to.
+    """
+    if not master_table or not merged_at:
+        return []
+    return frappe.db.sql(
+        """
+        SELECT name, owner, customer, customer_name, grand_total,
+               docstatus, status, creation
+        FROM `tabPOS Invoice`
+        WHERE restaurant_table = %s
+          AND creation > %s
+          AND (custom_merged_into IS NULL OR custom_merged_into = '')
+        ORDER BY creation
+        """,
+        (master_table, merged_at),
+        as_dict=True,
+    )
+
+
+@frappe.whitelist()
+def get_active_table_merge_log(table):
+    """Return metadata about the active table merge log that has
+    ``table`` as its master, or None. Powers the unmerge button on
+    the Table page + drives the unmerge dialog's initial state.
+
+    Response shape: ``{name, merged_at, merged_by, merged_by_full_name,
+    merged_orders, order_merge_log, source_count, source_tables,
+    post_merge_orders, unmerge_allowed_without_additional_handling}``.
+    """
+    if not table:
+        return None
+    rows = frappe.db.sql(
+        """
+        SELECT name, merged_at, merged_by, merged_by_full_name,
+               merged_orders, order_merge_log, pos_profile
+        FROM `tabURY Table Merge Log`
+        WHERE master_table = %s AND status = 'Active'
+        ORDER BY merged_at DESC
+        LIMIT 1
+        """,
+        (table,),
+        as_dict=True,
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    log = frappe.get_doc("URY Table Merge Log", row.name)
+    source_tables = [
+        {
+            "source_table": s.source_table,
+            "original_room": s.original_room,
+            "original_occupied": int(s.original_occupied or 0),
+            "had_active_order": int(s.had_active_order or 0),
+            "original_invoice": s.original_invoice,
+        }
+        for s in (log.source_tables or [])
+    ]
+    post_merge = _get_post_merge_invoices(table, log.merged_at)
+    allow_after_new = int(
+        frappe.db.get_value(
+            "POS Profile",
+            row.pos_profile,
+            "custom_allow_unmerge_after_new_orders",
+        )
+        or 0
+    )
+    return {
+        "name": row.name,
+        "merged_at": str(log.merged_at) if log.merged_at else None,
+        "merged_by": log.merged_by,
+        "merged_by_full_name": log.merged_by_full_name,
+        "merged_orders": int(log.merged_orders or 0),
+        "order_merge_log": log.order_merge_log,
+        "source_count": len(source_tables),
+        "source_tables": source_tables,
+        "post_merge_orders": post_merge,
+        "custom_allow_unmerge_after_new_orders": allow_after_new,
+    }
+
+
+@frappe.whitelist()
+def unmerge_tables(merge_log, order_assignments=None):
+    """Reverse a previous table merge.
+
+    Args:
+        merge_log: URY Table Merge Log name.
+        order_assignments: optional JSON map ``{invoice: destination_table}``
+            required when the master has post-merge orders AND the POS
+            Profile's ``custom_allow_unmerge_after_new_orders`` is on.
+            Each invoice on the master created after ``merge_log.merged_at``
+            must appear in this map. Destinations must be tables that
+            are either the master itself or one of the merge's source
+            tables.
+
+    Behavior:
+      1. If the master has no post-merge invoices, unmerge is a
+         simple single action (restores tables + optionally reverses
+         the order merge).
+      2. If the master has post-merge invoices AND the profile
+         disallows it, throws with a clear error listing the offending
+         invoices.
+      3. If the profile allows it, requires ``order_assignments`` for
+         every post-merge invoice, applies them (by updating each
+         invoice's ``restaurant_table`` in place), then proceeds with
+         the unmerge.
+
+    See CLAUDE.md "Fixes log" 2026-04-11.
+    """
+    if not merge_log:
+        frappe.throw(
+            _("Merge log name is required."), title=_("Missing Argument")
+        )
+    if not frappe.db.exists("URY Table Merge Log", merge_log):
+        frappe.throw(
+            _("Table merge log '{0}' not found.").format(merge_log),
+            frappe.DoesNotExistError,
+        )
+
+    if isinstance(order_assignments, str):
+        try:
+            order_assignments = json.loads(order_assignments)
+        except Exception:
+            order_assignments = {}
+    order_assignments = order_assignments or {}
+
+    log = frappe.get_doc("URY Table Merge Log", merge_log)
+    if log.status != "Active":
+        frappe.throw(
+            _("Table merge log '{0}' is already unmerged.").format(merge_log),
+            title=_("Already Unmerged"),
+        )
+
+    if not frappe.db.exists("URY Table", log.master_table):
+        frappe.throw(
+            _("Master table '{0}' no longer exists.").format(log.master_table),
+            frappe.DoesNotExistError,
+        )
+
+    can_merge, is_captain = _user_can_merge_orders(log.pos_profile)
+    if not can_merge:
+        frappe.throw(
+            _("You are not allowed to unmerge tables on this POS Profile."),
+            title=_("Unmerge Not Allowed"),
+            exc=frappe.PermissionError,
+        )
+    requesting_user = frappe.session.user
+
+    # Identify post-merge orders on the master.
+    post_merge = _get_post_merge_invoices(log.master_table, log.merged_at)
+    allow_after_new = int(
+        frappe.db.get_value(
+            "POS Profile",
+            log.pos_profile,
+            "custom_allow_unmerge_after_new_orders",
+        )
+        or 0
+    )
+
+    valid_destinations = {log.master_table} | {
+        s.source_table for s in (log.source_tables or [])
+    }
+
+    if post_merge:
+        if not allow_after_new:
+            names = ", ".join(r["name"] for r in post_merge[:5])
+            extra = "" if len(post_merge) <= 5 else f" (+{len(post_merge) - 5} more)"
+            frappe.throw(
+                _(
+                    "Cannot unmerge: there are {0} order(s) on the master "
+                    "table that were created after the merge \u2014 {1}{2}. "
+                    "Pay or cancel those orders first, OR ask an admin to "
+                    "turn on 'Allow Table Unmerge After New Orders' on "
+                    "the POS Profile."
+                ).format(len(post_merge), names, extra),
+                title=_("Unmerge Blocked: New Orders"),
+            )
+        # Validate assignments.
+        missing = []
+        bad_dest = []
+        for inv in post_merge:
+            dest = order_assignments.get(inv["name"])
+            if not dest:
+                missing.append(inv["name"])
+            elif dest not in valid_destinations:
+                bad_dest.append((inv["name"], dest))
+        if missing:
+            frappe.throw(
+                _(
+                    "You must pick a destination table for each new order: "
+                    "missing {0}."
+                ).format(", ".join(missing[:5])),
+                title=_("Missing Destination"),
+            )
+        if bad_dest:
+            details = ", ".join(f"{n} \u2192 {d}" for n, d in bad_dest[:5])
+            frappe.throw(
+                _(
+                    "Destination must be the master or one of the merge's "
+                    "source tables. Invalid assignments: {0}"
+                ).format(details),
+                title=_("Invalid Destination"),
+            )
+        # Apply assignments.
+        for inv in post_merge:
+            dest = order_assignments[inv["name"]]
+            if dest != log.master_table:
+                frappe.db.set_value(
+                    "POS Invoice",
+                    inv["name"],
+                    "restaurant_table",
+                    dest,
+                )
+
+    # Pre-flight check for sources that were FREED at merge time
+    # (customers vacated, table returned to Available). If a new
+    # customer has since sat at one of those tables and rung a new
+    # order, restoring the old order onto it would create a
+    # two-order conflict. Block the unmerge with a clear error
+    # pointing at the offending tables.
+    freed_sources_with_new_orders = []
+    for src_row in log.source_tables or []:
+        src_name = src_row.source_table
+        if not frappe.db.exists("URY Table", src_name):
+            continue
+        # A source is "freed" if it isn't currently merged into this
+        # master. Un-freed sources will be hidden behind the master
+        # via `merged_into` and therefore can't have new orders.
+        still_merged = (
+            frappe.db.get_value("URY Table", src_name, "merged_into")
+            == log.master_table
+        )
+        if still_merged:
+            continue
+        # Check for post-merge drafts on this freed source.
+        new_drafts = frappe.db.sql(
+            """
+            SELECT name
+            FROM `tabPOS Invoice`
+            WHERE restaurant_table = %s
+              AND creation > %s
+              AND docstatus = 0
+              AND (custom_merged_into IS NULL OR custom_merged_into = '')
+            ORDER BY creation
+            LIMIT 5
+            """,
+            (src_name, log.merged_at),
+            as_dict=True,
+        )
+        if new_drafts:
+            freed_sources_with_new_orders.append(
+                (src_name, [d["name"] for d in new_drafts])
+            )
+
+    if freed_sources_with_new_orders:
+        details = "; ".join(
+            f"{t} has {', '.join(ns)}"
+            for t, ns in freed_sources_with_new_orders[:5]
+        )
+        frappe.throw(
+            _(
+                "Cannot unmerge: one or more of the freed source tables "
+                "now have a new customer on them \u2014 {0}. Pay or "
+                "cancel those new orders before unmerging, otherwise the "
+                "old orders would collide with the new ones."
+            ).format(details),
+            title=_("Unmerge Blocked: Tables Reused"),
+        )
+
+    # Reverse the order merge first (if there was one) — this restores
+    # the pre-merge draft orders so they're pointing at their original
+    # source tables BEFORE we put those tables back.
+    if log.merged_orders and log.order_merge_log:
+        order_log_exists = frappe.db.exists(
+            "URY Order Merge Log", log.order_merge_log
+        )
+        if order_log_exists:
+            order_log_status = frappe.db.get_value(
+                "URY Order Merge Log", log.order_merge_log, "status"
+            )
+            if order_log_status == "Active":
+                # unmerge_pos_invoices will throw if the master was paid;
+                # let that propagate.
+                unmerge_pos_invoices(log.order_merge_log)
+
+    # Restore each source table: clear merged_into + restore original
+    # occupied / latest_invoice_time state if the source had an active
+    # order (which was restored by the order unmerge above).
+    for src_row in log.source_tables or []:
+        src_name = src_row.source_table
+        if not frappe.db.exists("URY Table", src_name):
+            continue
+        updates = {"merged_into": None}
+        if src_row.had_active_order:
+            updates["occupied"] = 1
+            updates["latest_invoice_time"] = frappe.utils.now_datetime().time()
+        else:
+            updates["occupied"] = int(src_row.original_occupied or 0)
+        frappe.db.set_value("URY Table", src_name, updates)
+
+    # If the master was not occupied before the merge and has no
+    # post-merge orders, reset its occupied flag to match the snapshot.
+    if not post_merge and not int(log.master_pre_merge_occupied or 0):
+        frappe.db.set_value(
+            "URY Table", log.master_table, {"occupied": 0, "latest_invoice_time": None}
+        )
+
+    log.status = "Unmerged"
+    log.unmerged_at = frappe.utils.now_datetime()
+    log.unmerged_by = requesting_user
+    log.unmerged_by_full_name = (
+        frappe.db.get_value("User", requesting_user, "full_name") or ""
+    )
+    log.flags.ignore_permissions = True
+    log.save()
+    frappe.db.commit()
+
+    return {
+        "merge_log": log.name,
+        "master_table": log.master_table,
+        "unmerged_count": len(log.source_tables or []),
+        "reassigned_orders": len(post_merge),
+    }
+
+
+def auto_unmerge_table_if_active(master_table):
+    """Internal helper: when a table's merge has served its purpose
+    (e.g. the master invoice was printed and is on its way to payment),
+    sweep any active URY Table Merge Log on this table and clear the
+    sources back out.
+
+    Differs from `unmerge_tables` in two ways:
+      1. Skips the user permission check — this is a system action
+         triggered by the print/payment flow, not a cashier choice.
+      2. Skips the post-merge-order block — by the time we get here
+         the master's invoice is already on its way out, so there's
+         no draft to strand. Any new draft created on the master
+         AFTER this auto-unmerge is unrelated and stays put.
+
+    Returns the merge log name when an unmerge happened, None when
+    there was no active merge to clear. Logs (but doesn't raise) on
+    failure so the print path doesn't blow up if something's weird.
+    """
+    if not master_table:
+        return None
+    log_name = frappe.db.get_value(
+        "URY Table Merge Log",
+        {"master_table": master_table, "status": "Active"},
+        "name",
+    )
+    if not log_name:
+        return None
+
+    try:
+        log = frappe.get_doc("URY Table Merge Log", log_name)
+
+        # Reverse the order merge first if there was one. The order
+        # merge unmerge will throw if the master invoice is already
+        # paid — that's fine, we want it to skip in that case (the
+        # consolidated invoice is now part of the closing flow and
+        # can't be split anyway).
+        if log.merged_orders and log.order_merge_log:
+            order_log_status = frappe.db.get_value(
+                "URY Order Merge Log", log.order_merge_log, "status"
+            )
+            if order_log_status == "Active":
+                try:
+                    unmerge_pos_invoices(log.order_merge_log)
+                except Exception:
+                    # Master invoice may already be submitted/paid; the
+                    # order unmerge can't proceed. The TABLE unmerge
+                    # still should — we just leave the orders as-is.
+                    pass
+
+        # Clear `merged_into` on each source so they reappear in the
+        # grid as Available.
+        for src_row in log.source_tables or []:
+            src_name = src_row.source_table
+            if not frappe.db.exists("URY Table", src_name):
+                continue
+            still_merged = (
+                frappe.db.get_value("URY Table", src_name, "merged_into")
+                == log.master_table
+            )
+            updates = {"merged_into": None, "occupied": 0, "latest_invoice_time": None}
+            # Sources that were freed at merge time stayed Available all
+            # along — `still_merged` is False — and we don't want to
+            # touch them. Only re-clear sources that ARE currently
+            # hidden behind the master.
+            if still_merged:
+                frappe.db.set_value("URY Table", src_name, updates)
+
+        log.status = "Unmerged"
+        log.unmerged_at = frappe.utils.now_datetime()
+        log.unmerged_by = frappe.session.user
+        log.unmerged_by_full_name = (
+            frappe.db.get_value("User", frappe.session.user, "full_name") or ""
+        )
+        log.flags.ignore_permissions = True
+        log.save()
+        return log.name
+    except Exception as exc:
+        frappe.log_error(
+            title="Auto-unmerge table failed",
+            message=f"master_table={master_table} log={log_name}\n{exc}",
+        )
+        return None
 

@@ -436,6 +436,22 @@ def get_custom_fields():
 				"depends_on": "eval:doc.custom_geofence_enabled",
 				"description": "Default allowed distance in meters. Per-user overrides live on the Branch's ExPOS Users table.",
 			},
+			# Table-merge unmerge-with-new-orders escape hatch. When the
+			# cashier merges tables and then rings new orders on the
+			# master, the default behaviour is to block the unmerge
+			# (unmerging would strand those new orders on a non-existent
+			# table). Flipping this check ON lets the cashier unmerge
+			# anyway; the UI prompts them to assign each post-merge
+			# order to a destination table. See CLAUDE.md "Fixes log"
+			# 2026-04-11.
+			{
+				"fieldname": "custom_allow_unmerge_after_new_orders",
+				"fieldtype": "Check",
+				"insert_after": "custom_geofence_radius_meters",
+				"label": "Allow Table Unmerge After New Orders",
+				"default": "0",
+				"description": "When checked, cashiers can unmerge tables even after new orders have been placed on the merged master. The unmerge UI asks them to assign each post-merge order to a destination table.",
+			},
 		],
   
 		"POS Opening Entry": [

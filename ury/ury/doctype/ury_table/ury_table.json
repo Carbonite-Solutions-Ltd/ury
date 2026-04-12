@@ -21,7 +21,8 @@
   "active_info_tab",
   "occupied",
   "column_break_280tb",
-  "latest_invoice_time"
+  "latest_invoice_time",
+  "merged_into"
  ],
  "fields": [
   {
@@ -104,6 +105,15 @@
    "fieldtype": "Select",
    "label": "Table Shape",
    "options": "\nRectangle\nSquare\nCircle"
+  },
+  {
+   "description": "Set when this table has been merged into another table. The source is hidden from the POS Table grid until the merge is reversed. Walk the chain to find the top-level master.",
+   "fieldname": "merged_into",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Merged Into",
+   "options": "URY Table",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,
