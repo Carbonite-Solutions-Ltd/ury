@@ -13,6 +13,7 @@ import {
   GitMerge,
   Undo2,
   RotateCcw,
+  BedDouble,
 } from 'lucide-react';
 import { Badge, Button, Card, CardContent } from '../components/ui';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../components/ui/dialog';
@@ -577,6 +578,18 @@ export default function Orders() {
                               <span className="text-xs">Returned</span>
                             </Badge>
                           )}
+                          {order.custom_charge_to_room === 1 && (
+                            <Badge
+                              variant="default"
+                              className="bg-amber-600 hover:bg-amber-700 text-white flex items-center gap-1 px-2 py-0.5"
+                              title={`Charged to Room ${order.custom_hotel_room || ''}`}
+                            >
+                              <BedDouble className="w-3 h-3" />
+                              <span className="text-xs">
+                                Room {order.custom_hotel_room || ''}
+                              </span>
+                            </Badge>
+                          )}
                           {order.custom_order_status === 'Served' && (
                             <Badge
                               variant="default"
@@ -662,6 +675,19 @@ export default function Orders() {
                             >
                               <RotateCcw className="w-3 h-3" />
                               <span className="text-xs">Returned</span>
+                            </Badge>
+                          )}
+                          {/* Room Charged badge — iHotel charged draft. */}
+                          {order.custom_charge_to_room === 1 && (
+                            <Badge
+                              variant="default"
+                              className="bg-amber-600 hover:bg-amber-700 text-white flex items-center gap-1 px-2 py-0.5"
+                              title={`Charged to Room ${order.custom_hotel_room || ''}`}
+                            >
+                              <BedDouble className="w-3 h-3" />
+                              <span className="text-xs">
+                                Room {order.custom_hotel_room || ''}
+                              </span>
                             </Badge>
                           )}
                           {/* Served Badge */}
@@ -816,6 +842,17 @@ export default function Orders() {
                       <span>Returned</span>
                     </Badge>
                   )}
+                {/* Room Charged badge — iHotel charged draft. */}
+                {selectedOrder.custom_charge_to_room === 1 && (
+                  <Badge
+                    variant="default"
+                    className="bg-amber-600 hover:bg-amber-700 text-white flex items-center gap-1"
+                    title={`Charged to Room ${selectedOrder.custom_hotel_room || ''}`}
+                  >
+                    <BedDouble className="w-3.5 h-3.5" />
+                    <span>Room {selectedOrder.custom_hotel_room || ''}</span>
+                  </Badge>
+                )}
                 <Badge variant={getBadgeVariant(selectedOrder.status)}>
                   {selectedOrder.status}
                 </Badge>
@@ -977,8 +1014,11 @@ export default function Orders() {
                     {isPrinting ? <Spinner className="w-5 h-5" hideMessage /> : <Printer className="w-5 h-5" />}
                   </Button>
                 )}
-                {/* Payment Button - Only show for Draft, Unbilled, and Recently Paid orders */}
-                {(selectedOrder.status === 'Draft' || selectedOrder.status === 'Unbilled' || selectedOrder.status === 'Recently Paid') && (
+                {/* Payment Button - Only show for Draft, Unbilled, and Recently Paid orders.
+                    Charged-to-room drafts are excluded — iHotel will post the real
+                    accounting when the guest settles their folio at checkout. */}
+                {(selectedOrder.status === 'Draft' || selectedOrder.status === 'Unbilled' || selectedOrder.status === 'Recently Paid') &&
+                 selectedOrder.custom_charge_to_room !== 1 && (
                   <Button
                     className="flex-1"
                     onClick={() => {
@@ -1049,6 +1089,8 @@ export default function Orders() {
           owner={posStore.posProfile?.cashier || ''}
           fetchOrders={fetchOrders}
           clearSelectedOrder={clearSelectedOrder}
+          hotelRoom={selectedOrder.custom_hotel_room || null}
+          hotelRoomLabel={selectedOrder.customer_name || null}
         />
       )}
       {showReturnDialog && selectedOrder && (

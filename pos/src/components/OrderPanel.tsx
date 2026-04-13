@@ -38,6 +38,7 @@ const OrderPanel = () => {
     setOrderComment,
     terminalName,
     shiftBlocked,
+    hotelRoom,
   } = usePOSStore();
   const user = useRootStore((state: RootState) => state.user);
   const [editingItem, setEditingItem] = useState<typeof activeOrders[0] | null>(null);
@@ -153,6 +154,7 @@ const OrderPanel = () => {
         waiter: user.name,
         comments: orderComment || undefined,
         terminal: terminalName || undefined,
+        hotel_room: hotelRoom || undefined,
       };
 
       await syncOrder(orderData);

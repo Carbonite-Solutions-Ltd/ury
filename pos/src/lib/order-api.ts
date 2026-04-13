@@ -32,6 +32,10 @@ export interface POSInvoice {
   total: number;
   grand_total: number;
   items: POSInvoiceItem[];
+  /** iHotel: room intent persisted on the draft. Non-zero after charge_invoice_to_room. */
+  custom_hotel_room?: string | null;
+  custom_charge_to_room?: number;
+  custom_ihotel_profile?: string | null;
 }
 
 export interface TableOrder {
@@ -79,6 +83,8 @@ export interface SyncOrderRequest {
   room?: string;
   /** Terminal (URY POS Terminal name) that's ringing this invoice. Stamped on the invoice for reporting + reconciliation. */
   terminal?: string | null;
+  /** iHotel: when set, the draft is tagged with the selected hotel room so the intent survives reloads. The actual folio write happens at charge_invoice_to_room time. */
+  hotel_room?: string | null;
 }
 
 export const syncOrder = async (data: SyncOrderRequest) => {

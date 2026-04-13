@@ -34,6 +34,10 @@ export interface PosProfileLimited {
    * Orders page right panel. Flip to 0 to let cashiers return their own.
    */
   custom_restrict_returns_to_captain?: number;
+  /** iHotel integration master switch (per-profile). */
+  custom_ihotel_enabled?: number;
+  /** Default Charge Type written onto the iHotel Profile's folio row. */
+  custom_ihotel_charge_type?: string | null;
 }
 
 export interface PosProfileLimitedResponse {
@@ -122,6 +126,8 @@ export interface PosProfileCombined extends PosProfileFull {
   custom_block_orders_after_shift_end?: number;
   custom_restrict_merge_to_captain?: number;
   custom_restrict_returns_to_captain?: number;
+  custom_ihotel_enabled?: number;
+  custom_ihotel_charge_type?: string | null;
 }
 
 export interface Currency {
@@ -200,6 +206,8 @@ export async function getCombinedPosProfile(
       limitedProfile.custom_restrict_merge_to_captain,
     custom_restrict_returns_to_captain:
       limitedProfile.custom_restrict_returns_to_captain,
+    custom_ihotel_enabled: limitedProfile.custom_ihotel_enabled,
+    custom_ihotel_charge_type: limitedProfile.custom_ihotel_charge_type,
   };
 
   return combinedProfile;

@@ -148,10 +148,50 @@ def get_custom_fields():
 					"print_hide_if_no_value": 1,
 					"description": "Set when this invoice has been merged into another (the master). Hidden from the Orders page list. Cleared on unmerge.",
 				},
+				# iHotel integration — "charged draft" fields. When the
+				# cashier picks "Charge to Room" in the Payment dialog,
+				# the backend writes a Folio Charge row on the matching
+				# open iHotel Profile and stamps these three fields on
+				# the POS Invoice. The invoice stays docstatus=0 forever
+				# so it doesn't double-post at shift close — iHotel's
+				# own checkout flow posts the actual accounting when the
+				# guest settles. See CLAUDE.md "Fixes log" 2026-04-12.
+				{
+					"fieldname": "custom_charge_to_room",
+					"fieldtype": "Check",
+					"insert_after": "custom_merged_into",
+					"label": "Charged to Hotel Room",
+					"default": "0",
+					"read_only": 1,
+					"in_standard_filter": 1,
+					"print_hide": 1,
+					"description": "Set when this invoice has been charged to a hotel guest's room. Stays docstatus=0 (charged draft) and is excluded from shift-close consolidation.",
+				},
+				{
+					"fieldname": "custom_hotel_room",
+					"fieldtype": "Link",
+					"insert_after": "custom_charge_to_room",
+					"label": "Hotel Room",
+					"options": "Room",
+					"read_only": 1,
+					"in_standard_filter": 1,
+					"depends_on": "eval:doc.custom_charge_to_room",
+					"description": "iHotel room this invoice is charged against.",
+				},
+				{
+					"fieldname": "custom_ihotel_profile",
+					"fieldtype": "Link",
+					"insert_after": "custom_hotel_room",
+					"label": "iHotel Profile",
+					"options": "iHotel Profile",
+					"read_only": 1,
+					"depends_on": "eval:doc.custom_charge_to_room",
+					"description": "iHotel Profile the folio charge was written onto.",
+				},
 				{
 					"fieldname": "column_break_gd1mq",
 					"fieldtype": "Column Break",
-					"insert_after": "custom_merged_into",
+					"insert_after": "custom_ihotel_profile",
 				},
 				{
 					"fieldname": "arrived_time",
@@ -451,6 +491,38 @@ def get_custom_fields():
 				"label": "Allow Table Unmerge After New Orders",
 				"default": "0",
 				"description": "When checked, cashiers can unmerge tables even after new orders have been placed on the merged master. The unmerge UI asks them to assign each post-merge order to a destination table.",
+			},
+			# iHotel integration — when enabled, cashiers can charge a
+			# POS order to a hotel guest's room instead of taking
+			# cash/card. The charge is written as a Folio Charge row on
+			# the matching open iHotel Profile; the POS Invoice itself
+			# stays docstatus=0 forever (a "charged draft") so it
+			# doesn't double-post at shift close. See CLAUDE.md
+			# "Fixes log" 2026-04-12.
+			{
+				"fieldname": "custom_ihotel_section",
+				"fieldtype": "Section Break",
+				"insert_after": "custom_allow_unmerge_after_new_orders",
+				"label": "iHotel Integration",
+				"collapsible": 1,
+			},
+			{
+				"fieldname": "custom_ihotel_enabled",
+				"fieldtype": "Check",
+				"insert_after": "custom_ihotel_section",
+				"label": "Enable iHotel Integration",
+				"default": "0",
+				"description": "When checked, cashiers can charge orders to a hotel guest's room via the iHotel app.",
+			},
+			{
+				"fieldname": "custom_ihotel_charge_type",
+				"fieldtype": "Link",
+				"insert_after": "custom_ihotel_enabled",
+				"label": "iHotel Charge Type",
+				"options": "Charge Type",
+				"depends_on": "eval:doc.custom_ihotel_enabled",
+				"mandatory_depends_on": "eval:doc.custom_ihotel_enabled",
+				"description": "Charge Type used on the iHotel Profile's folio row when charging to room.",
 			},
 		],
   

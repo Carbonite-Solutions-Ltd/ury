@@ -129,12 +129,21 @@ def sync_order(
     aggregator_id=None,
     room=None,
     terminal=None,
+    hotel_room=None,
 ):
     # `owner` is optional. The frontend deliberately omits it when
     # updating an existing order so we don't overwrite the original
     # cashier on the audit trail (only stamps it on creation). The
     # `db_set("owner", owner)` call later in this function is gated on
     # `owner` being non-None.
+    #
+    # `hotel_room` is an optional iHotel intent — when the cashier
+    # picked a hotel guest's room for this order, we stamp the
+    # `custom_hotel_room` field on the draft so the intent survives a
+    # page reload. The `custom_charge_to_room` flag is NOT set here —
+    # that happens at `charge_invoice_to_room` time once the cashier
+    # hits the Payment dialog's Charge to Room tab. See CLAUDE.md
+    # "Fixes log" 2026-04-12.
     
     user_role = frappe.get_roles()
     posprofile = frappe.get_doc("POS Profile", pos_profile)
@@ -232,6 +241,13 @@ def sync_order(
     invoice.custom_aggregator_id = aggregator_id
     invoice.custom_restaurant_room = room
     invoice.restaurant_table = table
+    # iHotel intent — stamp the hotel room on the draft so it
+    # survives reloads. The Payment dialog reads this and
+    # auto-activates the Charge to Room tab when present. The actual
+    # charge (folio write, custom_charge_to_room=1, table free) fires
+    # when the cashier confirms the Charge to Room action.
+    if hotel_room is not None:
+        invoice.custom_hotel_room = hotel_room or None
     # Stamp the originating terminal so the invoice can be filtered/
     # reported by physical till. Only trusts terminals tied to the
     # session's branch — a spoofed terminal name from a different

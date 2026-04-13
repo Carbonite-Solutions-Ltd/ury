@@ -40,7 +40,7 @@ export const DINE_IN="Dine In"
 export const DEFAULT_ORDER_TYPE="Take Away"
 export const DEFAULT_PAYMENT_MODE="Cash"
 
-export type OrderStatusType = "Draft" | "Unbilled" | "Recently Paid" | "Paid" | "Consolidated" | "Return";
+export type OrderStatusType = "Draft" | "Unbilled" | "Recently Paid" | "Paid" | "Consolidated" | "Return" | "Room Charges";
 
 // Base status types that are always available.
 // "Paid" was moved out of EXTENDED_ORDER_STATUS_TYPES on 2026-04-09
@@ -71,6 +71,15 @@ export const RECENTLY_PAID_STATUS_TYPE = [
     }
 ];
 
+// Room Charges: draft POS Invoices flagged as charged-to-room via the
+// iHotel integration. Only shown when `custom_ihotel_enabled` is on.
+export const ROOM_CHARGES_STATUS_TYPE = [
+    {
+        label: "Room Charges",
+        value: "Room Charges"
+    }
+];
+
 // Extended status types that are only available when view_all_status is enabled
 export const EXTENDED_ORDER_STATUS_TYPES = [
     {
@@ -84,19 +93,28 @@ export const EXTENDED_ORDER_STATUS_TYPES = [
 ];
 
 // Function to get order status types based on POS profile settings
-export const getOrderStatusTypes = (viewAllStatus?: number, paidLimit?: number) => {
+export const getOrderStatusTypes = (
+    viewAllStatus?: number,
+    paidLimit?: number,
+    ihotelEnabled?: number
+) => {
     let statusTypes = [...BASE_ORDER_STATUS_TYPES];
-    
+
     // Add Recently Paid if paid_limit > 0
     if (paidLimit && paidLimit > 0) {
         statusTypes.push(...RECENTLY_PAID_STATUS_TYPE);
     }
-    
+
+    // Add Room Charges when iHotel is enabled on this POS Profile.
+    if (ihotelEnabled === 1) {
+        statusTypes.push(...ROOM_CHARGES_STATUS_TYPE);
+    }
+
     // Add extended statuses if view_all_status is enabled
     if (viewAllStatus === 1) {
         statusTypes.push(...EXTENDED_ORDER_STATUS_TYPES);
     }
-    
+
     return statusTypes;
 };
 
