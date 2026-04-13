@@ -500,16 +500,26 @@ def getPosInvoice(
 
     # Map UI status → DB status + extra WHERE clause for the special
     # Draft/Unbilled splits that ride on the same `Draft` docstatus.
+    # Charged-to-room drafts are EXCLUDED from Draft/Unbilled and get
+    # their own "Room Charges" bucket (a docstatus=0 invoice that
+    # won't ever submit — it's been billed to the guest's folio via
+    # the iHotel integration). See CLAUDE.md "Fixes log" 2026-04-12.
     status_map = {
         "Draft": (
             "Draft",
-            "AND (pi.invoice_printed = 1 OR (pi.invoice_printed = 0 AND COALESCE(pi.restaurant_table, '') = ''))",
+            "AND (pi.invoice_printed = 1 OR (pi.invoice_printed = 0 AND COALESCE(pi.restaurant_table, '') = '')) "
+            "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)",
         ),
         "Unbilled": (
             "Draft",
-            "AND (pi.invoice_printed = 0 AND pi.restaurant_table IS NOT NULL)",
+            "AND (pi.invoice_printed = 0 AND pi.restaurant_table IS NOT NULL) "
+            "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)",
         ),
         "Recently Paid": ("Paid", ""),
+        "Room Charges": (
+            "Draft",
+            "AND pi.custom_charge_to_room = 1",
+        ),
     }
     db_status, extra_where = status_map.get(status, (status, ""))
 
@@ -555,6 +565,8 @@ def getPosInvoice(
             pi.status, pi.mobile_number, pi.posting_date, pi.rounded_total,
             pi.order_type, pi.custom_order_status, pi.custom_terminal,
             pi.owner, pi.is_return, pi.return_against,
+            pi.custom_charge_to_room, pi.custom_hotel_room,
+            pi.custom_ihotel_profile,
             u.full_name AS owner_full_name,
             (
                 SELECT ml.name
@@ -617,6 +629,11 @@ def searchPosInvoice(
     query_str = f"%{query.lower()}%"
 
     db_status = "Paid" if status == "Recently Paid" else status
+    # Room Charges is a Draft-level pseudo-status; map it to Draft for
+    # the DB query and let the extra WHERE clause filter by the custom
+    # charge_to_room flag. See CLAUDE.md "Fixes log" 2026-04-12.
+    if status == "Room Charges":
+        db_status = "Draft"
     where_parts = ["pi.branch = %s", "pi.status = %s"]
     params = [branch, db_status]
 
@@ -629,6 +646,15 @@ def searchPosInvoice(
     if status == "Unbilled":
         where_parts.append("pi.restaurant_table IS NOT NULL")
         where_parts.append("pi.invoice_printed = 0")
+
+    # Exclude charged-to-room drafts from every non-"Room Charges"
+    # status so they only surface under their dedicated bucket.
+    if status == "Room Charges":
+        where_parts.append("pi.custom_charge_to_room = 1")
+    else:
+        where_parts.append(
+            "(pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)"
+        )
 
     if terminal:
         # Same defensive null fallback as getPosInvoice — see
@@ -659,6 +685,8 @@ def searchPosInvoice(
             pi.mobile_number, pi.cashier, pi.waiter, pi.invoice_printed,
             pi.custom_order_status, pi.custom_terminal, pi.owner,
             pi.is_return, pi.return_against,
+            pi.custom_charge_to_room, pi.custom_hotel_room,
+            pi.custom_ihotel_profile,
             u.full_name AS owner_full_name,
             (
                 SELECT ml.name
@@ -913,6 +941,8 @@ def getPosProfile(terminal=None):
         restrict_returns_to_captain = (
             1 if raw_restrict_returns is None else int(raw_restrict_returns or 0)
         )
+        ihotel_enabled = int(pos_profiles.get("custom_ihotel_enabled") or 0)
+        ihotel_charge_type = pos_profiles.get("custom_ihotel_charge_type") or None
         # Per-terminal scoping makes the cashier/owner resolution trivial:
         # whoever is logged into the React POS right now IS the cashier
         # and the owner. The old code did a SQL join through Multiple
@@ -967,6 +997,8 @@ def getPosProfile(terminal=None):
         "custom_block_orders_after_shift_end": block_orders_after_shift,
         "custom_restrict_merge_to_captain": restrict_merge_to_captain,
         "custom_restrict_returns_to_captain": restrict_returns_to_captain,
+        "custom_ihotel_enabled": ihotel_enabled,
+        "custom_ihotel_charge_type": ihotel_charge_type,
         # Echo the caller's terminal back so the frontend store has a
         # single source of truth for "which terminal resolved this profile".
         "terminal": terminal or None,
@@ -1075,13 +1107,22 @@ def _scope_invoices_for_opening_entry(opening_doc):
 
     Scope:
       * Same pos_profile.
-      * Same owner (the user who opened the shift).
       * Not a consolidated invoice.
       * When `custom_terminal` is set on the opening entry, also scope
         to invoices stamped with that terminal.
       * Created on or after the opening entry's creation — defensive
         against timestamp drift caused by backdated posting_date or
         pre-opening test data polluting the shift.
+      * **Shared vs strict multi-cashier mode (2026-04-13):**
+        The profile's ``custom_enable_multiple_cashier`` flag decides
+        whether invoice ownership is part of the scope. Under shared
+        mode (flag OFF — the default), one POS Opening Entry serves
+        the whole terminal and any cashier on that terminal can ring
+        orders. The close must see every invoice on the terminal
+        regardless of who rang it, so the ``owner`` filter is DROPPED.
+        Under strict mode (flag ON), each user opens their own entry
+        and closes their own — so ``pi.owner = opening_doc.user`` is
+        kept to prevent A's close from consolidating B's orders.
 
     NOTE: we use `creation` (row insert timestamp), not
     `posting_date + posting_time`, which ERPNext's native helper does.
@@ -1092,15 +1133,30 @@ def _scope_invoices_for_opening_entry(opening_doc):
     """
     where = [
         "pi.pos_profile = %s",
-        "pi.owner = %s",
         "(pi.consolidated_invoice IS NULL OR pi.consolidated_invoice = '')",
         "pi.creation >= %s",
     ]
     params = [
         opening_doc.pos_profile,
-        opening_doc.user,
         opening_doc.creation,
     ]
+
+    # Strict mode: scope by opener so two users on the same terminal
+    # close their own shifts independently. Shared mode: skip the
+    # owner filter entirely — the single entry covers everyone on
+    # this terminal.
+    multi_cashier = int(
+        frappe.db.get_value(
+            "POS Profile",
+            opening_doc.pos_profile,
+            "custom_enable_multiple_cashier",
+        )
+        or 0
+    )
+    if multi_cashier:
+        where.append("pi.owner = %s")
+        params.append(opening_doc.user)
+
     terminal = getattr(opening_doc, "custom_terminal", None)
     if terminal:
         # Defensive null fallback (same pattern as getPosInvoice): an
@@ -1191,6 +1247,7 @@ def _get_shift_invoice_breakdown(opening_doc):
         WHERE {where_sql}
           AND pi.docstatus = 0
           AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
+          AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)
         ORDER BY pi.creation ASC
         """,
         tuple(params),
@@ -1445,6 +1502,38 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
                 },
                 update_modified=True,
             )
+        frappe.db.commit()
+
+    # --- Normalize paid invoice ownership -----------------------------
+    # Shared-mode mismatch (2026-04-13): in shared multi-cashier mode
+    # more than one user can ring orders under a single opening entry.
+    # ERPNext's `validate_pos_invoices` (pos_closing_entry.py line 128)
+    # hard-rejects any invoice whose `owner` doesn't equal the closing
+    # entry's `user`, which in URY's flow is always `opening_doc.user`.
+    # We rehome every paid invoice's `owner` to the opener so the
+    # closing entry submits cleanly — and stamp a remark so the actual
+    # ringer is still visible in the invoice's text history.
+    #
+    # This only runs when a mismatch actually exists (not every shift
+    # has cross-cashier activity), keeps `cashier` untouched for
+    # invoices that already match, and commits once at the end.
+    opener = opening_doc.user
+    rehomed_paid = 0
+    for row in paid:
+        inv_owner = frappe.db.get_value("POS Invoice", row["name"], "owner")
+        if inv_owner and inv_owner != opener:
+            frappe.db.set_value(
+                "POS Invoice",
+                row["name"],
+                {
+                    "owner": opener,
+                    "remarks": f"Originally rung by {inv_owner}; "
+                    f"ownership normalized on shift close ({opening_doc.name})",
+                },
+                update_modified=True,
+            )
+            rehomed_paid += 1
+    if rehomed_paid:
         frappe.db.commit()
 
     # --- Build + insert the closing entry ------------------------------
@@ -4069,4 +4158,290 @@ def auto_unmerge_table_if_active(master_table):
             message=f"master_table={master_table} log={log_name}\n{exc}",
         )
         return None
+
+
+# ---------------------------------------------------------------------
+# iHotel integration
+# ---------------------------------------------------------------------
+
+
+def _ihotel_enabled(pos_profile_name):
+    """Whether the given POS Profile has the iHotel toggle on."""
+    if not pos_profile_name:
+        return False
+    val = frappe.db.get_value(
+        "POS Profile", pos_profile_name, "custom_ihotel_enabled"
+    )
+    return bool(int(val or 0))
+
+
+@frappe.whitelist()
+def get_guest_rooms_for_customer(customer):
+    """Return all open iHotel Profiles for guests linked to this
+    Customer. Powers the "Hotel Guest" room picker — when the cashier
+    selects a customer, we filter down to rooms that (a) belong to a
+    guest whose ``Guest.customer`` points at this customer, and
+    (b) have an open profile (``status = 'Open'``). Returns an empty
+    list when no open rooms match.
+
+    Response shape: ``[{profile, room, guest, guest_name,
+    check_in_date, check_out_date}, ...]``.
+    """
+    if not customer:
+        return []
+
+    # Find guests linked to this customer.
+    guests = frappe.db.sql(
+        """
+        SELECT name, guest_name
+        FROM `tabGuest`
+        WHERE customer = %s
+        ORDER BY guest_name
+        """,
+        (customer,),
+        as_dict=True,
+    )
+    if not guests:
+        return []
+
+    guest_names = [g.name for g in guests]
+    profiles = frappe.db.sql(
+        """
+        SELECT
+            name, room, guest, guest_name, check_in_date, check_out_date,
+            status
+        FROM `tabiHotel Profile`
+        WHERE status = 'Open'
+          AND guest IN %(guests)s
+        ORDER BY check_in_date DESC
+        """,
+        {"guests": tuple(guest_names)},
+        as_dict=True,
+    )
+    return [
+        {
+            "profile": p.name,
+            "room": p.room,
+            "guest": p.guest,
+            "guest_name": p.guest_name,
+            "check_in_date": str(p.check_in_date) if p.check_in_date else None,
+            "check_out_date": str(p.check_out_date) if p.check_out_date else None,
+        }
+        for p in profiles
+    ]
+
+
+@frappe.whitelist()
+def validate_hotel_room_for_customer(customer, hotel_room):
+    """Return the open iHotel Profile for (customer, room) or throw.
+
+    Called from the React POS right before the cashier picks a room on
+    a new order — validates that:
+      1. The iHotel Profile for the given room is in status Open.
+      2. The profile's guest is linked to the selected customer.
+    Returns ``{profile, guest, guest_name, room_rate}`` on success.
+    Throws a clear error on any failure so the cashier can't start an
+    order against a room that isn't checked in / doesn't match the
+    customer.
+    """
+    if not customer or not hotel_room:
+        frappe.throw(
+            _("Customer and room are required."),
+            title=_("Missing Data"),
+        )
+
+    profile = frappe.db.sql(
+        """
+        SELECT p.name, p.guest, p.guest_name, p.room_rate, p.status,
+               g.customer AS guest_customer
+        FROM `tabiHotel Profile` AS p
+        INNER JOIN `tabGuest` AS g ON g.name = p.guest
+        WHERE p.room = %s
+          AND p.status = 'Open'
+        LIMIT 1
+        """,
+        (hotel_room,),
+        as_dict=True,
+    )
+    if not profile:
+        frappe.throw(
+            _(
+                "Room '{0}' has no open hotel stay. Ask the guest to "
+                "check in before charging to this room."
+            ).format(hotel_room),
+            title=_("No Open Stay"),
+        )
+    row = profile[0]
+    if row.guest_customer != customer:
+        frappe.throw(
+            _(
+                "Room '{0}' is checked in under guest '{1}' who is "
+                "linked to a different customer. Pick the correct "
+                "customer or room."
+            ).format(hotel_room, row.guest_name or row.guest),
+            title=_("Customer Mismatch"),
+        )
+    return {
+        "profile": row.name,
+        "guest": row.guest,
+        "guest_name": row.guest_name,
+        "room_rate": float(row.room_rate or 0),
+    }
+
+
+@frappe.whitelist()
+def charge_invoice_to_room(invoice, hotel_room):
+    """Charge a POS Invoice to a hotel guest's room.
+
+    Writes a single Folio Charge row onto the matching open iHotel
+    Profile, stamps the POS Invoice with the charge_to_room trio of
+    custom fields, marks it as printed, frees its table, and leaves
+    the POS Invoice as `docstatus=0` (a charged draft). Charged
+    drafts are excluded from:
+      - The cashier's shift close breakdown (they don't block close)
+      - The Orders page Draft / Unbilled filters (they appear under
+        the new "Room Charges" status instead)
+      - `restrict_existing_order` (a new customer on the same table
+        gets a fresh draft, not the charged one)
+
+    This avoids double-posting to the GL: iHotel's own checkout flow
+    posts the actual accounting when the guest settles their folio.
+
+    Args:
+        invoice: POS Invoice name to charge.
+        hotel_room: iHotel Room name. Must match an open profile
+            whose guest links to the invoice's customer.
+
+    Returns:
+        {invoice, ihotel_profile, folio_charge_row, amount}
+    """
+    if not invoice or not hotel_room:
+        frappe.throw(
+            _("Invoice and hotel_room are required."),
+            title=_("Missing Data"),
+        )
+
+    inv = frappe.get_doc("POS Invoice", invoice)
+    if inv.docstatus != 0:
+        frappe.throw(
+            _(
+                "Invoice '{0}' is not a draft (docstatus {1}). Only "
+                "draft orders can be charged to a room."
+            ).format(invoice, inv.docstatus),
+            title=_("Invoice Not Editable"),
+        )
+    if inv.get("custom_charge_to_room"):
+        frappe.throw(
+            _(
+                "Invoice '{0}' has already been charged to a room "
+                "({1}). Un-charge it from the desk before retrying."
+            ).format(invoice, inv.get("custom_hotel_room")),
+            title=_("Already Charged"),
+        )
+    if not _ihotel_enabled(inv.pos_profile):
+        frappe.throw(
+            _(
+                "iHotel integration is not enabled on POS Profile "
+                "'{0}'. Turn on 'Enable iHotel Integration' in the "
+                "desk first."
+            ).format(inv.pos_profile),
+            title=_("iHotel Not Enabled"),
+        )
+
+    charge_type = frappe.db.get_value(
+        "POS Profile", inv.pos_profile, "custom_ihotel_charge_type"
+    )
+    if not charge_type:
+        frappe.throw(
+            _(
+                "POS Profile '{0}' has iHotel enabled but no 'iHotel "
+                "Charge Type' set. Pick one in the desk before "
+                "charging to room."
+            ).format(inv.pos_profile),
+            title=_("Charge Type Not Set"),
+        )
+
+    # Re-validate room + customer linkage (the frontend already
+    # pre-validated but don't trust the client).
+    validation = validate_hotel_room_for_customer(inv.customer, hotel_room)
+    profile_name = validation["profile"]
+
+    # Build the folio description: "Cafe: 2x Fanta, 1x Burger" style.
+    # One row per POS Invoice (user's option B from the design round).
+    item_parts = []
+    for row in inv.items or []:
+        item_parts.append(
+            f"{int(row.qty) if row.qty == int(row.qty) else row.qty}x {row.item_name}"
+        )
+    description = (
+        f"POS {inv.name}: " + ", ".join(item_parts)
+        if item_parts
+        else f"POS {inv.name}"
+    )
+    if len(description) > 140:
+        description = description[:137] + "…"
+
+    amount = float(inv.grand_total or 0)
+
+    # Write the Folio Charge row on the iHotel Profile.
+    profile_doc = frappe.get_doc("iHotel Profile", profile_name)
+    profile_doc.append(
+        "charges",
+        {
+            "charge_date": inv.posting_date or frappe.utils.today(),
+            "charge_type": charge_type,
+            "description": description,
+            "quantity": 1,
+            "rate": amount,
+            "amount": amount,
+            "reference_doctype": "POS Invoice",
+            "reference_name": inv.name,
+        },
+    )
+    # Nudge the profile's total_amount so the summary widget stays
+    # accurate. outstanding_balance is recomputed by iHotel's own
+    # validate hook on save.
+    profile_doc.total_amount = float(profile_doc.total_amount or 0) + amount
+    profile_doc.flags.ignore_permissions = True
+    profile_doc.save()
+    # Grab the name of the charge row we just appended (last in list).
+    last_row = profile_doc.charges[-1] if profile_doc.charges else None
+    folio_charge_row = last_row.name if last_row else None
+
+    # Stamp the POS Invoice. db.set_value bypasses validate/save so
+    # the charged-draft flag sticks without triggering the
+    # modification-time check or URY's other POS Invoice hooks. Also
+    # mark the invoice as printed so subsequent shift-close flows see
+    # it as "done".
+    frappe.db.set_value(
+        "POS Invoice",
+        inv.name,
+        {
+            "custom_charge_to_room": 1,
+            "custom_hotel_room": hotel_room,
+            "custom_ihotel_profile": profile_name,
+            "invoice_printed": 1,
+            "custom_order_status": "Room Charged",
+        },
+        update_modified=True,
+    )
+
+    # Free the table so the next customer can be seated there. We
+    # also auto-unmerge if this table was a merge master — same
+    # pattern as the print flow.
+    if inv.restaurant_table:
+        frappe.db.set_value(
+            "URY Table",
+            inv.restaurant_table,
+            {"occupied": 0, "latest_invoice_time": None},
+        )
+        auto_unmerge_table_if_active(inv.restaurant_table)
+
+    frappe.db.commit()
+    return {
+        "invoice": inv.name,
+        "ihotel_profile": profile_name,
+        "folio_charge_row": folio_charge_row,
+        "amount": amount,
+    }
 

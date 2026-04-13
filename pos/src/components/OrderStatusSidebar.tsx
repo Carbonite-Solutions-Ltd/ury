@@ -39,7 +39,8 @@ const OrderStatusSidebar = ({
   // Get the appropriate status types based on POS profile settings
   const statusTypes = getOrderStatusTypes(
     posProfile?.view_all_status,
-    posProfile?.paid_limit
+    posProfile?.paid_limit,
+    posProfile?.custom_ihotel_enabled
   );
 
   const showCashierFilter = useMemo(

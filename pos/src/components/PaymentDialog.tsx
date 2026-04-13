@@ -9,6 +9,8 @@ import {
   Minus,
   Trash2,
   ArrowDownToLine,
+  BedDouble,
+  AlertCircle,
 } from 'lucide-react';
 import { usePOSStore } from '../store/pos-store';
 import {
@@ -27,6 +29,7 @@ import {
 import { showToast } from './ui/toast';
 import { call } from '../lib/frappe-sdk';
 import { DEFAULT_PAYMENT_MODE } from '../data/order-types';
+import { chargeInvoiceToRoom } from '../lib/ihotel-api';
 
 interface PaymentDialogProps {
   onClose: () => void;
@@ -42,7 +45,18 @@ interface PaymentDialogProps {
   owner: string;
   fetchOrders: () => Promise<void>;
   clearSelectedOrder: () => void;
+  /**
+   * iHotel: hotel room stamped on the draft (from Customer picker at
+   * order-creation time). When set, the Payment dialog exposes a third
+   * "Charge to Room" tab. When null, the tab is hidden entirely so
+   * non-hotel orders stay unchanged.
+   */
+  hotelRoom?: string | null;
+  /** Friendly label for the room's guest, rendered on the Charge tab. */
+  hotelRoomLabel?: string | null;
 }
+
+type PaymentMode = 'single' | 'split' | 'room';
 
 // Cent-safe equal distribution: floor to cents for N-1 payers, last
 // payer absorbs the rounding remainder so the sum matches exactly.
@@ -90,6 +104,8 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
   owner,
   fetchOrders,
   clearSelectedOrder,
+  hotelRoom,
+  hotelRoomLabel,
 }) => {
   const {
     paymentModes,
@@ -101,13 +117,34 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
   const [discountValue, setDiscountValue] = useState<string>('');
   const [appliedDiscount, setAppliedDiscount] = useState<number>(0);
 
+  // iHotel: the "Charge to Room" tab is only available when the draft
+  // already carries a hotel room and the POS Profile has iHotel enabled.
+  // Picking the room happens in the CustomerSelect component, not here.
+  const ihotelEnabled = storePosProfile?.custom_ihotel_enabled === 1;
+  const canChargeToRoom = Boolean(ihotelEnabled && hotelRoom);
+
+  // Which of the three payment paths is currently active. Default to
+  // Charge to Room when it's available (cashier explicitly chose a
+  // hotel guest in the picker — that's a strong intent signal) and to
+  // Single otherwise.
+  const [paymentMode, setPaymentMode] = useState<PaymentMode>(
+    canChargeToRoom ? 'room' : 'single'
+  );
+
+  // Derived flags used by the existing render branches. Keep these
+  // names so the JSX below stays the same.
+  const splitEnabled = paymentMode === 'split';
+
   // Single-payer state (existing behavior, driven by mode-keyed inputs).
   const [paymentInputs, setPaymentInputs] = useState<{ [mode: string]: string }>({});
 
   // Split-payer state.
-  const [splitEnabled, setSplitEnabled] = useState(false);
   const [splitMode, setSplitMode] = useState<SplitMode>('equal');
   const [payers, setPayers] = useState<Payer[]>([]);
+
+  const setSplitEnabled = (enabled: boolean) => {
+    setPaymentMode(enabled ? 'split' : 'single');
+  };
 
   useEffect(() => {
     fetchPaymentModes();
@@ -294,9 +331,12 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
     [outgoingPayments]
   );
 
-  const canSubmit = splitEnabled
-    ? splitBalanced && payers.every((p) => (parseFloat(p.amount) || 0) > 0)
-    : outgoingPayments.length > 0;
+  const canSubmit =
+    paymentMode === 'room'
+      ? canChargeToRoom && !isProcessing
+      : splitEnabled
+      ? splitBalanced && payers.every((p) => (parseFloat(p.amount) || 0) > 0)
+      : outgoingPayments.length > 0;
 
   const handleApplyDiscount = () => {
     const value = parseFloat(discountValue);
@@ -317,6 +357,23 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
     setIsProcessing(true);
     setError(null);
     try {
+      if (paymentMode === 'room') {
+        // iHotel path: writes a Folio Charge on the guest's open
+        // iHotel Profile + marks the POS Invoice as a charged draft
+        // (docstatus stays 0 forever — GL entries come from iHotel's
+        // checkout flow when the guest settles). See CLAUDE.md.
+        if (!hotelRoom) {
+          throw new Error('No hotel room is selected for this order.');
+        }
+        const result = await chargeInvoiceToRoom(invoice, hotelRoom);
+        showToast.success(
+          `Order charged to Room ${hotelRoom} · ${formatCurrency(result.amount)}`
+        );
+        onClose();
+        clearSelectedOrder();
+        await fetchOrders();
+        return;
+      }
       await call.post('ury.ury.doctype.ury_order.ury_order.make_invoice', {
         additionalDiscount: discountValue ? parseInt(discountValue) : null,
         cashier,
@@ -363,46 +420,128 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
             </Button>
           </div>
 
-          {/* Split toggle */}
-          <div className="mb-5 flex items-center justify-between rounded-lg border border-gray-200 p-3 bg-gray-50">
-            <div className="flex items-center gap-2">
-              {splitEnabled ? (
-                <Users className="w-4 h-4 text-blue-600" />
-              ) : (
-                <User className="w-4 h-4 text-gray-500" />
-              )}
-              <div>
-                <div className="text-sm font-semibold text-gray-900">
-                  {splitEnabled ? 'Split Bill' : 'Single Payer'}
-                </div>
-                <div className="text-xs text-gray-500">
-                  {splitEnabled
-                    ? 'Each payer pays their own share.'
-                    : 'One bill, one or more payment methods.'}
+          {/* Mode selector: 2-way toggle when iHotel is off, 3-way
+              segmented control when the draft has a hotel room tagged. */}
+          {canChargeToRoom ? (
+            <div className="mb-5 grid grid-cols-3 gap-1 rounded-lg border border-gray-200 p-1 bg-gray-50 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => setPaymentMode('single')}
+                className={cn(
+                  'flex items-center justify-center gap-1.5 py-2 rounded-md transition-colors',
+                  paymentMode === 'single'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                )}
+              >
+                <User className="w-3.5 h-3.5" /> Single
+              </button>
+              <button
+                type="button"
+                onClick={() => setPaymentMode('split')}
+                className={cn(
+                  'flex items-center justify-center gap-1.5 py-2 rounded-md transition-colors',
+                  paymentMode === 'split'
+                    ? 'bg-white text-blue-700 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                )}
+              >
+                <Users className="w-3.5 h-3.5" /> Split
+              </button>
+              <button
+                type="button"
+                onClick={() => setPaymentMode('room')}
+                className={cn(
+                  'flex items-center justify-center gap-1.5 py-2 rounded-md transition-colors',
+                  paymentMode === 'room'
+                    ? 'bg-white text-amber-700 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                )}
+              >
+                <BedDouble className="w-3.5 h-3.5" /> Room
+              </button>
+            </div>
+          ) : (
+            <div className="mb-5 flex items-center justify-between rounded-lg border border-gray-200 p-3 bg-gray-50">
+              <div className="flex items-center gap-2">
+                {splitEnabled ? (
+                  <Users className="w-4 h-4 text-blue-600" />
+                ) : (
+                  <User className="w-4 h-4 text-gray-500" />
+                )}
+                <div>
+                  <div className="text-sm font-semibold text-gray-900">
+                    {splitEnabled ? 'Split Bill' : 'Single Payer'}
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    {splitEnabled
+                      ? 'Each payer pays their own share.'
+                      : 'One bill, one or more payment methods.'}
+                  </div>
                 </div>
               </div>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={splitEnabled}
-              onClick={() => setSplitEnabled((v) => !v)}
-              className={cn(
-                'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2',
-                splitEnabled ? 'bg-blue-600' : 'bg-gray-300'
-              )}
-            >
-              <span
+              <button
+                type="button"
+                role="switch"
+                aria-checked={splitEnabled}
+                onClick={() => setSplitEnabled(!splitEnabled)}
                 className={cn(
-                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition-transform',
-                  splitEnabled ? 'translate-x-5' : 'translate-x-0'
+                  'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2',
+                  splitEnabled ? 'bg-blue-600' : 'bg-gray-300'
                 )}
-              />
-            </button>
-          </div>
+              >
+                <span
+                  className={cn(
+                    'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition-transform',
+                    splitEnabled ? 'translate-x-5' : 'translate-x-0'
+                  )}
+                />
+              </button>
+            </div>
+          )}
 
-          {/* Discount Section */}
-          {storePosProfile?.enable_discount === 1 && (
+          {/* Charge to Room panel: replaces the payment inputs entirely
+              when the cashier is charging this order to the guest's folio. */}
+          {paymentMode === 'room' && (
+            <div className="space-y-4">
+              <div className="rounded-lg border-2 border-amber-200 bg-amber-50 p-4">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-200">
+                    <BedDouble className="w-5 h-5 text-amber-800" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="text-sm font-bold text-amber-900 mb-1">
+                      Charge to Room {hotelRoom}
+                    </div>
+                    {hotelRoomLabel && (
+                      <div className="text-xs text-amber-800 mb-2">
+                        {hotelRoomLabel}
+                      </div>
+                    )}
+                    <div className="text-2xl font-bold text-amber-900 mb-2">
+                      {formatCurrency(finalTotal)}
+                    </div>
+                    <p className="text-xs text-amber-800 leading-relaxed">
+                      The full order total will be added to the guest's open
+                      iHotel folio as a single Folio Charge row. The POS
+                      Invoice stays in draft status — iHotel posts the
+                      accounting entries when the guest settles at checkout.
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-start gap-2 text-xs text-gray-600 rounded-lg bg-gray-50 border border-gray-200 p-3">
+                <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-gray-400" />
+                <span>
+                  To split, apply a discount, or take cash/card instead, switch
+                  back to the <b>Single</b> or <b>Split</b> tab above.
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Discount Section (hidden when charging to room). */}
+          {paymentMode !== 'room' && storePosProfile?.enable_discount === 1 && (
             <div className="space-y-4 mb-6">
               <h3 className="text-lg font-semibold flex items-center gap-2">
                 <Percent className="w-5 h-5" />
@@ -425,7 +564,7 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
           )}
 
           {/* Single-payer mode: existing behavior */}
-          {!splitEnabled && (
+          {paymentMode === 'single' && (
             <div className="space-y-4">
               <h3 className="text-lg font-semibold">Payment Methods</h3>
               <div className="grid grid-cols-1 gap-3">
@@ -749,10 +888,18 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
             onClick={handlePayment}
             disabled={isProcessing || !canSubmit}
             variant={isProcessing || !canSubmit ? 'secondary' : 'default'}
-            className="w-full"
+            className={cn(
+              'w-full',
+              paymentMode === 'room' &&
+                !isProcessing &&
+                canSubmit &&
+                'bg-amber-600 hover:bg-amber-700 text-white'
+            )}
           >
             {isProcessing
               ? 'Processing...'
+              : paymentMode === 'room'
+              ? `Charge ${formatCurrency(finalTotal)} to Room ${hotelRoom}`
               : `Pay ${formatCurrency(
                   splitEnabled ? splitPaidTotal : outgoingTotal || finalTotal
                 )}`}

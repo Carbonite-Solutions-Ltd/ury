@@ -50,6 +50,16 @@ export interface POSInvoice {
    * removes the badge.
    */
   active_return_count?: number;
+  /**
+   * iHotel: 1 when this invoice has been charged to a hotel room via
+   * `charge_invoice_to_room`. docstatus stays 0 forever — GL entries
+   * come from iHotel's own checkout flow when the guest settles.
+   */
+  custom_charge_to_room?: number;
+  /** iHotel Room the draft is tagged against (persists from Customer picker). */
+  custom_hotel_room?: string | null;
+  /** iHotel Profile the charge is written to. */
+  custom_ihotel_profile?: string | null;
 }
 
 export interface CashierUser {

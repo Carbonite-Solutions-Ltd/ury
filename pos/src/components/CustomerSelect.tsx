@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { UserPlus, Mail, Phone, Loader } from 'lucide-react';
+import { UserPlus, Mail, Phone, Loader, BedDouble, User, AlertCircle } from 'lucide-react';
 import { usePOSStore, type Customer } from '../store/pos-store';
 import { Button, Dialog, DialogContent, Input } from './ui';
 import { Select, SelectItem } from './ui';
@@ -7,6 +7,10 @@ import { ChevronDown } from 'lucide-react';
 import React from 'react';
 import { addCustomer, type CreateCustomerData, searchCustomers } from '../lib/customer-api';
 import { AggregatorSelect } from './AggregatorSelect';
+import {
+  getGuestRoomsForCustomer,
+  type GuestRoomOption,
+} from '../lib/ihotel-api';
 
 // NewCustomerForm component
 function NewCustomerForm({ 
@@ -222,7 +226,16 @@ interface CustomerSelectProps {
 }
 
 export function CustomerSelect({ disabled }: CustomerSelectProps) {
-  const { selectedCustomer, setSelectedCustomer, selectedOrderType, isUpdatingOrder } = usePOSStore();
+  const {
+    selectedCustomer,
+    setSelectedCustomer,
+    selectedOrderType,
+    isUpdatingOrder,
+    posProfile,
+    hotelRoom,
+    ihotelProfile,
+    setHotelRoom,
+  } = usePOSStore();
   const [showNewCustomerForm, setShowNewCustomerForm] = useState(false);
   const [isCreatingCustomer, setIsCreatingCustomer] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -234,6 +247,55 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [prefillName, setPrefillName] = useState('');
   const [prefillPhone, setPrefillPhone] = useState('');
+
+  // iHotel mode state. "walkin" is the legacy behaviour; "hotel" adds a
+  // room sub-picker after customer selection. Toggle only rendered when
+  // the POS Profile has `custom_ihotel_enabled` on.
+  const ihotelEnabled = posProfile?.custom_ihotel_enabled === 1;
+  const [mode, setMode] = useState<'walkin' | 'hotel'>(
+    hotelRoom ? 'hotel' : 'walkin'
+  );
+  // Pending customer — in Hotel Guest mode we hold the customer locally
+  // until a room is picked, then commit both together to the store.
+  const [pendingCustomer, setPendingCustomer] = useState<Customer | null>(null);
+  const [rooms, setRooms] = useState<GuestRoomOption[]>([]);
+  const [roomsLoading, setRoomsLoading] = useState(false);
+  const [roomsError, setRoomsError] = useState<string | null>(null);
+
+  // Keep the mode in sync if the store's hotelRoom changes externally
+  // (e.g. loadTableOrder rehydrating a charged draft on reload).
+  useEffect(() => {
+    if (hotelRoom && mode !== 'hotel') setMode('hotel');
+  }, [hotelRoom]);
+
+  // Fetch this customer's open rooms whenever we enter hotel mode with
+  // either a pending or already-selected customer.
+  useEffect(() => {
+    if (!ihotelEnabled || mode !== 'hotel') return;
+    const targetCustomer = pendingCustomer || selectedCustomer;
+    if (!targetCustomer) {
+      setRooms([]);
+      setRoomsError(null);
+      return;
+    }
+    setRoomsLoading(true);
+    setRoomsError(null);
+    getGuestRoomsForCustomer(targetCustomer.id)
+      .then((res) => {
+        setRooms(res);
+        if (!res.length) {
+          setRoomsError(
+            'This customer has no open hotel stays. Ask the guest to check in first, or switch to Walk-in.'
+          );
+        }
+      })
+      .catch((err) => {
+        setRoomsError(
+          (err as Error)?.message || 'Failed to fetch hotel rooms for this customer'
+        );
+      })
+      .finally(() => setRoomsLoading(false));
+  }, [mode, pendingCustomer?.id, selectedCustomer?.id, ihotelEnabled]);
 
   // Debounced search
   useEffect(() => {
@@ -259,6 +321,38 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
     return () => clearTimeout(handler);
   }, [searchTerm, isOpen]);
 
+  // Pick a customer from search results. In walk-in mode this commits
+  // straight to the store. In hotel mode we hold it in `pendingCustomer`
+  // so the rooms effect fires and the cashier has to pick a room before
+  // the store sees the customer.
+  const pickCustomerFromResult = (customer: any) => {
+    const picked: Customer = {
+      id: customer.name,
+      name:
+        customer.content?.match(/Customer Name : ([^|]+)/)?.[1]?.trim() ||
+        customer.name,
+      phone:
+        customer.content?.match(/Mobile Number : ([^|]+)/)?.[1]?.trim() || '',
+    };
+    if (mode === 'hotel' && ihotelEnabled) {
+      setPendingCustomer(picked);
+    } else {
+      setSelectedCustomer(picked);
+    }
+    setSearchTerm('');
+    setIsOpen(false);
+  };
+
+  // Commit a (customer, room, profile) triple to the store once the
+  // cashier has picked a room in hotel mode.
+  const commitRoomSelection = (room: GuestRoomOption) => {
+    const target = pendingCustomer || selectedCustomer;
+    if (!target) return;
+    setSelectedCustomer(target);
+    setHotelRoom(room.room, room.profile);
+    setPendingCustomer(null);
+  };
+
   // Handle keyboard navigation
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (!isOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
@@ -278,15 +372,7 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
           setShowNewCustomerForm(true);
           setIsOpen(false);
         } else if (searchResults[highlightedIndex]) {
-          // The API returns { name, content, ... }
-          const customer = searchResults[highlightedIndex];
-          setSelectedCustomer({
-            id: customer.name,
-            name: customer.content?.match(/Customer Name : ([^|]+)/)?.[1]?.trim() || customer.name,
-            phone: customer.content?.match(/Mobile Number : ([^|]+)/)?.[1]?.trim() || '',
-          });
-          setSearchTerm('');
-          setIsOpen(false);
+          pickCustomerFromResult(searchResults[highlightedIndex]);
         }
       }
     } else if (e.key === 'Escape') {
@@ -294,20 +380,152 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
     }
   };
 
+  // Full reset: clear customer + hotel room + pending state.
+  const resetCustomerAndRoom = () => {
+    setSelectedCustomer(null);
+    setPendingCustomer(null);
+    setRooms([]);
+    setRoomsError(null);
+  };
+
   if (selectedOrderType === 'Aggregators') {
     return <AggregatorSelect />;
   }
 
+  // Derived render state. In hotel mode the "picker" stage can be
+  // either the search box (no customer yet) or the room list (customer
+  // picked but waiting on a room). A fully-committed hotel selection
+  // shows the compact blue card with the customer name + room badge.
+  const committedHotelSelection =
+    mode === 'hotel' && selectedCustomer && hotelRoom;
+  const awaitingRoomPick =
+    mode === 'hotel' && (pendingCustomer || (selectedCustomer && !hotelRoom));
+
   return (
-    <div className="relative">
-      {selectedCustomer ? (
+    <div className="relative space-y-2">
+      {ihotelEnabled && !isUpdatingOrder && (
+        <div className="flex rounded-lg border border-gray-200 p-0.5 bg-gray-50 text-xs font-medium">
+          <button
+            type="button"
+            onClick={() => {
+              setMode('walkin');
+              // Clear any pending hotel state when switching back.
+              setHotelRoom(null, null);
+              setPendingCustomer(null);
+              setRooms([]);
+              setRoomsError(null);
+            }}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md transition-colors ${
+              mode === 'walkin'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <User className="w-3.5 h-3.5" /> Walk-in
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('hotel')}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md transition-colors ${
+              mode === 'hotel'
+                ? 'bg-white text-amber-700 shadow-sm'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <BedDouble className="w-3.5 h-3.5" /> Hotel Guest
+          </button>
+        </div>
+      )}
+
+      {committedHotelSelection ? (
+        <div className="flex items-center justify-between bg-amber-50 border border-amber-200 p-3 rounded-lg">
+          <div>
+            <p className="font-medium text-amber-900 flex items-center gap-1.5">
+              <BedDouble className="w-4 h-4" /> {selectedCustomer?.name}
+            </p>
+            <p className="text-sm text-amber-700">
+              Room {hotelRoom}
+              {ihotelProfile ? ` · ${ihotelProfile}` : ''}
+            </p>
+          </div>
+          <Button
+            onClick={resetCustomerAndRoom}
+            disabled={isUpdatingOrder}
+            variant="ghost"
+            size="sm"
+            className="text-amber-700 hover:text-amber-800"
+          >
+            Change
+          </Button>
+        </div>
+      ) : awaitingRoomPick ? (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between bg-amber-50 border border-amber-200 p-3 rounded-lg">
+            <div>
+              <p className="font-medium text-amber-900">
+                {(pendingCustomer || selectedCustomer)?.name}
+              </p>
+              <p className="text-xs text-amber-700">
+                Pick a room to charge this order to
+              </p>
+            </div>
+            <Button
+              onClick={resetCustomerAndRoom}
+              variant="ghost"
+              size="sm"
+              className="text-amber-700 hover:text-amber-800"
+            >
+              Change
+            </Button>
+          </div>
+          <div className="border border-amber-200 rounded-lg bg-white max-h-60 overflow-y-auto">
+            {roomsLoading && (
+              <div className="flex items-center justify-center p-4 text-gray-500 text-sm">
+                <Loader className="w-4 h-4 mr-2 animate-spin" /> Loading rooms...
+              </div>
+            )}
+            {!roomsLoading && roomsError && (
+              <div className="flex items-start gap-2 p-3 text-xs text-red-700 bg-red-50 rounded-lg m-2">
+                <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                <span>{roomsError}</span>
+              </div>
+            )}
+            {!roomsLoading && !roomsError && rooms.length === 0 && (
+              <div className="p-4 text-center text-gray-400 text-sm">
+                No open rooms found
+              </div>
+            )}
+            {!roomsLoading &&
+              rooms.map((room) => (
+                <button
+                  key={room.profile}
+                  type="button"
+                  onClick={() => commitRoomSelection(room)}
+                  className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-amber-50 transition-colors border-b border-gray-100 last:border-b-0"
+                >
+                  <div>
+                    <p className="font-medium text-gray-900 text-sm flex items-center gap-1.5">
+                      <BedDouble className="w-3.5 h-3.5 text-amber-600" />
+                      Room {room.room}
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      {room.guest_name}
+                      {room.check_in_date ? ` · since ${room.check_in_date}` : ''}
+                    </p>
+                  </div>
+                  <span className="text-xs text-amber-700 font-medium">Select</span>
+                </button>
+              ))}
+          </div>
+        </div>
+      ) : selectedCustomer ? (
         <div className="flex items-center justify-between bg-blue-50 p-3 rounded-lg">
           <div>
             <p className="font-medium text-blue-900">{selectedCustomer.name}</p>
             <p className="text-sm text-blue-700">{selectedCustomer.phone}</p>
           </div>
           <Button
-            onClick={() => setSelectedCustomer(null)}
+            onClick={resetCustomerAndRoom}
             disabled={isUpdatingOrder}
             variant="ghost"
             size="sm"
@@ -333,7 +551,11 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
                 setTimeout(() => setIsOpen(false), 100);
               }}
               onKeyDown={handleKeyDown}
-              placeholder="Search customer..."
+              placeholder={
+                mode === 'hotel'
+                  ? 'Search hotel guest customer...'
+                  : 'Search customer...'
+              }
               className="w-full h-10 border border-gray-200 rounded-lg px-4 py-2 text-sm font-medium text-gray-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
               aria-label="Search customer"
               autoComplete="off"
@@ -363,11 +585,7 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
                     className={`w-full gap-2 px-4 py-2 text-left rounded-md text-gray-800 text-sm select-none transition-colors ${
                       idx === highlightedIndex ? 'bg-primary-50 text-primary-700' : 'hover:bg-gray-50'
                     }`}
-                    onMouseDown={() => {
-                      setSelectedCustomer({ id: customer.name, name, phone });
-                      setSearchTerm('');
-                      setIsOpen(false);
-                    }}
+                    onMouseDown={() => pickCustomerFromResult(customer)}
                     onMouseEnter={() => setHighlightedIndex(idx)}
                   >
                     <div className="font-medium">{name}</div>
@@ -378,28 +596,31 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
               {!isSearching && !searchError && searchResults.length === 0 && searchTerm.trim() && (
                 <div className="p-4 text-center text-gray-400 text-sm select-none">No customers found</div>
               )}
-              <div className="my-1 h-px bg-gray-100" />
-              <button
-                type="button"
-                className={`flex items-center gap-2 w-full px-4 py-2 text-primary-600 hover:text-primary-700 hover:bg-gray-50 font-medium rounded-md text-sm select-none transition-colors ${
-                  highlightedIndex === searchResults.length ? 'bg-primary-50' : ''
-                }`}
-                onMouseDown={() => {
-                  // Prefill logic
-                  if (/^\d+$/.test(searchTerm.trim())) {
-                    setPrefillPhone(searchTerm.trim());
-                    setPrefillName('');
-                  } else {
-                    setPrefillName(searchTerm.trim());
-                    setPrefillPhone('');
-                  }
-                  setShowNewCustomerForm(true);
-                  setIsOpen(false);
-                }}
-                onMouseEnter={() => setHighlightedIndex(searchResults.length)}
-              >
-                <UserPlus className="w-4 h-4" /> {searchTerm.trim() ? `Add "${searchTerm.trim()}"...` : 'Add New Customer'}
-              </button>
+              {mode !== 'hotel' && (
+                <>
+                  <div className="my-1 h-px bg-gray-100" />
+                  <button
+                    type="button"
+                    className={`flex items-center gap-2 w-full px-4 py-2 text-primary-600 hover:text-primary-700 hover:bg-gray-50 font-medium rounded-md text-sm select-none transition-colors ${
+                      highlightedIndex === searchResults.length ? 'bg-primary-50' : ''
+                    }`}
+                    onMouseDown={() => {
+                      if (/^\d+$/.test(searchTerm.trim())) {
+                        setPrefillPhone(searchTerm.trim());
+                        setPrefillName('');
+                      } else {
+                        setPrefillName(searchTerm.trim());
+                        setPrefillPhone('');
+                      }
+                      setShowNewCustomerForm(true);
+                      setIsOpen(false);
+                    }}
+                    onMouseEnter={() => setHighlightedIndex(searchResults.length)}
+                  >
+                    <UserPlus className="w-4 h-4" /> {searchTerm.trim() ? `Add "${searchTerm.trim()}"...` : 'Add New Customer'}
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>

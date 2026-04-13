@@ -130,6 +130,16 @@ interface POSState {
    */
   shiftExpired: boolean;
   shiftBlocked: boolean;
+  /**
+   * iHotel: the selected hotel room for the current draft order when the
+   * cashier has picked "Hotel Guest" in the customer picker. Persisted back
+   * to the POS Invoice via `sync_order` so it survives reloads. The actual
+   * folio write happens when the cashier confirms "Charge to Room" in the
+   * Payment dialog.
+   */
+  hotelRoom: string | null;
+  /** iHotel Profile name that matches (customer, hotel_room). Resolved at room-pick time. */
+  ihotelProfile: string | null;
 }
 
 interface POSStore extends POSState {
@@ -177,6 +187,7 @@ interface POSStore extends POSState {
     pos_profile?: string;
   }) => void;
   setShiftExpired: (expired: boolean, blocked: boolean) => void;
+  setHotelRoom: (room: string | null, profile: string | null) => void;
 }
 
 const generateUniqueId = (item: OrderItem): string => {
@@ -228,6 +239,12 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   terminalPosProfile: null,
   shiftExpired: false,
   shiftBlocked: false,
+  hotelRoom: null,
+  ihotelProfile: null,
+
+  setHotelRoom: (room, profile) => {
+    set({ hotelRoom: room, ihotelProfile: profile });
+  },
 
   setTerminalConfig: (config) => {
     set({
@@ -508,7 +525,17 @@ export const usePOSStore = create<POSStore>((set, get) => ({
 
   setSelectedCategory: (category) => set({ selectedCategory: category }),
   setSearchQuery: (query) => set({ searchQuery: query }),
-  setSelectedCustomer: (customer) => set({ selectedCustomer: customer }),
+  setSelectedCustomer: (customer) => {
+    // A hotel room is only valid for the customer it was resolved against
+    // (Customer → Guest → iHotel Profile chain). Any customer change
+    // invalidates that link, so clear the hotel context defensively.
+    const prev = get().selectedCustomer;
+    if (!customer || !prev || customer.id !== prev.id) {
+      set({ selectedCustomer: customer, hotelRoom: null, ihotelProfile: null });
+    } else {
+      set({ selectedCustomer: customer });
+    }
+  },
   setSelectedTable: (table: string | null, room: string | null, doNotLoadOrder: boolean = false) => {
     set({ selectedTable: table, selectedRoom: room });
     if (table ) {
@@ -673,7 +700,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
           } as OrderItem;
         });
 
-        set({ 
+        set({
           tableOrder: response,
           activeOrders: orderItems,
           selectedCustomer: order.customer ? {
@@ -683,24 +710,34 @@ export const usePOSStore = create<POSStore>((set, get) => ({
           } : null,
           isUpdatingOrder: true,
           orderId: order.name,
+          // Rehydrate the hotel room intent from the draft so the
+          // customer picker opens in Hotel Guest mode with the right
+          // room pre-selected on reload. The ihotelProfile lookup is
+          // deferred to the picker — the draft only stamps the room.
+          hotelRoom: order.custom_hotel_room || null,
+          ihotelProfile: order.custom_ihotel_profile || null,
         });
       } else {
-        set({ 
+        set({
           tableOrder: null,
           activeOrders: [],
           selectedCustomer: null,
           isUpdatingOrder: false,
           orderId: null,
+          hotelRoom: null,
+          ihotelProfile: null,
         });
       }
     } catch (error) {
-      set({ 
+      set({
         error: 'Failed to load table order',
         tableOrder: null,
         activeOrders: [],
         selectedCustomer: null,
         isUpdatingOrder: false,
         orderId: null,
+        hotelRoom: null,
+        ihotelProfile: null,
       });
     } finally {
       set({ orderLoading: false });
@@ -708,12 +745,14 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   },
 
   clearTableOrder: () => {
-    set({ 
+    set({
       tableOrder: null,
       activeOrders: [],
       selectedCustomer: null,
       isUpdatingOrder: false,
       orderId: null,
+      hotelRoom: null,
+      ihotelProfile: null,
     });
   },
 
@@ -741,6 +780,8 @@ export const usePOSStore = create<POSStore>((set, get) => ({
     error: null,
     selectedOrderType: DEFAULT_ORDER_TYPE,
     orderComment: '',
+    hotelRoom: null,
+    ihotelProfile: null,
   });
 
   fetchMenuItems();
