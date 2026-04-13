@@ -1,0 +1,248 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:TMERGE-{YYYY}-{MM}-{DD}-{####}",
+ "creation": "2026-04-11 10:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "Document",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "master_table",
+  "status",
+  "column_break_1",
+  "branch",
+  "pos_profile",
+  "custom_terminal",
+  "section_break_actor",
+  "merged_at",
+  "merged_by",
+  "merged_by_full_name",
+  "merged_orders",
+  "order_merge_log",
+  "column_break_actor",
+  "unmerged_at",
+  "unmerged_by",
+  "unmerged_by_full_name",
+  "section_break_notes",
+  "notes",
+  "section_break_snapshot",
+  "master_pre_merge_occupied",
+  "section_break_sources",
+  "source_tables"
+ ],
+ "fields": [
+  {
+   "fieldname": "master_table",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Master Table",
+   "options": "URY Table",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "Active",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Active\nUnmerged",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Branch",
+   "options": "Branch",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pos_profile",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "POS Profile",
+   "options": "POS Profile",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_terminal",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Terminal",
+   "options": "URY POS Terminal",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_actor",
+   "fieldtype": "Section Break",
+   "label": "Audit"
+  },
+  {
+   "fieldname": "merged_at",
+   "fieldtype": "Datetime",
+   "label": "Merged At",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "merged_by",
+   "fieldtype": "Link",
+   "label": "Merged By",
+   "options": "User",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "merged_by_full_name",
+   "fieldtype": "Data",
+   "label": "Merged By (Name)",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Set to 1 when the cashier also chose to merge the tables' active orders at merge time.",
+   "fieldname": "merged_orders",
+   "fieldtype": "Check",
+   "label": "Merged Orders Too",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.merged_orders",
+   "fieldname": "order_merge_log",
+   "fieldtype": "Link",
+   "label": "Order Merge Log",
+   "options": "URY Order Merge Log",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_actor",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "unmerged_at",
+   "fieldtype": "Datetime",
+   "label": "Unmerged At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "unmerged_by",
+   "fieldtype": "Link",
+   "label": "Unmerged By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "unmerged_by_full_name",
+   "fieldtype": "Data",
+   "label": "Unmerged By (Name)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_notes",
+   "fieldtype": "Section Break",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_snapshot",
+   "fieldtype": "Section Break",
+   "label": "Master Pre-Merge Snapshot"
+  },
+  {
+   "default": "0",
+   "fieldname": "master_pre_merge_occupied",
+   "fieldtype": "Check",
+   "label": "Master Was Occupied Before Merge",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_sources",
+   "fieldtype": "Section Break",
+   "label": "Source Tables"
+  },
+  {
+   "fieldname": "source_tables",
+   "fieldtype": "Table",
+   "label": "Source Tables",
+   "options": "URY Table Merge Source",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-04-11 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "URY",
+ "name": "URY Table Merge Log",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "select": 1,
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "URY Manager",
+   "select": 1,
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "URY Captain",
+   "select": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "URY Cashier",
+   "select": 1,
+   "write": 1
+  }
+ ],
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

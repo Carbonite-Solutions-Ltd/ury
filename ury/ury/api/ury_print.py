@@ -285,17 +285,25 @@ def qz_print_update(invoice):
 
         if table:
              frappe.db.set_value(
-                "URY Table", 
-                table, 
+                "URY Table",
+                table,
                 {"occupied": 0, "latest_invoice_time": None},
                 update_modified=True
             )
-             
+
              if frappe.db.get_value("URY Table", table, "occupied") != 0:
                  return {"status": "Failure"}
-        
+
+             # If this table is the master of an active table merge,
+             # the merge has served its purpose (the combined order has
+             # been printed and is on its way to payment). Auto-unmerge
+             # so the source tables come back into the grid as Available.
+             # See CLAUDE.md "Fixes log" 2026-04-11.
+             from ury.ury_pos.api import auto_unmerge_table_if_active
+             auto_unmerge_table_if_active(table)
+
         return {"status": "Success"}
-        
+
     except Exception as e:
         frappe.log_error(title="Print Update Fail", message=traceback.format_exc())
         return {"status": "Failure"}
@@ -355,7 +363,12 @@ def print_pos_page(doctype, name, print_format):
                     restaurant_table,
                     {"occupied": 0, "latest_invoice_time": None},
                 )
-        
+
+                # Auto-unmerge if this table was a merge master. See
+                # CLAUDE.md "Fixes log" 2026-04-11.
+                from ury.ury_pos.api import auto_unmerge_table_if_active
+                auto_unmerge_table_if_active(restaurant_table)
+
         return result
             
     except Exception as e:

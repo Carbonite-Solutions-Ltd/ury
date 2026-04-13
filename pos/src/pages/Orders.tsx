@@ -12,6 +12,7 @@ import {
   List as ListIcon,
   GitMerge,
   Undo2,
+  RotateCcw,
 } from 'lucide-react';
 import { Badge, Button, Card, CardContent } from '../components/ui';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../components/ui/dialog';
@@ -24,10 +25,20 @@ import { Textarea } from '../components/ui/textarea';
 import { usePOSStore } from '../store/pos-store';
 import { useNavigate } from 'react-router-dom';
 import PaymentDialog from '../components/PaymentDialog';
+import ReturnDialog from '../components/ReturnDialog';
 import { printOrder } from '../lib/print';
 import { call } from '../lib/frappe-sdk';
 import type { POSInvoice } from '../store/slices/orders-slice';
-import { canMergeOrders, canReprintInvoice } from '../lib/role-utils';
+import {
+  canMergeOrders,
+  canReprintInvoice,
+  canReturnOrders,
+} from '../lib/role-utils';
+import {
+  reversePosReturn,
+  type ReturnResult,
+} from '../lib/invoice-api';
+import { extractFrappeServerError } from '../lib/utils';
 import '../components/ui/merge-mode.css';
 
 const todayIso = (): string => {
@@ -119,6 +130,8 @@ export default function Orders() {
   const [editLoading, setEditLoading] = React.useState(false);
   const [showPaymentDialog, setShowPaymentDialog] = React.useState(false);
   const [isPrinting, setIsPrinting] = React.useState(false);
+  const [showReturnDialog, setShowReturnDialog] = React.useState(false);
+  const [reverseLoading, setReverseLoading] = React.useState(false);
 
   // Hydrate the per-user view-mode preference once we know who's logged
   // in. The slice's default ('card') is overridden if the user's last
@@ -157,6 +170,50 @@ export default function Orders() {
   );
 
   const canReprint = useMemo(() => canReprintInvoice(user), [user]);
+
+  const canReturn = useMemo(
+    () => canReturnOrders(user, posStore.posProfile),
+    [user, posStore.posProfile]
+  );
+
+  // Treat a POS Invoice as a "Return document" when its custom_order_status
+  // carries the Return label OR ERPNext's native `is_return` flag is set.
+  // The Orders page currently reads from the `status` column (which is
+  // "Return" for negative-qty invoices), plus we peek at `is_return` via
+  // a future-proofing check on the payload.
+  const isReturnDoc = (order: POSInvoice | null): boolean => {
+    if (!order) return false;
+    return order.status === 'Return' ||
+      (order as any).is_return === 1 ||
+      (order as any).is_return === true;
+  };
+
+  const handleReturned = async (_result: ReturnResult) => {
+    setShowReturnDialog(false);
+    showToast.success('Return processed');
+    await fetchOrders();
+    clearSelectedOrder();
+  };
+
+  const handleReverseReturn = async () => {
+    if (!selectedOrder) return;
+    if (!isReturnDoc(selectedOrder)) return;
+    setReverseLoading(true);
+    try {
+      await reversePosReturn(selectedOrder.name);
+      showToast.success('Return reversed');
+      await fetchOrders();
+      clearSelectedOrder();
+    } catch (err) {
+      const parsed = extractFrappeServerError(err, 'Failed to reverse return.');
+      showToast.error({
+        title: parsed.title || 'Reverse Failed',
+        description: parsed.message,
+      });
+    } finally {
+      setReverseLoading(false);
+    }
+  };
 
   // An order is mergeable in merge mode only if it's still a Draft
   // (unpaid). Returns / Paid / Consolidated rows are dimmed and not
@@ -510,6 +567,16 @@ export default function Orders() {
                               </span>
                             </Badge>
                           )}
+                          {(order.active_return_count ?? 0) > 0 && !order.is_return && (
+                            <Badge
+                              variant="default"
+                              className="bg-orange-500 hover:bg-orange-600 text-white flex items-center gap-1 px-2 py-0.5"
+                              title={`${order.active_return_count} active return${order.active_return_count === 1 ? '' : 's'} against this invoice`}
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              <span className="text-xs">Returned</span>
+                            </Badge>
+                          )}
                           {order.custom_order_status === 'Served' && (
                             <Badge
                               variant="default"
@@ -582,6 +649,19 @@ export default function Orders() {
                                   ? ` +${order.merge_source_count}`
                                   : ''}
                               </span>
+                            </Badge>
+                          )}
+                          {/* Returned badge — count of active (docstatus=1)
+                              return invoices written against this one.
+                              Hidden on invoices that ARE returns themselves. */}
+                          {(order.active_return_count ?? 0) > 0 && !order.is_return && (
+                            <Badge
+                              variant="default"
+                              className="bg-orange-500 hover:bg-orange-600 text-white flex items-center gap-1 px-2 py-0.5"
+                              title={`${order.active_return_count} active return${order.active_return_count === 1 ? '' : 's'} against this invoice`}
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              <span className="text-xs">Returned</span>
                             </Badge>
                           )}
                           {/* Served Badge */}
@@ -723,6 +803,19 @@ export default function Orders() {
                     <span>Served</span>
                   </Badge>
                 )}
+                {/* Returned Badge in Header — when this invoice has
+                    any active returns written against it. */}
+                {(selectedOrder.active_return_count ?? 0) > 0 &&
+                  !selectedOrder.is_return && (
+                    <Badge
+                      variant="default"
+                      className="bg-orange-500 hover:bg-orange-600 text-white flex items-center gap-1"
+                      title={`${selectedOrder.active_return_count} active return${selectedOrder.active_return_count === 1 ? '' : 's'}`}
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Returned</span>
+                    </Badge>
+                  )}
                 <Badge variant={getBadgeVariant(selectedOrder.status)}>
                   {selectedOrder.status}
                 </Badge>
@@ -899,6 +992,41 @@ export default function Orders() {
                     Payment
                   </Button>
                 )}
+                {/* Return Button — only for paid invoices (not drafts, not
+                    already-returned docs). Permission-gated via the
+                    POS Profile's custom_restrict_returns_to_captain
+                    flag. Backend re-validates. */}
+                {canReturn &&
+                  (selectedOrder.status === 'Paid' ||
+                    selectedOrder.status === 'Consolidated') &&
+                  !isReturnDoc(selectedOrder) && (
+                    <Button
+                      variant="outline"
+                      className="flex-1 border-orange-300 text-orange-700 hover:bg-orange-50"
+                      onClick={() => setShowReturnDialog(true)}
+                    >
+                      <RotateCcw className="w-4 h-4 mr-1.5" />
+                      Return
+                    </Button>
+                  )}
+                {/* Undo Return Button — only for submitted return invoices.
+                    Cancels the return via ERPNext's native cancel(), which
+                    reverses the stock movement and GL entries. */}
+                {canReturn && isReturnDoc(selectedOrder) && (
+                  <Button
+                    variant="outline"
+                    className="flex-1 border-amber-300 text-amber-700 hover:bg-amber-50"
+                    onClick={handleReverseReturn}
+                    disabled={reverseLoading}
+                  >
+                    {reverseLoading ? (
+                      <Spinner className="w-4 h-4 mr-1.5" hideMessage />
+                    ) : (
+                      <Undo2 className="w-4 h-4 mr-1.5" />
+                    )}
+                    Undo Return
+                  </Button>
+                )}
                 {/* Total */}
                 <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
                   {formatCurrency(getOrderTotal(selectedOrder))}
@@ -921,6 +1049,13 @@ export default function Orders() {
           owner={posStore.posProfile?.cashier || ''}
           fetchOrders={fetchOrders}
           clearSelectedOrder={clearSelectedOrder}
+        />
+      )}
+      {showReturnDialog && selectedOrder && (
+        <ReturnDialog
+          invoiceName={selectedOrder.name}
+          onCancel={() => setShowReturnDialog(false)}
+          onReturned={handleReturned}
         />
       )}
     </div>

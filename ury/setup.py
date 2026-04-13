@@ -361,6 +361,97 @@ def get_custom_fields():
 				"default": "0",
 				"description": "When checked, only URY Captain / URY Manager / Administrator users can merge orders on this terminal.",
 			},
+			# Per-profile escape hatch for the "no stock in warehouse"
+			# blocker on Payment. When checked, the on_update hook walks
+			# every URY Menu Item linked to the profile's restaurant and
+			# flips Item.allow_negative_stock = 1 on each Item master that
+			# has is_stock_item = 1. Unchecking reverses the flip on the
+			# same set. See CLAUDE.md "Fixes log" 2026-04-10.
+			{
+				"fieldname": "custom_allow_negative_stock_on_menu_items",
+				"fieldtype": "Check",
+				"insert_after": "custom_restrict_merge_to_captain",
+				"label": "Allow Negative Stock on Menu Items",
+				"default": "0",
+				"description": "When checked, every stock-tracked item on this profile's restaurant menus is allowed to go negative on stock. Saving the profile walks all menus tied to the restaurant and flips Item.allow_negative_stock on each Item master. Unchecking reverses the flip. Note: this is a per-Item flag, so two POS Profiles sharing the same item will fight (last save wins).",
+			},
+			# Restrict the Return Orders button to captains by default.
+			# Returns are sensitive (they refund money + reverse stock),
+			# so the default is ON — only captains/managers/admins can
+			# issue returns. Flip to OFF to let cashiers return their
+			# own orders. See CLAUDE.md "Fixes log" 2026-04-10.
+			{
+				"fieldname": "custom_restrict_returns_to_captain",
+				"fieldtype": "Check",
+				"insert_after": "custom_allow_negative_stock_on_menu_items",
+				"label": "Restrict Returns to Captain",
+				"default": "1",
+				"description": "When checked (default), only URY Captain / URY Manager / Administrator users can issue returns from the Orders page right panel. Flip to OFF to let cashiers return their own orders too.",
+			},
+			# Geofence feature. Master switch + company coordinates +
+			# default radius. When enabled, the React POS asks for
+			# browser geolocation on login and blocks users outside the
+			# allowed radius (per-user override OR company coords,
+			# depending on the URY User row's custom_use_company_location
+			# flag). See CLAUDE.md "Fixes log" 2026-04-10.
+			{
+				"fieldname": "custom_geofence_section",
+				"fieldtype": "Section Break",
+				"insert_after": "custom_restrict_returns_to_captain",
+				"label": "Geofence",
+				"collapsible": 1,
+			},
+			{
+				"fieldname": "custom_geofence_enabled",
+				"fieldtype": "Check",
+				"insert_after": "custom_geofence_section",
+				"label": "Enable Geofence",
+				"default": "0",
+				"description": "Master switch. When off, no location check is performed on login and the React POS never requests geolocation permission.",
+			},
+			{
+				"fieldname": "custom_company_latitude",
+				"fieldtype": "Float",
+				"insert_after": "custom_geofence_enabled",
+				"label": "Company Latitude",
+				"precision": "6",
+				"depends_on": "eval:doc.custom_geofence_enabled",
+				"description": "Use the Get Current Location button to capture this device's current GPS position.",
+			},
+			{
+				"fieldname": "custom_company_longitude",
+				"fieldtype": "Float",
+				"insert_after": "custom_company_latitude",
+				"label": "Company Longitude",
+				"precision": "6",
+				"depends_on": "eval:doc.custom_geofence_enabled",
+			},
+			{
+				"fieldname": "custom_geofence_radius_meters",
+				"fieldtype": "Int",
+				"insert_after": "custom_company_longitude",
+				"label": "Geofence Radius (m)",
+				"default": "200",
+				"non_negative": 1,
+				"depends_on": "eval:doc.custom_geofence_enabled",
+				"description": "Default allowed distance in meters. Per-user overrides live on the Branch's ExPOS Users table.",
+			},
+			# Table-merge unmerge-with-new-orders escape hatch. When the
+			# cashier merges tables and then rings new orders on the
+			# master, the default behaviour is to block the unmerge
+			# (unmerging would strand those new orders on a non-existent
+			# table). Flipping this check ON lets the cashier unmerge
+			# anyway; the UI prompts them to assign each post-merge
+			# order to a destination table. See CLAUDE.md "Fixes log"
+			# 2026-04-11.
+			{
+				"fieldname": "custom_allow_unmerge_after_new_orders",
+				"fieldtype": "Check",
+				"insert_after": "custom_geofence_radius_meters",
+				"label": "Allow Table Unmerge After New Orders",
+				"default": "0",
+				"description": "When checked, cashiers can unmerge tables even after new orders have been placed on the merged master. The unmerge UI asks them to assign each post-merge order to a destination table.",
+			},
 		],
   
 		"POS Opening Entry": [

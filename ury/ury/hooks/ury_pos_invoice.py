@@ -29,8 +29,23 @@ def on_trash(doc, method):
 def validate_invoice(doc, method):
     if doc.waiter == None or doc.waiter == "":
         doc.waiter = doc.modified_by
+
+    # The item-modification guard below only makes sense on UPDATE (i.e.
+    # "cashier re-saves an already-printed invoice and tries to remove
+    # items"). For a brand-new doc — e.g. a return built by
+    # erpnext.controllers.sales_and_purchase_return.make_return_doc,
+    # which copies `invoice_printed = 1` from the source — there's
+    # nothing in the DB to compare against. Without this guard,
+    # `frappe.get_doc(..., doc.name)` below throws
+    # "POS Invoice <autoname> not found" and rolls back the whole
+    # insert. Returns also never have items to "remove" because they
+    # inherit the source's items wholesale. See CLAUDE.md "Fixes log"
+    # 2026-04-10.
+    if doc.is_new() or doc.is_return:
+        return
+
     remove_items = frappe.db.get_value("POS Profile", doc.pos_profile, "remove_items")
-    
+
     if doc.invoice_printed == 1 and remove_items == 0:
         # Get the original items from db
         original_doc = frappe.get_doc("POS Invoice", doc.name)

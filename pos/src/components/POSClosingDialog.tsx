@@ -25,10 +25,12 @@ import {
   CheckCircle2,
   DoorClosed,
   Loader2,
+  UserPlus,
   X,
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
+import { Select, SelectItem } from './ui/select';
 import {
   previewClosingEntry,
   submitClosingEntry,
@@ -60,6 +62,9 @@ const POSClosingDialog = ({
 }: POSClosingDialogProps) => {
   const [state, setState] = useState<DialogState>({ kind: 'loading' });
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Selected cashier to transfer unpaid drafts to. Required before
+  // the Close Shift button is enabled when `preview.draft_count > 0`.
+  const [transferTo, setTransferTo] = useState<string>('');
 
   // Initial preview fetch.
   useEffect(() => {
@@ -89,6 +94,16 @@ const POSClosingDialog = ({
 
   const handleSubmit = async () => {
     if (state.kind !== 'form') return;
+    // Guard: if the shift has drafts, the user MUST pick a transfer
+    // target before we even hit the backend. The backend also
+    // enforces this — but catching it here prevents a confusing
+    // round-trip.
+    if (state.preview.draft_count > 0 && !transferTo) {
+      setSubmitError(
+        'You have unpaid orders on this shift. Select a cashier to transfer them to first.'
+      );
+      return;
+    }
     setSubmitError(null);
     setState({ kind: 'submitting' });
 
@@ -97,7 +112,11 @@ const POSClosingDialog = ({
       for (const row of state.rows) {
         closingAmounts[row.mode_of_payment] = Number(row.closing_amount) || 0;
       }
-      const res = await submitClosingEntry(openingEntry, closingAmounts);
+      const res = await submitClosingEntry(
+        openingEntry,
+        closingAmounts,
+        transferTo || undefined
+      );
       setState({ kind: 'success', closingEntryName: res.name });
       // Brief confirmation flash, then hand control back to the parent.
       setTimeout(() => onClosed(res.name), 800);
@@ -175,6 +194,8 @@ const POSClosingDialog = ({
               preview={state.preview}
               rows={state.rows}
               submitError={submitError}
+              transferTo={transferTo}
+              onTransferToChange={setTransferTo}
               onUpdateRow={(idx, value) => {
                 setState((cur) => {
                   if (cur.kind !== 'form') return cur;
@@ -195,24 +216,33 @@ const POSClosingDialog = ({
         </div>
 
         {/* Footer */}
-        {state.kind === 'form' && (
-          <div className="flex gap-3 mt-6 pt-4 border-t border-gray-100 shrink-0">
-            <Button
-              onClick={onCancel}
-              variant="outline"
-              className="flex-1 border-gray-300 text-gray-700 hover:bg-gray-50 font-medium py-3 text-base rounded-lg"
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleSubmit}
-              className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 text-base rounded-lg"
-            >
-              <DoorClosed className="w-5 h-5 mr-2" />
-              Close Shift
-            </Button>
-          </div>
-        )}
+        {state.kind === 'form' && (() => {
+          const needsTransfer =
+            state.preview.draft_count > 0 && !transferTo;
+          return (
+            <div className="flex gap-3 mt-6 pt-4 border-t border-gray-100 shrink-0">
+              <Button
+                onClick={onCancel}
+                variant="outline"
+                className="flex-1 border-gray-300 text-gray-700 hover:bg-gray-50 font-medium py-3 text-base rounded-lg"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleSubmit}
+                disabled={needsTransfer}
+                className={`flex-1 font-medium py-3 text-base rounded-lg ${
+                  needsTransfer
+                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                    : 'bg-blue-600 hover:bg-blue-700 text-white'
+                }`}
+              >
+                <DoorClosed className="w-5 h-5 mr-2" />
+                {needsTransfer ? 'Select a Cashier' : 'Close Shift'}
+              </Button>
+            </div>
+          );
+        })()}
         {state.kind === 'error' && (
           <div className="flex gap-3 mt-6 pt-4 border-t border-gray-100 shrink-0">
             <Button
@@ -280,6 +310,8 @@ interface FormBodyProps {
   preview: POSClosingPreview;
   rows: POSClosingPaymentRow[];
   submitError: string | null;
+  transferTo: string;
+  onTransferToChange: (value: string) => void;
   onUpdateRow: (idx: number, value: string) => void;
 }
 
@@ -287,6 +319,8 @@ const FormBody = ({
   preview,
   rows,
   submitError,
+  transferTo,
+  onTransferToChange,
   onUpdateRow,
 }: FormBodyProps) => {
   const totalDifference = useMemo(
@@ -303,7 +337,7 @@ const FormBody = ({
       {/* Summary stats */}
       <div className="grid grid-cols-3 gap-4 mb-6">
         <SummaryStat
-          label="Invoices"
+          label="Paid Invoices"
           value={String(preview.invoice_count)}
         />
         <SummaryStat
@@ -312,6 +346,88 @@ const FormBody = ({
         />
         <SummaryStat label="Net Total" value={formatCurrency(preview.net_total)} />
       </div>
+
+      {/* Unpaid drafts — block the close until they're transferred. */}
+      {preview.draft_count > 0 && (
+        <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4">
+          <div className="flex items-start gap-3 mb-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-semibold text-amber-900">
+                {preview.draft_count} unpaid{' '}
+                {preview.draft_count === 1 ? 'order' : 'orders'} blocking close
+              </div>
+              <div className="text-xs text-amber-800 mt-0.5">
+                Total: {formatCurrency(preview.draft_grand_total)}. Pick a
+                cashier below — the orders will be reassigned to them and
+                appear in their Orders list on next reload.
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-md border border-amber-200 bg-white overflow-hidden mb-3">
+            <div className="max-h-[140px] overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-amber-100/60 text-amber-900">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-semibold">Order</th>
+                    <th className="text-left px-3 py-2 font-semibold">Customer</th>
+                    <th className="text-right px-3 py-2 font-semibold">Total</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-amber-100">
+                  {preview.draft_invoices.map((row) => (
+                    <tr key={row.name}>
+                      <td className="px-3 py-2 font-mono text-gray-700">
+                        {row.name}
+                      </td>
+                      <td className="px-3 py-2 text-gray-700 truncate max-w-[220px]">
+                        {row.customer_name || row.customer || '—'}
+                        {row.restaurant_table && (
+                          <span className="text-gray-400">
+                            {' · '}Table {row.restaurant_table}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-right text-gray-900 tabular-nums font-semibold">
+                        {formatCurrency(row.grand_total)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <UserPlus className="w-4 h-4 text-amber-700 shrink-0" />
+            <label className="text-xs font-semibold text-amber-900 shrink-0">
+              Transfer to:
+            </label>
+            <div className="flex-1">
+              {preview.transfer_candidates.length === 0 ? (
+                <div className="text-xs italic text-amber-800">
+                  No other cashiers are listed on this branch's ExPOS Users
+                  table. Add one in the desk before closing.
+                </div>
+              ) : (
+                <Select
+                  value={transferTo}
+                  onValueChange={onTransferToChange}
+                  placeholder="Select a cashier"
+                  size="sm"
+                >
+                  {preview.transfer_candidates.map((c) => (
+                    <SelectItem key={c.user} value={c.user}>
+                      {c.full_name} ({c.user})
+                    </SelectItem>
+                  ))}
+                </Select>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Payment reconciliation */}
       <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-3">

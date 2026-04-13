@@ -114,13 +114,13 @@ def get_order_invoice(table=None, invoiceNo=None, order_type=None, is_payment=No
 def sync_order(
     items,
     cashier,
-    owner,
     mode_of_payment,
     customer,
     no_of_pax,
     last_invoice,
     waiter,
     pos_profile,
+    owner=None,
     last_modified_time=None,
     table=None,
     invoice=None,
@@ -130,6 +130,11 @@ def sync_order(
     room=None,
     terminal=None,
 ):
+    # `owner` is optional. The frontend deliberately omits it when
+    # updating an existing order so we don't overwrite the original
+    # cashier on the audit trail (only stamps it on creation). The
+    # `db_set("owner", owner)` call later in this function is gated on
+    # `owner` being non-None.
     
     user_role = frappe.get_roles()
     posprofile = frappe.get_doc("POS Profile", pos_profile)
@@ -185,7 +190,20 @@ def sync_order(
             )
             return {"status": "Failure"}
     else:
-        if invoice.name and invoice.invoice_printed == 0 and not billing_user:
+        # Only block when this is a brand-new order (no last_invoice).
+        # Updates to an existing draft (last_invoice set) must be
+        # allowed through — the cashier explicitly opened the existing
+        # invoice from the Table page and is editing it. The previous
+        # version of this check fired on EVERY non-billing-user update
+        # and silently returned `{"status": "Failure"}` without raising,
+        # so the React POS showed "Order updated successfully" while
+        # the items never persisted.
+        if (
+            not last_invoice
+            and invoice.name
+            and invoice.invoice_printed == 0
+            and not billing_user
+        ):
             frappe.msgprint(
                 title="Table occupied ",
                 indicator="red",
@@ -341,7 +359,8 @@ def sync_order(
             "URY Table", table, {"occupied": 1, "latest_invoice_time": invoice.creation}
         )
 
-    invoice.db_set("owner", owner)
+    if owner:
+        invoice.db_set("owner", owner)
     return invoice.as_dict()
 
 
@@ -620,12 +639,17 @@ def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDisc
     # invoice.owner = owner  # REMOVE THIS LINE
     
     invoice.save()
-    try:
-        invoice.submit()
-    except Exception as e:
-        frappe.throw(f"Error while settling order: {e}")
-    
-    
+    # Do NOT wrap submit() in try/except: frappe.throw(f"...{e}").
+    # That pattern strips ERPNext's error title, indicator, and
+    # raise_exception flag, leaving the frontend with a generic
+    # "There was an error" wrapper instead of the real diagnostic
+    # ("Item Out of Stock", "Insufficient Permission", etc.). Let
+    # the original ValidationError propagate cleanly so the React
+    # POS's extractFrappeServerError() can pick out the title and
+    # render an actionable rich toast. Same surgery already done
+    # on sync_order — see CLAUDE.md "Fixes log" 2026-04-08.
+    invoice.submit()
+
 
 # Cancel KOT Doc Creation
 def cancel_kot(invoice_id):

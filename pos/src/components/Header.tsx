@@ -8,6 +8,7 @@ import {
   LogOut,
   RefreshCw,
   MapPin,
+  DoorClosed,
 } from 'lucide-react';
 import { Button, Input } from './ui';
 import { useRootStore } from '../store/root-store';
@@ -16,11 +17,19 @@ import type { RootState } from '../store/root-store';
 import { logout } from '../lib/auth-api';
 import { showToast } from './ui/toast';
 import { clearSavedTerminal } from '../lib/terminal-api';
+import { canAccessDeskAndTerminalSwitch } from '../lib/role-utils';
+import { getCurrentPosOpenEntry } from '../lib/pos-opening-api';
+import POSClosingDialog from './POSClosingDialog';
+import { extractFrappeServerError } from '../lib/utils';
 
 const Header = () => {
   const [showUserMenu, setShowUserMenu] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
   const user = useRootStore((state: RootState) => state.user);
+  const [showClosingDialog, setShowClosingDialog] = useState(false);
+  const [closingEntryName, setClosingEntryName] = useState<string | null>(null);
+  const [endShiftLoading, setEndShiftLoading] = useState(false);
+  const canSeeAdminActions = canAccessDeskAndTerminalSwitch(user);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const location = useLocation();
   const {
@@ -118,6 +127,38 @@ const Header = () => {
     clearSavedTerminal();
     sessionStorage.clear();
     window.location.reload();
+  };
+
+  const handleEndShift = async () => {
+    setShowUserMenu(false);
+    setEndShiftLoading(true);
+    try {
+      // Look up whichever open POS Opening Entry belongs to this
+      // session's terminal (per-terminal + per-user scoping rules are
+      // enforced server-side — see CLAUDE.md "Fixes log" 2026-04-08).
+      const entry = await getCurrentPosOpenEntry(terminalName);
+      if (!entry?.name) {
+        showToast.error({
+          title: 'No Open Shift',
+          description:
+            'No open POS Opening Entry found for this terminal. Nothing to close.',
+        });
+        return;
+      }
+      setClosingEntryName(entry.name);
+      setShowClosingDialog(true);
+    } catch (err) {
+      const parsed = extractFrappeServerError(
+        err,
+        'Failed to look up your open shift.'
+      );
+      showToast.error({
+        title: parsed.title || 'End Shift Failed',
+        description: parsed.message,
+      });
+    } finally {
+      setEndShiftLoading(false);
+    }
   };
 
 
@@ -224,21 +265,43 @@ const Header = () => {
                   )}
                 </div>
                 <div className="py-2">
+                  {/* Change Terminal + Switch to Desk are admin-ish
+                      actions — cashiers don't see them. Captains,
+                      managers, and admins do. See role-utils.ts
+                      canAccessDeskAndTerminalSwitch. */}
+                  {canSeeAdminActions && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        className="flex justify-start items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
+                        onClick={handleChangeTerminal}
+                      >
+                        <MapPin className="w-4 h-4 mr-3" />
+                        Change Terminal
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        className="flex justify-start items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
+                        onClick={() => (window.location.href = '/app')}
+                      >
+                        <Monitor className="w-4 h-4 mr-3" />
+                        Switch To Desk
+                      </Button>
+                    </>
+                  )}
+                  {/* End Shift is visible to EVERYONE — cashiers need
+                      it to close their own day. Opens the in-POS
+                      closing dialog for the user's current open entry.
+                      See CLAUDE.md "Fixes log" 2026-04-09 for the
+                      in-POS closing flow. */}
                   <Button
                     variant="ghost"
                     className="flex justify-start items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
-                    onClick={handleChangeTerminal}
+                    onClick={handleEndShift}
+                    disabled={endShiftLoading}
                   >
-                    <MapPin className="w-4 h-4 mr-3" />
-                    Change Terminal
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    className="flex justify-start items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
-                    onClick={() => window.location.href = '/app'}
-                  >
-                    <Monitor className="w-4 h-4 mr-3" />
-                    Switch To Desk
+                    <DoorClosed className="w-4 h-4 mr-3" />
+                    {endShiftLoading ? 'Loading…' : 'End Shift'}
                   </Button>
                   <Button
                     variant="ghost"
@@ -262,8 +325,25 @@ const Header = () => {
           </div>
         </div>
       </div>
+      {showClosingDialog && closingEntryName && (
+        <POSClosingDialog
+          openingEntry={closingEntryName}
+          onCancel={() => {
+            setShowClosingDialog(false);
+            setClosingEntryName(null);
+          }}
+          onClosed={() => {
+            // Shift closed — reload so the POSOpeningProvider kicks
+            // back in and prompts for a new opening entry. Matches the
+            // same pattern used by ShiftHoursBanner.
+            setShowClosingDialog(false);
+            setClosingEntryName(null);
+            window.location.reload();
+          }}
+        />
+      )}
     </header>
   );
 };
 
-export default Header; 
+export default Header;

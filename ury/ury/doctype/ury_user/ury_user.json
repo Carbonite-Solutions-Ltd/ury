@@ -7,7 +7,12 @@
  "engine": "InnoDB",
  "field_order": [
   "user",
-  "room"
+  "room",
+  "geofence_section",
+  "custom_use_company_location",
+  "custom_latitude",
+  "custom_longitude",
+  "custom_geofence_radius_meters"
  ],
  "fields": [
   {
@@ -22,6 +27,44 @@
    "fieldtype": "Link",
    "label": "Room",
    "options": "URY Room"
+  },
+  {
+   "fieldname": "geofence_section",
+   "fieldtype": "Section Break",
+   "label": "Geofence",
+   "collapsible": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "custom_use_company_location",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Use Company Location",
+   "description": "When checked, the user logs in against the POS Profile's company coordinates. Uncheck to set per-user latitude/longitude below."
+  },
+  {
+   "depends_on": "eval:!doc.custom_use_company_location",
+   "fieldname": "custom_latitude",
+   "fieldtype": "Float",
+   "label": "Latitude",
+   "precision": "6",
+   "description": "Ignored when \"Use Company Location\" is checked."
+  },
+  {
+   "depends_on": "eval:!doc.custom_use_company_location",
+   "fieldname": "custom_longitude",
+   "fieldtype": "Float",
+   "label": "Longitude",
+   "precision": "6",
+   "description": "Ignored when \"Use Company Location\" is checked."
+  },
+  {
+   "depends_on": "eval:!doc.custom_use_company_location",
+   "fieldname": "custom_geofence_radius_meters",
+   "fieldtype": "Int",
+   "label": "Radius Override (m)",
+   "non_negative": 1,
+   "description": "Per-user allowed distance in meters. Leave 0 to fall back to the POS Profile's default radius."
   }
  ],
  "index_web_pages_for_search": 1,
