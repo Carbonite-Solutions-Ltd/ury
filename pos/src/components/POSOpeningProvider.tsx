@@ -5,6 +5,7 @@ import {
   getCurrentPosOpenEntry,
   validatePOSClose,
 } from '../lib/pos-opening-api';
+import { logout } from '../lib/auth-api';
 import { usePOSStore } from '../store/pos-store';
 import { extractFrappeServerError } from '../lib/utils';
 import POSOpeningDialog from './POSOpeningDialog';
@@ -209,10 +210,29 @@ const POSOpeningProvider = ({ children }: POSOpeningProviderProps) => {
             </Button>
             <Button
               variant="outline"
-              onClick={() => {
-                // Soft sign-out: clear caches + reload to /login.
+              onClick={async () => {
+                // Hard sign-out: call Frappe's logout endpoint so the
+                // server-side session cookie is invalidated, THEN
+                // clear caches and redirect. Just clearing
+                // sessionStorage + setting location.href wasn't
+                // enough — the server still saw a valid session and
+                // bounced the user back to /pos, landing them on the
+                // same gate error screen.
+                try {
+                  await logout();
+                } catch {
+                  /* ignore — we'll still clear caches + redirect */
+                }
                 sessionStorage.clear();
-                window.location.href = '/login';
+                try {
+                  localStorage.removeItem('currencySymbol');
+                  localStorage.removeItem('currency');
+                } catch {
+                  /* ignore */
+                }
+                // Use location.replace so the gate error screen
+                // doesn't sit in browser history.
+                window.location.replace('/login');
               }}
               className="flex-1"
             >
