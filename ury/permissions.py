@@ -62,6 +62,11 @@ READ_ONLY_DOCTYPES = [
     "Company",
     "Customer Group",
     "Territory",
+    # Shift system (added 2026-04-14). Cashiers need read access to
+    # see their own assigned shift in the React POS banner. Captains
+    # and Managers get write access via the captain extras list below.
+    "URY Shift",
+    "URY Shift Assignment",
 ]
 
 # Doctypes the POS creates / updates / submits. Each entry includes the
@@ -143,6 +148,17 @@ CAPTAIN_EXTRA_WRITE_DOCTYPES: list[tuple[str, dict]] = [
     (
         "POS Invoice",
         {"cancel": 1},
+    ),
+    # Shift system: captains can create / edit shift templates AND
+    # assign them to cashiers. Cashiers stay read-only on both
+    # doctypes (they only see their own shift in the banner).
+    (
+        "URY Shift",
+        {"read": 1, "write": 1, "create": 1, "select": 1, "report": 1},
+    ),
+    (
+        "URY Shift Assignment",
+        {"read": 1, "write": 1, "create": 1, "select": 1, "report": 1},
     ),
 ]
 

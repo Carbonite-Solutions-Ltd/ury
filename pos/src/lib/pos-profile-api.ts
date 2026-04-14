@@ -38,6 +38,14 @@ export interface PosProfileLimited {
   custom_ihotel_enabled?: number;
   /** Default Charge Type written onto the iHotel Profile's folio row. */
   custom_ihotel_charge_type?: string | null;
+  /**
+   * Shift system mode. "Disabled" falls back to the legacy
+   * `custom_shift_hours` reminder. "URY Shift" uses URY Shift
+   * Assignment + URY Shift records. "HRMS Shift Type" uses ERPNext
+   * HRMS Shift Type + Shift Assignment via Employee. See CLAUDE.md
+   * "Fixes log" 2026-04-14.
+   */
+  custom_shift_system_mode?: 'Disabled' | 'URY Shift' | 'HRMS Shift Type';
 }
 
 export interface PosProfileLimitedResponse {
@@ -128,6 +136,7 @@ export interface PosProfileCombined extends PosProfileFull {
   custom_restrict_returns_to_captain?: number;
   custom_ihotel_enabled?: number;
   custom_ihotel_charge_type?: string | null;
+  custom_shift_system_mode?: 'Disabled' | 'URY Shift' | 'HRMS Shift Type';
 }
 
 export interface Currency {
@@ -208,6 +217,7 @@ export async function getCombinedPosProfile(
       limitedProfile.custom_restrict_returns_to_captain,
     custom_ihotel_enabled: limitedProfile.custom_ihotel_enabled,
     custom_ihotel_charge_type: limitedProfile.custom_ihotel_charge_type,
+    custom_shift_system_mode: limitedProfile.custom_shift_system_mode,
   };
 
   return combinedProfile;

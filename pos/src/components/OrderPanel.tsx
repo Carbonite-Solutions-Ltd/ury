@@ -237,7 +237,7 @@ const OrderPanel = () => {
     isOrderInteractionDisabled() || isSubmitting || shiftBlocked;
 
   return (
-    <div className="w-96 bg-white border-l border-gray-200 flex flex-col h-[calc(100vh-4rem)] fixed right-0 z-10">
+    <div className="w-96 bg-white border-l border-gray-200 flex flex-col h-full shrink-0 z-10">
       <div className="p-4 border-b border-gray-200 flex-shrink-0">
         <OrderTypeSelect disabled={isInteractionDisabled} />
         <div className="mt-3"><CustomerSelect disabled={isInteractionDisabled} /></div>

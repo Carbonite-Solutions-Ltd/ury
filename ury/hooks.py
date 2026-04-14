@@ -18,8 +18,8 @@ app_include_js = [
     "/assets/ury/js/quick_entry.js",
     "/assets/ury/js/pos_print.js",
     "/assets/ury/js/restrict_qty_edit_pos.js",
-    "/assets/ury/js/ury_pos_kot.js"
-    
+    "/assets/ury/js/ury_pos_kot.js",
+    "/assets/ury/js/cashier_desk_redirect.js",
 ]
 
 # include js, css files in header of web template
@@ -319,6 +319,7 @@ fixtures = [
                     "POS Profile-restaurant_prefix",
                     "POS Profile-show_image",
                     "POS Profile-custom_daily_pos_close",
+                    "POS Profile-custom_shift_system_mode",
                     "POS Profile-custom_shift_hours",
                     "POS Profile-custom_block_orders_after_shift_end",
                     "POS Profile-custom_restrict_merge_to_captain",
