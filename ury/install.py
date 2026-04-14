@@ -19,6 +19,7 @@ def after_install():
     # fail we want it loud, not silent. Each function is idempotent.
     ensure_pos_settings_configured()
     _safe_ensure_role_permissions()
+    _check_cups_dependency()
 
 
 def after_migrate():
@@ -27,6 +28,7 @@ def after_migrate():
     "Fixes log" 2026-04-08 / 2026-04-09 for context."""
     ensure_pos_settings_configured()
     _safe_ensure_role_permissions()
+    _check_cups_dependency()
 
 
 def _safe_ensure_role_permissions():
@@ -79,3 +81,114 @@ def ensure_pos_settings_configured():
             f"to 'POS Invoice' manually.",
             fg="red",
         )
+
+
+def _check_cups_dependency():
+    """Verify that the `pycups` Python package can be imported, and if
+    not, print a multi-line yellow warning with platform-aware install
+    commands.
+
+    Why this exists:
+      - URY's print system uses CUPS (via `pycups`) for the CUPS Direct
+        print mode AND for Frappe's built-in `Network Printer Settings.
+        get_printers_list` whitelisted method (the "Get Printers List"
+        button on the Network Printer Settings form).
+      - `pycups` is a C extension that links against `libcups2`. The
+        OS-level package (`libcups2-dev` on Debian/Ubuntu, `cups-devel`
+        on RHEL/Fedora, `libcups` on Arch) MUST be installed BEFORE
+        `pip install pycups` can build the binding.
+      - If the OS package is missing, `bench install-app ury` fails on
+        the pip step with a confusing "fatal error: cups/cups.h: No
+        such file or directory". Even if pip succeeds at install time,
+        a later container rebuild can leave pycups installed but
+        unable to load (libcups2 missing at runtime).
+      - This check runs after every install + migrate so a missing
+        dep is loud + actionable, with the EXACT commands the admin
+        needs to run, instead of waiting for the cashier to hit the
+        "Get Printers List" error months later.
+
+    Behavior:
+      - Import succeeds: print one green line confirming.
+      - Import fails: print a multi-line yellow warning with the apt /
+        dnf / pacman commands AND the bench command to retry the
+        Python install. Does NOT crash install/migrate — the rest of
+        URY works fine without CUPS, the only impact is the printer
+        list lookup button. Admins who don't use CUPS Direct mode
+        (i.e. they use QZ Tray) can ignore this warning.
+
+    See CLAUDE.md "Fixes log" 2026-04-16 (print revamp Round 1).
+    """
+    import platform
+
+    try:
+        import cups  # noqa: F401
+        click.secho(
+            "[URY] CUPS Python bindings (pycups) detected — Network Printer "
+            "Settings 'Get Printers List' will work.",
+            fg="green",
+        )
+        return
+    except ImportError:
+        pass
+    except Exception as e:
+        # pycups is installed but can't load (usually libcups2 missing
+        # at runtime). Same fix as the missing-import case.
+        click.secho(
+            f"[URY] pycups installed but can't load: {e}. "
+            f"This usually means libcups2 is missing at runtime.",
+            fg="yellow",
+        )
+
+    # Build a platform-aware install hint. We can't just call apt-get
+    # ourselves — the install hook runs as the bench user, not root.
+    system = platform.system().lower()
+    distro = ""
+    try:
+        # /etc/os-release is the standard way to detect Linux distro.
+        with open("/etc/os-release", "r") as f:
+            for line in f:
+                if line.startswith("ID="):
+                    distro = line.split("=", 1)[1].strip().strip('"').lower()
+                    break
+    except Exception:
+        pass
+
+    if distro in ("ubuntu", "debian", "raspbian", "linuxmint"):
+        os_install = "sudo apt-get install -y libcups2-dev"
+    elif distro in ("rhel", "centos", "fedora", "rocky", "almalinux"):
+        os_install = "sudo dnf install -y cups-devel"
+    elif distro in ("arch", "manjaro"):
+        os_install = "sudo pacman -S libcups"
+    elif system == "darwin":
+        os_install = "brew install cups   # then `pip install pycups`"
+    else:
+        os_install = (
+            "<your distro's libcups2-dev / cups-devel / libcups package>"
+        )
+
+    bench_root_hint = (
+        "From your bench root (the directory containing the `apps/`, "
+        "`sites/` and `env/` directories):"
+    )
+
+    click.secho(
+        "\n" + "=" * 72 + "\n"
+        "[URY] WARNING: pycups (CUPS Python bindings) is missing.\n"
+        "=" * 72 + "\n\n"
+        "Effect: the Network Printer Settings 'Get Printers List' button\n"
+        "and URY's CUPS Direct print mode will not work. URY's QZ Tray\n"
+        "print mode (the cloud-hosted default) is unaffected — you can\n"
+        "ignore this warning if you're using QZ Tray.\n\n"
+        "To enable CUPS-based printing, run these commands as a user\n"
+        "with sudo access:\n\n"
+        f"  1. Install the OS-level CUPS development headers:\n"
+        f"     {os_install}\n\n"
+        f"  2. {bench_root_hint}\n"
+        f"     ./env/bin/pip install pycups\n\n"
+        f"  3. Restart bench so the new module is picked up:\n"
+        f"     bench restart\n\n"
+        "Alternatively, run `bench setup requirements --python` from\n"
+        "your bench root to retry the full Python dependency install.\n"
+        + "=" * 72 + "\n",
+        fg="yellow",
+    )

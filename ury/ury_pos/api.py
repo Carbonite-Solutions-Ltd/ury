@@ -944,6 +944,19 @@ def getPosProfile(terminal=None):
         ihotel_enabled = int(pos_profiles.get("custom_ihotel_enabled") or 0)
         ihotel_charge_type = pos_profiles.get("custom_ihotel_charge_type") or None
         shift_system_mode = pos_profiles.get("custom_shift_system_mode") or "Disabled"
+        # Unified print routing (2026-04-16). Expose the new fields
+        # so the React POS knows which print path to drive. The
+        # resolver / routing logic all lives on the backend — the
+        # frontend only needs the mode to pick QZ vs CUPS vs Disabled.
+        print_mode = pos_profiles.get("custom_print_mode") or None
+        bill_printer = pos_profiles.get("custom_bill_printer") or None
+        kitchen_kot_printer = pos_profiles.get("custom_kitchen_kot_printer") or None
+        bar_kot_printer = pos_profiles.get("custom_bar_kot_printer") or None
+        parcel_kot_printer = pos_profiles.get("custom_parcel_kot_printer") or None
+        drinks_kot_route = pos_profiles.get("custom_drinks_kot_route") or None
+        food_kot_route = pos_profiles.get("custom_food_kot_route") or None
+        takeaway_kot_route = pos_profiles.get("custom_takeaway_kot_route") or None
+        print_fallback_mode = pos_profiles.get("custom_print_fallback_mode") or None
         # Per-terminal scoping makes the cashier/owner resolution trivial:
         # whoever is logged into the React POS right now IS the cashier
         # and the owner. The old code did a SQL join through Multiple
@@ -1001,6 +1014,19 @@ def getPosProfile(terminal=None):
         "custom_ihotel_enabled": ihotel_enabled,
         "custom_ihotel_charge_type": ihotel_charge_type,
         "custom_shift_system_mode": shift_system_mode,
+        # Unified print routing (2026-04-16). The frontend reads
+        # `custom_print_mode` to decide QZ vs CUPS vs Disabled. All
+        # the routing (Food/Drinks/Takeaway -> which printer) is
+        # resolved server-side in ury_print.resolve_kot_print_plan.
+        "custom_print_mode": print_mode,
+        "custom_bill_printer": bill_printer,
+        "custom_kitchen_kot_printer": kitchen_kot_printer,
+        "custom_bar_kot_printer": bar_kot_printer,
+        "custom_parcel_kot_printer": parcel_kot_printer,
+        "custom_drinks_kot_route": drinks_kot_route,
+        "custom_food_kot_route": food_kot_route,
+        "custom_takeaway_kot_route": takeaway_kot_route,
+        "custom_print_fallback_mode": print_fallback_mode,
         # Echo the caller's terminal back so the frontend store has a
         # single source of truth for "which terminal resolved this profile".
         "terminal": terminal or None,

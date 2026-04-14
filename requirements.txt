@@ -1,2 +1,16 @@
 # frappe -- https://github.com/frappe/frappe is installed via 'bench init'
-# Node version minimum 18.18.0 
+# Node version minimum 18.18.0
+
+# CUPS Python bindings — required for the Network Printer Settings
+# "Get Printers List" button and for URY's CUPS Direct print mode.
+# Note: this is a C extension that links against libcups2 — the OS
+# package `libcups2-dev` (Debian/Ubuntu) or `cups-devel` (RHEL/Fedora)
+# MUST be installed BEFORE pip can build pycups. If `bench install-app ury`
+# fails on this line, run:
+#     sudo apt-get install -y libcups2-dev          (Debian/Ubuntu)
+#     sudo dnf install -y cups-devel                (RHEL/Fedora)
+#     sudo pacman -S libcups                        (Arch)
+# then retry `bench setup requirements --python` to rebuild URY's deps.
+# URY's after_install / after_migrate hooks also surface this with
+# clearer messaging — see ury/install.py:_check_cups_dependency.
+pycups>=2.0.1
