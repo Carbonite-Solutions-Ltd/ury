@@ -24,4 +24,7 @@ URY Printer Settings, ExPOS Printer Expenses,
 URY Production Item Groups, ExPOS Production Item Groups,
 URY KOT Error Log, ExPOS KOT Error Log,
 URY Cost Of Goods, ExPOS Cost Of Goods
-URY Setup, ExPos Setup 
+URY Setup, ExPos Setup
+URY Shift, ExPOS Shift,
+URY Shift Assignment, ExPOS Shift Assignment,
+URY Shift Day, ExPOS Shift Day,

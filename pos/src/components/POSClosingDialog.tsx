@@ -23,6 +23,8 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   DoorClosed,
   Loader2,
   UserPlus,
@@ -323,6 +325,11 @@ const FormBody = ({
   onTransferToChange,
   onUpdateRow,
 }: FormBodyProps) => {
+  // Drafts list is collapsed by default — the full table can be very
+  // crowded when a shift has many unpaid orders. Cashier can still pick
+  // a transfer target without expanding (the dropdown stays visible).
+  const [draftsExpanded, setDraftsExpanded] = useState(false);
+
   const totalDifference = useMemo(
     () =>
       rows.reduce(
@@ -350,54 +357,71 @@ const FormBody = ({
       {/* Unpaid drafts — block the close until they're transferred. */}
       {preview.draft_count > 0 && (
         <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4">
-          <div className="flex items-start gap-3 mb-3">
+          <button
+            type="button"
+            onClick={() => setDraftsExpanded((v) => !v)}
+            className="w-full flex items-start gap-3 mb-3 text-left group"
+            aria-expanded={draftsExpanded}
+          >
             <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-semibold text-amber-900">
+              <div className="text-sm font-semibold text-amber-900 flex items-center gap-1.5">
                 {preview.draft_count} unpaid{' '}
                 {preview.draft_count === 1 ? 'order' : 'orders'} blocking close
+                {draftsExpanded ? (
+                  <ChevronDown className="w-4 h-4 text-amber-700 transition-transform" />
+                ) : (
+                  <ChevronRight className="w-4 h-4 text-amber-700 transition-transform" />
+                )}
               </div>
               <div className="text-xs text-amber-800 mt-0.5">
                 Total: {formatCurrency(preview.draft_grand_total)}. Pick a
                 cashier below — the orders will be reassigned to them and
                 appear in their Orders list on next reload.
+                {!draftsExpanded && (
+                  <span className="ml-1 text-amber-700 font-medium group-hover:underline">
+                    Show details
+                  </span>
+                )}
               </div>
             </div>
-          </div>
+          </button>
 
-          <div className="rounded-md border border-amber-200 bg-white overflow-hidden mb-3">
-            <div className="max-h-[140px] overflow-y-auto">
-              <table className="w-full text-xs">
-                <thead className="bg-amber-100/60 text-amber-900">
-                  <tr>
-                    <th className="text-left px-3 py-2 font-semibold">Order</th>
-                    <th className="text-left px-3 py-2 font-semibold">Customer</th>
-                    <th className="text-right px-3 py-2 font-semibold">Total</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-amber-100">
-                  {preview.draft_invoices.map((row) => (
-                    <tr key={row.name}>
-                      <td className="px-3 py-2 font-mono text-gray-700">
-                        {row.name}
-                      </td>
-                      <td className="px-3 py-2 text-gray-700 truncate max-w-[220px]">
-                        {row.customer_name || row.customer || '—'}
-                        {row.restaurant_table && (
-                          <span className="text-gray-400">
-                            {' · '}Table {row.restaurant_table}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-right text-gray-900 tabular-nums font-semibold">
-                        {formatCurrency(row.grand_total)}
-                      </td>
+          {draftsExpanded && (
+            <div className="rounded-md border border-amber-200 bg-white overflow-hidden mb-3">
+              <div className="max-h-[220px] overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-amber-100/60 text-amber-900 sticky top-0">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-semibold">Order</th>
+                      <th className="text-left px-3 py-2 font-semibold">Customer</th>
+                      <th className="text-right px-3 py-2 font-semibold">Total</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-amber-100">
+                    {preview.draft_invoices.map((row) => (
+                      <tr key={row.name}>
+                        <td className="px-3 py-2 font-mono text-gray-700">
+                          {row.name}
+                        </td>
+                        <td className="px-3 py-2 text-gray-700 truncate max-w-[220px]">
+                          {row.customer_name || row.customer || '—'}
+                          {row.restaurant_table && (
+                            <span className="text-gray-400">
+                              {' · '}Table {row.restaurant_table}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-right text-gray-900 tabular-nums font-semibold">
+                          {formatCurrency(row.grand_total)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="flex items-center gap-3">
             <UserPlus className="w-4 h-4 text-amber-700 shrink-0" />

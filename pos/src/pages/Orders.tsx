@@ -360,7 +360,7 @@ export default function Orders() {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-full overflow-hidden">
       {/* Left Sidebar - Order Types */}
       <OrderStatusSidebar
         selectedStatus={selectedStatus}
@@ -368,7 +368,7 @@ export default function Orders() {
       />
 
       {/* Middle Section - Order list / cards */}
-      <div className="flex-1 flex flex-col h-screen overflow-hidden pr-96">
+      <div className="flex-1 flex flex-col h-full overflow-hidden min-w-0">
         {/* Top toolbar — switches into a merge bar when merge mode is on */}
         {mergeMode ? (
           <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center justify-between shrink-0">
@@ -773,7 +773,7 @@ export default function Orders() {
       </div>
 
       {/* Right Section - Order Details */}
-      <div className="w-96 bg-white border-l border-gray-200 flex flex-col h-[calc(100vh-4rem)] fixed right-0 z-10">
+      <div className="w-96 bg-white border-l border-gray-200 flex flex-col h-full shrink-0 z-10">
         {!selectedOrder ? (
           <div className="text-center h-full flex flex-col items-center justify-center text-gray-500 p-6">
             <p className="text-lg font-medium mb-2">Select an order to view details</p>

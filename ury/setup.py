@@ -366,18 +366,28 @@ def get_custom_fields():
 				"label": "QZ Host",
 				"translatable": 0,
 			},
-			# Shift hours fields. Same dual-source-of-truth fix —
-			# in custom_field.json AND here so existing sites pick
+			# Shift hours / shift system fields. Same dual-source-of-truth
+			# fix — in custom_field.json AND here so existing sites pick
 			# them up via after_migrate. See CLAUDE.md "Fixes log"
-			# 2026-04-09.
+			# 2026-04-09 + 2026-04-14 (URY Shift system added).
+			{
+				"fieldname": "custom_shift_system_mode",
+				"fieldtype": "Select",
+				"insert_after": "qz_host",
+				"label": "Shift System Mode",
+				"default": "Disabled",
+				"options": "Disabled\nURY Shift\nHRMS Shift Type",
+				"description": "How to gate POS Opening Entry creation. \"Disabled\" falls back to the legacy Shift Length (Hours) reminder. \"URY Shift\" uses URY Shift Assignment + URY Shift records to enforce a per-user start/end window. \"HRMS Shift Type\" uses ERPNext HRMS Shift Type + Shift Assignment via the Employee linked to the user (requires hrms app installed).",
+			},
 			{
 				"fieldname": "custom_shift_hours",
 				"fieldtype": "Int",
-				"insert_after": "qz_host",
+				"insert_after": "custom_shift_system_mode",
 				"label": "Shift Length (Hours)",
 				"default": "0",
 				"non_negative": 1,
-				"description": "Length of a single shift in hours. After this many hours have elapsed since the POS Opening Entry was created, the React POS shows a banner reminding the cashier to close the shift. Set to 0 to disable.",
+				"depends_on": "eval:!doc.custom_shift_system_mode || doc.custom_shift_system_mode == 'Disabled'",
+				"description": "Legacy mode only. Length of a single shift in hours. Hidden when Shift System Mode is set to URY Shift or HRMS Shift Type.",
 			},
 			{
 				"fieldname": "custom_block_orders_after_shift_end",
@@ -385,7 +395,7 @@ def get_custom_fields():
 				"insert_after": "custom_shift_hours",
 				"label": "Block Orders After Shift End",
 				"default": "0",
-				"depends_on": "eval:doc.custom_shift_hours > 0",
+				"depends_on": "eval:(doc.custom_shift_hours > 0) && (!doc.custom_shift_system_mode || doc.custom_shift_system_mode == 'Disabled')",
 				"description": "When the shift length is exceeded, also block new orders until the cashier closes the shift.",
 			},
 			# Restrict the merge-orders button to captains only. When

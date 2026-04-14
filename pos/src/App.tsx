@@ -8,6 +8,7 @@ import Reports from './pages/Reports';
 import Notifications from './pages/Notifications';
 import AuthGuard from './components/AuthGuard';
 import POSOpeningProvider from './components/POSOpeningProvider';
+import ShiftHoursBanner from './components/ShiftHoursBanner';
 import ScreenSizeProvider from './components/ScreenSizeProvider';
 import { ToastProvider } from './components/ui/toast';
 import { usePOSStore } from './store/pos-store';
@@ -277,6 +278,13 @@ function App() {
           <POSOpeningProvider>
             <Router basename="/pos">
               <div className="flex flex-col h-screen bg-gray-100 font-inter">
+                {/* Shift banner sits inside the flex column so it
+                    takes its natural height and the rest of the
+                    layout shrinks to fit. Mounting it at the
+                    POSOpeningProvider level used to drop it
+                    OUTSIDE the h-screen container, pushing the
+                    Footer below the viewport. */}
+                <ShiftHoursBanner />
                 <Header />
                 <div className="flex-1 overflow-hidden">
                   <Routes>

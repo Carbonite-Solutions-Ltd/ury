@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Clock, RefreshCw } from 'lucide-react';
 import {
   checkPOSOpening,
   getCurrentPosOpenEntry,
   validatePOSClose,
 } from '../lib/pos-opening-api';
 import { usePOSStore } from '../store/pos-store';
+import { extractFrappeServerError } from '../lib/utils';
 import POSOpeningDialog from './POSOpeningDialog';
 import POSClosingDialog from './POSClosingDialog';
-import ShiftHoursBanner from './ShiftHoursBanner';
+import { Button } from './ui/button';
 
 interface POSOpeningProviderProps {
   children: React.ReactNode;
@@ -43,17 +44,46 @@ const POSOpeningProvider = ({ children }: POSOpeningProviderProps) => {
     name: string;
     startDate: string;
   } | null>(null);
+  // Backend `posOpening` errors (typically the URY Shift gate rejecting
+  // the open). Surfaced as a dedicated red screen instead of falling
+  // through to the opening dialog — otherwise the cashier sees the
+  // dialog and the error never reaches them. See CLAUDE.md "Fixes log".
+  const [gateError, setGateError] = useState<{
+    title: string;
+    message: string;
+  } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const { posProfile, terminalName } = usePOSStore();
 
   const checkPOSStatus = async () => {
+    setGateError(null);
     try {
       setIsLoading(true);
 
       // Pass the registered terminal so the backend scopes the
       // open-check to (terminal, [user]) instead of just branch. See
       // CLAUDE.md "Fixes log" 2026-04-08.
-      const openingResponse = await checkPOSOpening(terminalName);
+      let openingResponse;
+      try {
+        openingResponse = await checkPOSOpening(terminalName);
+      } catch (err) {
+        // The backend's URY Shift gate throws here when the cashier
+        // is outside their assigned shift window or has no shift
+        // assigned today. Surface the parsed error directly to the
+        // user instead of swallowing it and falling through to the
+        // opening dialog (the old behavior masked the gate entirely).
+        const parsed = extractFrappeServerError(
+          err,
+          'Failed to check POS opening status.'
+        );
+        setGateError({
+          title: parsed.title || 'Cannot Open POS',
+          message: parsed.message,
+        });
+        setValidation({ type: null, unclosedEntry: null });
+        setOutdatedEntry(null);
+        return;
+      }
       if (openingResponse.message === 1) {
         setValidation({ type: 'opening', unclosedEntry: null });
         setOutdatedEntry(null);
@@ -151,6 +181,49 @@ const POSOpeningProvider = ({ children }: POSOpeningProviderProps) => {
     );
   }
 
+  // Backend gate rejection (URY Shift system, no shift assigned, etc.)
+  // Renders before the opening dialog so the cashier sees the real
+  // reason and can either wait + retry or sign out.
+  if (gateError) {
+    return (
+      <div className="fixed inset-0 bg-gray-50 flex items-center justify-center px-4 z-40">
+        <div className="bg-white rounded-xl shadow-2xl p-8 max-w-md w-full">
+          <div className="flex justify-center mb-4">
+            <div className="flex items-center justify-center h-14 w-14 rounded-full bg-red-100">
+              <Clock className="h-7 w-7 text-red-600" />
+            </div>
+          </div>
+          <h2 className="text-xl font-bold text-gray-900 text-center mb-2">
+            {gateError.title}
+          </h2>
+          <p className="text-sm text-gray-600 text-center mb-6 whitespace-pre-line">
+            {gateError.message}
+          </p>
+          <div className="flex gap-3">
+            <Button
+              onClick={() => checkPOSStatus()}
+              className="flex-1 bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Try Again
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                // Soft sign-out: clear caches + reload to /login.
+                sessionStorage.clear();
+                window.location.href = '/login';
+              }}
+              className="flex-1"
+            >
+              Sign Out
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (validation.type) {
     // After a successful open inside the dialog we do a full reload so the
     // menu items, categories, payment modes and POS profile all refetch
@@ -202,12 +275,11 @@ const POSOpeningProvider = ({ children }: POSOpeningProviderProps) => {
     );
   }
 
-  return (
-    <>
-      <ShiftHoursBanner />
-      {children}
-    </>
-  );
+  // The ShiftHoursBanner is mounted by App.tsx INSIDE the h-screen
+  // flex column so it participates in the flex layout — putting it
+  // here would make it a sibling of the h-screen container, which
+  // pushes the Footer below the viewport.
+  return <>{children}</>;
 };
 
 export default POSOpeningProvider;

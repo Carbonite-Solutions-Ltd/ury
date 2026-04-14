@@ -6,6 +6,7 @@ from frappe.utils import now
 def validate(doc, method):
     set_cashier_room(doc, method)
     validate_terminal_branch(doc, method)
+    enforce_shift_gate(doc, method)
 
 
 def before_save(doc, method):
@@ -75,3 +76,37 @@ def validate_terminal_branch(doc, method):
             ).format(doc.custom_terminal, terminal_branch, doc.branch),
             title=_("Branch Mismatch"),
         )
+
+
+def enforce_shift_gate(doc, method):
+    """Server-side enforcement of the URY Shift / HRMS Shift system
+    gate. Fires on POS Opening Entry validate so the gate catches
+    BOTH the React POS path (`db.createDoc('POS Opening Entry', ...)`
+    via the REST resource endpoint) AND any other creation path
+    (manual desk insert, future scripts, bench execute).
+
+    Why this can't live solely in `posOpening()`: that whitelisted
+    method only runs as the "should we show the dialog?" check. The
+    actual entry creation goes through Frappe's REST resource which
+    bypasses our whitelisted method entirely. Without this hook the
+    gate is purely cosmetic — the dialog never appears OR the cashier
+    just submits the form and the entry gets created anyway.
+
+    Bypass: Administrator + System Manager always pass. Profiles with
+    Shift System Mode = Disabled also pass (legacy `custom_shift_hours`
+    behavior). Otherwise we resolve the active shift for the SESSION
+    user (not `doc.user`, so an admin creating an entry for a cashier
+    via the desk doesn't get blocked).
+
+    See CLAUDE.md "Fixes log" 2026-04-14.
+    """
+    # Only run on freshly-inserted entries. Editing an existing entry
+    # (e.g. an admin tweaking notes) shouldn't re-fire the gate.
+    if not doc.get("__islocal"):
+        return
+
+    # Lazy import to keep the cycle from `ury_pos.api` ↔ this module
+    # at startup time.
+    from ury.ury_pos.api import _enforce_shift_gate_for_open
+
+    _enforce_shift_gate_for_open(terminal=doc.get("custom_terminal"))

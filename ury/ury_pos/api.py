@@ -943,6 +943,7 @@ def getPosProfile(terminal=None):
         )
         ihotel_enabled = int(pos_profiles.get("custom_ihotel_enabled") or 0)
         ihotel_charge_type = pos_profiles.get("custom_ihotel_charge_type") or None
+        shift_system_mode = pos_profiles.get("custom_shift_system_mode") or "Disabled"
         # Per-terminal scoping makes the cashier/owner resolution trivial:
         # whoever is logged into the React POS right now IS the cashier
         # and the owner. The old code did a SQL join through Multiple
@@ -999,6 +1000,7 @@ def getPosProfile(terminal=None):
         "custom_restrict_returns_to_captain": restrict_returns_to_captain,
         "custom_ihotel_enabled": ihotel_enabled,
         "custom_ihotel_charge_type": ihotel_charge_type,
+        "custom_shift_system_mode": shift_system_mode,
         # Echo the caller's terminal back so the frontend store has a
         # single source of truth for "which terminal resolved this profile".
         "terminal": terminal or None,
@@ -1097,7 +1099,17 @@ def posOpening(terminal=None):
         filters=filters,
         limit=1,
     )
-    return 0 if pos_opening_list else 1
+    needs_open = 0 if pos_opening_list else 1
+
+    # If the cashier needs to open AND the profile uses the shift
+    # system, gate the open against the assigned shift. Throws a clean
+    # error when outside the window so the React POS opening dialog
+    # surfaces it via the existing extractFrappeServerError path.
+    # See CLAUDE.md "Fixes log" 2026-04-14.
+    if needs_open:
+        _enforce_shift_gate_for_open(terminal=terminal)
+
+    return needs_open
 
 
 @frappe.whitelist()
@@ -4444,4 +4456,638 @@ def charge_invoice_to_room(invoice, hotel_room):
         "folio_charge_row": folio_charge_row,
         "amount": amount,
     }
+
+
+# ---------------------------------------------------------------------
+# URY Shift system (added 2026-04-14)
+# ---------------------------------------------------------------------
+#
+# The shift system gates POS Opening Entry creation against a per-user
+# weekly schedule. Two backends are supported, picked by the POS
+# Profile's `custom_shift_system_mode` field:
+#
+#   - "URY Shift": uses URY-owned `URY Shift` (template) + `URY Shift
+#     Assignment` (User -> Shift with effective dates and weekday
+#     pattern). No HRMS dependency. The recommended default for
+#     restaurant deployments without HR.
+#   - "HRMS Shift Type": uses ERPNext HRMS `Shift Type` + `Shift
+#     Assignment` via the Employee linked to the user. Used when the
+#     site has the hrms app installed and already runs HR scheduling.
+#   - "Disabled": no shift system; POS Opening Entry has no time gate
+#     beyond the existing custom_shift_hours soft reminder.
+#
+# See CLAUDE.md "Fixes log" 2026-04-14.
+
+
+def _shift_system_mode(pos_profile_name):
+    """Read the POS Profile's shift_system_mode field, defaulting to
+    Disabled when the column or value is missing."""
+    if not pos_profile_name:
+        return "Disabled"
+    val = frappe.db.get_value(
+        "POS Profile", pos_profile_name, "custom_shift_system_mode"
+    )
+    return val or "Disabled"
+
+
+def _is_shift_admin(user=None):
+    """Administrator + System Manager always bypass the shift gate so
+    the operator who set the system up can never lock themselves out."""
+    user = user or frappe.session.user
+    if user == "Administrator":
+        return True
+    return "System Manager" in frappe.get_roles(user)
+
+
+_WEEKDAY_NAMES = (
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+)
+
+
+def _now_local():
+    """Site-local now. ERPNext stores time fields in the site's tz."""
+    return frappe.utils.now_datetime()
+
+
+def _seconds_in_window(now_dt, start_seconds, end_seconds):
+    """Return today's elapsed seconds since midnight, as an int."""
+    return now_dt.hour * 3600 + now_dt.minute * 60 + now_dt.second
+
+
+def _time_to_seconds(t):
+    """Convert a Time / timedelta / 'HH:MM:SS' string to seconds."""
+    if t is None:
+        return None
+    if hasattr(t, "total_seconds"):
+        return int(t.total_seconds())
+    if hasattr(t, "hour"):
+        return t.hour * 3600 + t.minute * 60 + (t.second or 0)
+    if isinstance(t, str):
+        parts = t.split(":")
+        if len(parts) >= 2:
+            h = int(parts[0])
+            m = int(parts[1])
+            s = int(parts[2]) if len(parts) > 2 else 0
+            return h * 3600 + m * 60 + s
+    return None
+
+
+def _resolve_active_shift_for_user_ury(user, branch=None, _now_dt=None):
+    """URY backend: find the active URY Shift Assignment for this user
+    right now, with proper cross-midnight handling.
+
+    For each lookup we consider assignments whose weekday matches
+    TODAY AND assignments whose weekday matches YESTERDAY (because a
+    cross-midnight shift assigned to yesterday may still be running
+    into today, e.g. Monday 18:00 \u2192 Tuesday 06:00).
+
+    Internal math uses real ``datetime`` objects anchored to specific
+    days so cross-midnight comparisons just work. The returned
+    ``info`` dict still exposes ``start_seconds`` / ``end_seconds`` /
+    ``open_window_*_seconds`` / ``late_close_seconds`` but those are
+    relative to the ``anchor`` (see below) — the frontend uses them
+    for display via ``_seconds_to_hhmm`` only, so it doesn't notice
+    that "end 06:00" on a cross-midnight shift is actually 06:00
+    the next calendar day.
+
+    Priority: in_window (returned immediately) > live > ended > upcoming.
+
+    See CLAUDE.md "Fixes log" 2026-04-14 + 2026-04-15 (cross-midnight).
+
+    ``_now_dt`` is an internal test hook — when passed, both the
+    "today" anchor and the "now" moment are derived from it so unit
+    tests can freeze time without monkey-patching ``frappe.utils.getdate``.
+    """
+    import datetime
+
+    if _now_dt is not None:
+        today = _now_dt.date()
+    else:
+        today = frappe.utils.getdate()
+    yesterday = today - datetime.timedelta(days=1)
+    weekday_today = _WEEKDAY_NAMES[today.weekday()]
+    weekday_yesterday = _WEEKDAY_NAMES[yesterday.weekday()]
+
+    # Pull all Active assignments matching this user whose effective
+    # range includes either today or yesterday. A yesterday-only
+    # assignment would be filtered out by `effective_from <= today`
+    # if effective_from was yesterday, so we use effective_from <=
+    # today and check effective_to >= yesterday.
+    filters = {
+        "user": user,
+        "status": "Active",
+        "effective_from": ("<=", today),
+    }
+    rows = frappe.get_all(
+        "URY Shift Assignment",
+        filters=filters,
+        fields=["name", "shift", "effective_from", "effective_to", "branch"],
+    )
+
+    # candidates is a list of (assignment_row, candidate_day) tuples.
+    # A single assignment may produce two candidates — one anchored
+    # to today (the shift starts today) and one anchored to yesterday
+    # (the shift started yesterday and may still be running today
+    # via cross-midnight).
+    candidates = []
+    for r in rows:
+        if r.effective_to and r.effective_to < yesterday:
+            continue
+        if branch and r.branch and r.branch != branch:
+            continue
+
+        days = frappe.get_all(
+            "URY Shift Day",
+            filters={"parent": r.name, "parenttype": "URY Shift Assignment"},
+            pluck="day",
+        )
+        empty_days = not days  # empty table = every day
+
+        # Today as the start day.
+        if (empty_days or weekday_today in days) and (
+            not r.effective_to or r.effective_to >= today
+        ) and r.effective_from <= today:
+            candidates.append((r, today))
+
+        # Yesterday as the start day — only useful for cross-midnight
+        # shifts. We still add it here; the inner loop will skip it
+        # when the shift doesn't cross midnight.
+        if (empty_days or weekday_yesterday in days) and (
+            not r.effective_to or r.effective_to >= yesterday
+        ) and r.effective_from <= yesterday:
+            candidates.append((r, yesterday))
+
+    if not candidates:
+        return None
+
+    now = _now_dt if _now_dt is not None else _now_local()
+    if not isinstance(now, datetime.datetime):
+        now = datetime.datetime.now()
+
+    live = None
+    ended = None
+    ended_ends_at = None  # datetime — most recently ended
+    upcoming = None
+    upcoming_starts_at = None  # datetime — soonest upcoming
+
+    for cand, anchor_day in candidates:
+        shift_doc = frappe.get_doc("URY Shift", cand.shift)
+        if shift_doc.disabled:
+            continue
+        start_secs = _time_to_seconds(shift_doc.start_time)
+        end_secs = _time_to_seconds(shift_doc.end_time)
+        if start_secs is None or end_secs is None:
+            continue
+
+        crosses_midnight = end_secs <= start_secs
+
+        # Skip yesterday-anchored candidates that don't cross midnight
+        # — they already ended yesterday and aren't relevant.
+        if anchor_day == yesterday and not crosses_midnight:
+            continue
+
+        before = int(shift_doc.tolerance_minutes_before or 0) * 60
+        after_start = int(shift_doc.tolerance_minutes_after_start or 0) * 60
+        after_end = int(shift_doc.tolerance_minutes_after_end or 0) * 60
+
+        start_dt = datetime.datetime.combine(
+            anchor_day, datetime.time(0, 0)
+        ) + datetime.timedelta(seconds=start_secs)
+
+        if crosses_midnight:
+            end_dt = datetime.datetime.combine(
+                anchor_day + datetime.timedelta(days=1), datetime.time(0, 0)
+            ) + datetime.timedelta(seconds=end_secs)
+        else:
+            end_dt = datetime.datetime.combine(
+                anchor_day, datetime.time(0, 0)
+            ) + datetime.timedelta(seconds=end_secs)
+
+        open_window_start_dt = start_dt - datetime.timedelta(seconds=before)
+        open_window_end_dt = start_dt + datetime.timedelta(seconds=after_start)
+        late_close_dt = end_dt + datetime.timedelta(seconds=after_end)
+
+        info = {
+            "assignment": cand.name,
+            "shift": cand.shift,
+            "shift_name": shift_doc.shift_name,
+            "branch": shift_doc.branch,
+            # Display-only seconds (HH:MM portion). Cross-midnight
+            # end_seconds is the raw time-of-day, NOT offset by 24h,
+            # so the banner shows e.g. "Ended at 06:00" correctly.
+            "start_seconds": start_secs,
+            "end_seconds": end_secs,
+            "open_window_start_seconds": (start_secs - before) % 86400,
+            "open_window_end_seconds": (start_secs + after_start) % 86400,
+            "late_close_seconds": (end_secs + after_end) % 86400,
+            "tolerance_minutes_before": before // 60,
+            "tolerance_minutes_after_start": after_start // 60,
+            "tolerance_minutes_after_end": after_end // 60,
+            "crosses_midnight": 1 if crosses_midnight else 0,
+            "anchor_day": str(anchor_day),
+            # Internal datetime fields — the dispatcher uses them.
+            "_start_dt": start_dt,
+            "_end_dt": end_dt,
+            "_open_window_start_dt": open_window_start_dt,
+            "_open_window_end_dt": open_window_end_dt,
+            "_late_close_dt": late_close_dt,
+        }
+
+        if open_window_start_dt <= now <= open_window_end_dt:
+            return info
+
+        if start_dt <= now <= end_dt:
+            live = info
+            continue
+
+        if now > end_dt:
+            if ended_ends_at is None or end_dt > ended_ends_at:
+                ended = info
+                ended_ends_at = end_dt
+            continue
+
+        if start_dt > now:
+            if upcoming_starts_at is None or start_dt < upcoming_starts_at:
+                upcoming = info
+                upcoming_starts_at = start_dt
+
+    return live or ended or upcoming or None
+
+
+def _resolve_active_shift_for_user_hrms(user, branch=None):
+    """HRMS backend: find an active ERPNext Shift Assignment for the
+    Employee linked to this user. Returns the same dict shape as the
+    URY path (including ``_start_dt`` etc. internal datetime fields)
+    or None when nothing matches / hrms isn't installed.
+
+    Cross-midnight is auto-detected via ``end_time <= start_time``.
+    We consider both today's and yesterday's HRMS Shift Assignments
+    so an overnight shift that began yesterday and runs into today
+    is still recognized.
+    """
+    import datetime
+
+    if not frappe.db.exists("DocType", "Shift Assignment"):
+        return None
+    if not frappe.db.exists("DocType", "Shift Type"):
+        return None
+
+    # Find the employee linked to this user.
+    employee = frappe.db.get_value("Employee", {"user_id": user}, "name")
+    if not employee:
+        return None
+
+    today = frappe.utils.getdate()
+    yesterday = today - datetime.timedelta(days=1)
+    rows = frappe.get_all(
+        "Shift Assignment",
+        filters={
+            "employee": employee,
+            "status": "Active",
+            "docstatus": 1,
+            "start_date": ("<=", today),
+        },
+        fields=["name", "shift_type", "start_date", "end_date"],
+    )
+
+    # Candidates: each (row, anchor_day) pair. HRMS doesn't carry
+    # weekday patterns — the assignment is active every day in its
+    # date range — so we just check both today and yesterday.
+    candidates = []
+    for r in rows:
+        if r.end_date and r.end_date < yesterday:
+            continue
+        if r.start_date <= today:
+            candidates.append((r, today))
+        if r.start_date <= yesterday and (
+            not r.end_date or r.end_date >= yesterday
+        ):
+            candidates.append((r, yesterday))
+
+    if not candidates:
+        return None
+
+    now = _now_local()
+    if not isinstance(now, datetime.datetime):
+        now = datetime.datetime.now()
+
+    live = None
+    ended = None
+    ended_ends_at = None
+    upcoming = None
+    upcoming_starts_at = None
+
+    for cand, anchor_day in candidates:
+        shift_type = frappe.get_doc("Shift Type", cand.shift_type)
+        start_secs = _time_to_seconds(getattr(shift_type, "start_time", None))
+        end_secs = _time_to_seconds(getattr(shift_type, "end_time", None))
+        if start_secs is None or end_secs is None:
+            continue
+
+        crosses_midnight = end_secs <= start_secs
+        if anchor_day == yesterday and not crosses_midnight:
+            continue
+
+        # HRMS Shift Type uses different field names / not all are
+        # present. Map best we can; default to 15 min before / 30
+        # after start / 60 after end.
+        before = (
+            int(getattr(shift_type, "begin_check_in_before_shift_start_time", 15) or 0)
+            * 60
+        )
+        after_end = (
+            int(getattr(shift_type, "allow_check_out_after_shift_end_time", 60) or 0)
+            * 60
+        )
+        after_start = 30 * 60  # not modeled by HRMS; URY default
+
+        start_dt = datetime.datetime.combine(
+            anchor_day, datetime.time(0, 0)
+        ) + datetime.timedelta(seconds=start_secs)
+        if crosses_midnight:
+            end_dt = datetime.datetime.combine(
+                anchor_day + datetime.timedelta(days=1), datetime.time(0, 0)
+            ) + datetime.timedelta(seconds=end_secs)
+        else:
+            end_dt = datetime.datetime.combine(
+                anchor_day, datetime.time(0, 0)
+            ) + datetime.timedelta(seconds=end_secs)
+        open_window_start_dt = start_dt - datetime.timedelta(seconds=before)
+        open_window_end_dt = start_dt + datetime.timedelta(seconds=after_start)
+        late_close_dt = end_dt + datetime.timedelta(seconds=after_end)
+
+        info = {
+            "assignment": cand.name,
+            "shift": cand.shift_type,
+            "shift_name": cand.shift_type,
+            "branch": branch,
+            "start_seconds": start_secs,
+            "end_seconds": end_secs,
+            "open_window_start_seconds": (start_secs - before) % 86400,
+            "open_window_end_seconds": (start_secs + after_start) % 86400,
+            "late_close_seconds": (end_secs + after_end) % 86400,
+            "tolerance_minutes_before": before // 60,
+            "tolerance_minutes_after_start": after_start // 60,
+            "tolerance_minutes_after_end": after_end // 60,
+            "crosses_midnight": 1 if crosses_midnight else 0,
+            "anchor_day": str(anchor_day),
+            "_start_dt": start_dt,
+            "_end_dt": end_dt,
+            "_open_window_start_dt": open_window_start_dt,
+            "_open_window_end_dt": open_window_end_dt,
+            "_late_close_dt": late_close_dt,
+        }
+
+        if open_window_start_dt <= now <= open_window_end_dt:
+            return info
+        if start_dt <= now <= end_dt:
+            live = info
+            continue
+        if now > end_dt:
+            if ended_ends_at is None or end_dt > ended_ends_at:
+                ended = info
+                ended_ends_at = end_dt
+            continue
+        if start_dt > now:
+            if upcoming_starts_at is None or start_dt < upcoming_starts_at:
+                upcoming = info
+                upcoming_starts_at = start_dt
+
+    return live or ended or upcoming or None
+
+
+def _resolve_active_shift_for_user(user, pos_profile_name=None, branch=None):
+    """Top-level resolver. Picks the URY or HRMS backend based on the
+    POS Profile's `custom_shift_system_mode`. Returns a dict (see the
+    backend helpers for the shape) or None when no shift is assigned
+    for this user today.
+    """
+    mode = _shift_system_mode(pos_profile_name)
+    if mode == "URY Shift":
+        return _resolve_active_shift_for_user_ury(user, branch=branch)
+    if mode == "HRMS Shift Type":
+        return _resolve_active_shift_for_user_hrms(user, branch=branch)
+    return None
+
+
+def _seconds_to_hhmm(secs):
+    """Render a seconds-since-midnight value as 'HH:MM' (24h)."""
+    if secs is None:
+        return None
+    secs = int(secs) % (24 * 3600)
+    h = secs // 3600
+    m = (secs % 3600) // 60
+    return f"{h:02d}:{m:02d}"
+
+
+@frappe.whitelist()
+def get_shift_status(terminal=None):
+    """Return the current shift status for the logged-in user on the
+    given terminal. Drives the React POS shift banner + the open-time
+    gate.
+
+    Response shape::
+
+        {
+            "mode": "Disabled" | "URY Shift" | "HRMS Shift Type",
+            "bypass": True/False,         # admin bypass
+            "has_shift": True/False,
+            "shift_name": "Morning Shift" or null,
+            "branch": "Accra" or null,
+            "start_time": "06:00" or null,     # 24h HH:MM
+            "end_time":   "14:00" or null,
+            "now": "10:32",
+            "can_open": True/False,            # POS Opening Entry allowed right now
+            "status": "before_window" | "in_window" | "running" | "after_end" | "outside" | "no_shift" | "disabled" | "bypass",
+            "reason": short string or null,
+        }
+    """
+    user = frappe.session.user
+    pos_profile = None
+    branch = None
+    if terminal:
+        pos_profile = frappe.db.get_value(
+            "URY POS Terminal", terminal, "pos_profile"
+        )
+        branch = frappe.db.get_value(
+            "URY POS Terminal", terminal, "branch"
+        )
+    else:
+        try:
+            branch = getBranch()
+        except Exception:
+            branch = None
+
+    mode = _shift_system_mode(pos_profile)
+    now = _now_local()
+    now_hhmm = f"{now.hour:02d}:{now.minute:02d}"
+
+    if mode == "Disabled":
+        return {
+            "mode": mode,
+            "bypass": False,
+            "has_shift": False,
+            "shift_name": None,
+            "branch": branch,
+            "start_time": None,
+            "end_time": None,
+            "now": now_hhmm,
+            "can_open": True,
+            "status": "disabled",
+            "reason": None,
+        }
+
+    if _is_shift_admin(user):
+        return {
+            "mode": mode,
+            "bypass": True,
+            "has_shift": False,
+            "shift_name": None,
+            "branch": branch,
+            "start_time": None,
+            "end_time": None,
+            "now": now_hhmm,
+            "can_open": True,
+            "status": "bypass",
+            "reason": "Administrator / System Manager bypass",
+        }
+
+    info = _resolve_active_shift_for_user(
+        user, pos_profile_name=pos_profile, branch=branch
+    )
+    if not info:
+        return {
+            "mode": mode,
+            "bypass": False,
+            "has_shift": False,
+            "shift_name": None,
+            "branch": branch,
+            "start_time": None,
+            "end_time": None,
+            "now": now_hhmm,
+            "can_open": False,
+            "status": "no_shift",
+            "reason": _("No shift is assigned to you today."),
+        }
+
+    # Status decisions run off the datetime fields so cross-midnight
+    # shifts work. Display fields (start_time, end_time, reason
+    # strings) still show the raw HH:MM so the banner says
+    # "Ended at 06:00" rather than "Ended at 30:00".
+    start_dt = info.get("_start_dt")
+    end_dt = info.get("_end_dt")
+    open_start_dt = info.get("_open_window_start_dt")
+    open_end_dt = info.get("_open_window_end_dt")
+
+    start_secs = info["start_seconds"]
+    end_secs = info["end_seconds"]
+
+    if open_start_dt and open_end_dt and open_start_dt <= now <= open_end_dt:
+        status = "in_window"
+        can_open = True
+        reason = None
+    elif open_start_dt and now < open_start_dt:
+        status = "before_window"
+        can_open = False
+        reason = _(
+            "Your shift opens at {0}. Come back in a few minutes."
+        ).format(_seconds_to_hhmm(info["open_window_start_seconds"]))
+    elif start_dt and end_dt and start_dt <= now <= end_dt:
+        status = "running"
+        can_open = False  # past the open window — must have opened earlier
+        reason = _(
+            "Your shift open window has passed. Speak to a captain "
+            "to open the POS for you."
+        )
+    elif end_dt and now > end_dt:
+        status = "after_end"
+        can_open = False
+        reason = _(
+            "Your shift ended at {0}. Time to close the POS."
+        ).format(_seconds_to_hhmm(end_secs))
+    else:
+        status = "outside"
+        can_open = False
+        reason = _("Outside your assigned shift window.")
+
+    return {
+        "mode": mode,
+        "bypass": False,
+        "has_shift": True,
+        "shift_name": info["shift_name"],
+        "branch": info["branch"],
+        "start_time": _seconds_to_hhmm(start_secs),
+        "end_time": _seconds_to_hhmm(end_secs),
+        "now": now_hhmm,
+        "can_open": can_open,
+        "status": status,
+        "reason": reason,
+        "tolerance_minutes_before": info["tolerance_minutes_before"],
+        "tolerance_minutes_after_start": info["tolerance_minutes_after_start"],
+        "tolerance_minutes_after_end": info["tolerance_minutes_after_end"],
+        "crosses_midnight": info.get("crosses_midnight", 0),
+    }
+
+
+def _enforce_shift_gate_for_open(terminal=None):
+    """Throw a clean error if the current user can't open the POS
+    Opening Entry right now according to their assigned shift. Called
+    from `posOpening` when shift system mode is enabled. Bypasses for
+    Administrator + System Manager.
+    """
+    user = frappe.session.user
+    if _is_shift_admin(user):
+        return
+
+    pos_profile = None
+    branch = None
+    if terminal:
+        pos_profile = frappe.db.get_value(
+            "URY POS Terminal", terminal, "pos_profile"
+        )
+        branch = frappe.db.get_value(
+            "URY POS Terminal", terminal, "branch"
+        )
+
+    mode = _shift_system_mode(pos_profile)
+    if mode == "Disabled":
+        return
+
+    info = _resolve_active_shift_for_user(
+        user, pos_profile_name=pos_profile, branch=branch
+    )
+    if not info:
+        frappe.throw(
+            _(
+                "No shift is assigned to you today. A captain or manager "
+                "must create a URY Shift Assignment for your user before "
+                "you can open the POS."
+            ),
+            title=_("No Shift Assigned"),
+        )
+
+    now = _now_local()
+    open_start_dt = info.get("_open_window_start_dt")
+    open_end_dt = info.get("_open_window_end_dt")
+    if not (open_start_dt and open_end_dt and open_start_dt <= now <= open_end_dt):
+        frappe.throw(
+            _(
+                "Your shift {0} opens at {1} (window {2}\u2013{3}). "
+                "It's currently {4}. POS Opening Entry can only be "
+                "created inside that window."
+            ).format(
+                info["shift_name"],
+                _seconds_to_hhmm(info["start_seconds"]),
+                _seconds_to_hhmm(info["open_window_start_seconds"]),
+                _seconds_to_hhmm(info["open_window_end_seconds"]),
+                f"{now.hour:02d}:{now.minute:02d}",
+            ),
+            title=_("Outside Shift Window"),
+        )
 
