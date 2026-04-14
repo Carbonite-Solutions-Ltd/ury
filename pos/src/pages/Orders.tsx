@@ -1000,37 +1000,71 @@ export default function Orders() {
             {/* Sticky Bottom Section - Single Row: Print | Payment | Total */}
             <div className="border-t border-gray-200 p-6 bg-gray-50 sticky bottom-0 left-0 right-0 z-10">
               <div className="flex items-center gap-3 w-full">
-                {/* Print Icon Button — hidden after first print for cashiers.
-                    Captains / Managers / Admins can always re-print. */}
-                {(selectedOrder.invoice_printed === 0 || canReprint) && (
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="flex-shrink-0"
-                    onClick={handlePrintOrder}
-                    aria-label="Print"
-                    disabled={isPrinting}
-                  >
-                    {isPrinting ? <Spinner className="w-5 h-5" hideMessage /> : <Printer className="w-5 h-5" />}
-                  </Button>
-                )}
-                {/* Payment Button - Only show for Draft, Unbilled, and Recently Paid orders.
-                    Charged-to-room drafts are excluded — iHotel will post the real
-                    accounting when the guest settles their folio at checkout. */}
+                {/*
+                  Print / Payment layout is driven by `invoice_printed`:
+
+                  - Unprinted (invoice_printed === 0): show ONE
+                    full-width primary "Print Invoice" button. The
+                    Payment button is hidden entirely so cashiers can't
+                    click it and get a "print first" error — they only
+                    see the next valid action. After the print
+                    succeeds, handlePrintOrder updates the selected
+                    order's invoice_printed locally and the layout
+                    flips to the printed case below.
+                  - Printed (invoice_printed === 1): show the Print
+                    icon (only for captains / managers / admins who
+                    can re-print) + the full-width Payment button.
+                    Cashiers just see the Payment button.
+                */}
                 {(selectedOrder.status === 'Draft' || selectedOrder.status === 'Unbilled' || selectedOrder.status === 'Recently Paid') &&
-                 selectedOrder.custom_charge_to_room !== 1 && (
+                 selectedOrder.custom_charge_to_room !== 1 &&
+                 String(selectedOrder.invoice_printed) === '0' ? (
                   <Button
                     className="flex-1"
-                    onClick={() => {
-                      if (String(selectedOrder.invoice_printed) === '0') {
-                        showToast.error('Please print invoice before making payment');
-                        return;
-                      }
-                      setShowPaymentDialog(true);
-                    }}
+                    onClick={handlePrintOrder}
+                    disabled={isPrinting}
                   >
-                    Payment
+                    {isPrinting ? (
+                      <>
+                        <Spinner className="w-5 h-5 mr-2" hideMessage />
+                        Printing…
+                      </>
+                    ) : (
+                      <>
+                        <Printer className="w-5 h-5 mr-2" />
+                        Print Invoice
+                      </>
+                    )}
                   </Button>
+                ) : (
+                  <>
+                    {/* Re-print button — captains / managers / admins only.
+                        Cashiers don't need this after the first print. */}
+                    {canReprint && (
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        className="flex-shrink-0"
+                        onClick={handlePrintOrder}
+                        aria-label="Re-print"
+                        disabled={isPrinting}
+                      >
+                        {isPrinting ? <Spinner className="w-5 h-5" hideMessage /> : <Printer className="w-5 h-5" />}
+                      </Button>
+                    )}
+                    {/* Payment Button. Charged-to-room drafts are
+                        excluded — iHotel posts the real accounting
+                        when the guest settles their folio at checkout. */}
+                    {(selectedOrder.status === 'Draft' || selectedOrder.status === 'Unbilled' || selectedOrder.status === 'Recently Paid') &&
+                     selectedOrder.custom_charge_to_room !== 1 && (
+                      <Button
+                        className="flex-1"
+                        onClick={() => setShowPaymentDialog(true)}
+                      >
+                        Payment
+                      </Button>
+                    )}
+                  </>
                 )}
                 {/* Return Button — only for paid invoices (not drafts, not
                     already-returned docs). Permission-gated via the
