@@ -117,23 +117,41 @@ def process_items_for_kot(
     kot_naming_series,
     kot_type,
 ):
+    """Create KOT docs from a list of items.
+
+    Production Unit routing (2026-04-16 update — now OPTIONAL):
+      - If the branch has URY Production Units configured AND an
+        item's item_group matches one of the production's item_groups,
+        a KOT is created per production with the matched items.
+        (Existing behavior — unchanged for sites that use Production Units.)
+      - Any items left UNMATCHED after the production loop (or ALL
+        items if no production exists at all) get bundled into a
+        SINGLE fallback KOT with `production=None`. The new
+        department-based routing in `ury_print.resolve_kot_print_plan`
+        then splits that KOT by Food/Drinks/Other downstream.
+
+    This removes the old hard requirement that every branch needed
+    a URY Production Unit before KOT creation worked. Sites that
+    rely on Production Unit splitting keep their existing behavior;
+    sites with simpler setups (one kitchen, one bar) no longer need
+    to fake-configure a Production Unit just to get KOTs printing.
+
+    See CLAUDE.md "Fixes log" 2026-04-16 (print revamp Round 1 / KOT
+    setup simplification).
+    """
     kot_items = create_order_items(items)
     pos_profile = frappe.get_doc("POS Profile", pos_profile_id)
     productions = frappe.db.get_all(
-        "URY Production Unit", filters={"branch": pos_profile.branch}, fields=["name"]
+        "URY Production Unit",
+        filters={"branch": pos_profile.branch},
+        fields=["name"],
     )
 
+    # Track which items have already been assigned to a production.
+    # Anything left over at the end becomes a fallback KOT.
+    matched_item_codes = set()
+
     if productions:
-        all_production_item_groups = get_all_production_item_groups(pos_profile.branch)
-        
-        # Iterate through each item and check if item group belongs to a production unit
-        for item in kot_items:
-            item_group = frappe.db.get_value("Item", item["item_code"], "item_group")
-            item_code = item["item_code"]
-            if item_group not in all_production_item_groups:
-                frappe.msgprint(
-                    f"Item group '{item_group}' for item '{item_code}' is not in any production."
-                )
         for production in productions:
             productionItemGroupslist = frappe.get_all(
                 "URY Production Item Groups",
@@ -145,7 +163,7 @@ def process_items_for_kot(
                 order_by="idx",
             )
             productionItemGroups = [
-                item_group.item_group for item_group in productionItemGroupslist
+                row.item_group for row in productionItemGroupslist
             ]
             production_items = [
                 item
@@ -163,23 +181,54 @@ def process_items_for_kot(
                         "production": production.name,
                     },
                 )
-                if invoice_exist:
-                    kot_type = "Order Modified"
+                per_production_kot_type = (
+                    "Order Modified" if invoice_exist else kot_type
+                )
 
                 create_kot_doc(
                     invoice_id,
                     customer,
                     restaurant_table,
                     production_items,
-                    kot_type,
+                    per_production_kot_type,
                     comments,
                     pos_profile_id,
                     kot_naming_series,
                     production.name,
                 )
-    else:
-        frappe.throw(
-            "Create URY Production unit against POS Profile: %s " % pos_profile.name
+                for matched in production_items:
+                    matched_item_codes.add(matched["item_code"])
+
+    # Fallback path: any items not matched to a production unit
+    # (or ALL items if no production exists) get bundled into one
+    # KOT with production=None. The new unified print resolver
+    # handles per-department routing downstream via
+    # ury_print.resolve_kot_print_plan.
+    unmatched_items = [
+        item for item in kot_items if item["item_code"] not in matched_item_codes
+    ]
+    if unmatched_items:
+        invoice_has_fallback_kot = frappe.db.exists(
+            "URY KOT",
+            {
+                "invoice": invoice_id,
+                "docstatus": 1,
+                "production": ["in", [None, ""]],
+            },
+        )
+        fallback_kot_type = (
+            "Order Modified" if invoice_has_fallback_kot else kot_type
+        )
+        create_kot_doc(
+            invoice_id,
+            customer,
+            restaurant_table,
+            unmatched_items,
+            fallback_kot_type,
+            comments,
+            pos_profile_id,
+            kot_naming_series,
+            None,
         )
 
 
