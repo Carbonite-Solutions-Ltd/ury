@@ -273,58 +273,6 @@ def getBranchRoom():
     }]
 
 @frappe.whitelist()
-def getRoom():
-    """Return every ``(branch, room)`` pair the current user is attached to.
-
-    Used by the legacy Vue POS (`ury.ury_pos.api.getRoom`). Administrator
-    falls back to every URY Room in the first configured POS Profile's
-    branch so they can load the legacy POS without a dedicated URY User
-    assignment. See CLAUDE.md "Fixes log" 2026-04-08.
-    """
-    user = frappe.session.user
-
-    if user == "Administrator":
-        profile = frappe.db.get_value(
-            "POS Profile",
-            {"disabled": 0},
-            ["name", "branch"],
-            as_dict=True,
-        )
-        if not profile or not profile.get("branch"):
-            frappe.throw(
-                "Administrator has no default branch and no POS Profile with a branch is configured. "
-                "Create at least one POS Profile linked to a Branch."
-            )
-        rooms = frappe.get_all(
-            "URY Room",
-            filters={"branch": profile.branch},
-            fields=["name"],
-        )
-        return [{"name": r.name, "branch": profile.branch} for r in rooms]
-
-    sql_query = """
-        SELECT b.branch, a.room
-        FROM `tabURY User` AS a
-        INNER JOIN `tabBranch` AS b ON a.parent = b.name
-        WHERE a.user = %s
-    """
-    branch_array = frappe.db.sql(sql_query, user, as_dict=True)
-
-    if not branch_array:
-        frappe.throw(
-            "Your user is not associated with any Branch. "
-            "Ask your administrator to add you to a Branch's URY Users list."
-        )
-
-    return [
-        {
-            "name": row.get("room"),
-            "branch": row.get("branch"),
-        }
-        for row in branch_array
-    ]
-
-@frappe.whitelist()
 def getModeOfPayment():
     posDetails = getPosProfile()
     posProfile = posDetails["pos_profile"]
@@ -336,25 +284,6 @@ def getModeOfPayment():
             {"mode_of_payment": mop.mode_of_payment, "opening_amount": float(0)}
         )
     return modeOfPayments
-
-@frappe.whitelist()
-def getInvoiceForCashier(status, cashier, limit, limit_start):
-    """Legacy endpoint kept only for the Vue POS (`urypos/`). New code
-    should call ``getPosInvoice`` directly with the ``cashier`` arg.
-
-    The Vue POS at `urypos/src/stores/recentOrder.js` is the only
-    remaining caller. The Vue POS sunset per README was Dec 2025; this
-    wrapper goes away once the Vue POS is removed from the tree.
-    See CLAUDE.md "Fixes log" 2026-04-09.
-    """
-    return getPosInvoice(
-        status=status,
-        limit=limit,
-        limit_start=limit_start,
-        cashier=cashier,
-    )
-
-
 
 def _resolve_orders_scope(terminal, cashier):
     """Translate the requested cashier-scope into an SQL `owner` clause.
@@ -755,15 +684,6 @@ def searchPosInvoice(
     
 
 @frappe.whitelist()
-def get_select_field_options():
-    options = frappe.get_meta("POS Invoice").get_field("order_type").options
-    if options:
-        return [{"name": option} for option in options.split("\n")]
-    else:
-        return []
-
-
-@frappe.whitelist()
 def fav_items(customer):
     pos_invoices = frappe.get_all(
         "POS Invoice", filters={"customer": customer}, fields=["name"]
@@ -783,28 +703,6 @@ def fav_items(customer):
         {"item_name": item_name, "qty": qty} for item_name, qty in item_qty.items()
     ]
     return favorite_items
-
-@frappe.whitelist()
-def getCashier(room):
-    branch = getBranch()
-    cashier = None
-    pos_opening_list = frappe.db.sql("""
-        SELECT DISTINCT `tabPOS Opening Entry`.name 
-        FROM `tabPOS Opening Entry`
-        INNER JOIN `tabMultiple Rooms` 
-        ON `tabMultiple Rooms`.parent = `tabPOS Opening Entry`.name
-        WHERE `tabPOS Opening Entry`.branch = %s
-        AND `tabPOS Opening Entry`.status = 'Open'
-        AND `tabPOS Opening Entry`.docstatus = 1
-        AND `tabMultiple Rooms`.room = %s
-    """, (branch, room), as_dict=True)
-    if pos_opening_list:
-        cashier = frappe.db.get_value(
-            "POS Opening Entry",
-            {"name": pos_opening_list[0].name},
-            "user",)
-    return cashier       
-    
 
 @frappe.whitelist()
 def get_session_user_info():
@@ -1949,22 +1847,6 @@ def getAggregatorItem(aggregator):
         if not frappe.db.get_value("Item", item.item_code, "disabled")
     ]
     return aggregatorItemList
-
-@frappe.whitelist()
-def getAggregatorMOP(aggregator):
-    branchName = getBranch()
-    
-    modeOfPayment = frappe.db.get_value(
-        "Aggregator Settings",
-        {"customer": aggregator, "parent": branchName, "parenttype": "Branch"},
-        "mode_of_payments",
-    )
-    modeOfPaymentsList = []
-    modeOfPaymentsList.append(
-            {"mode_of_payment": modeOfPayment, "opening_amount": float(0)}
-    )
-    return modeOfPaymentsList
-
 
 @frappe.whitelist()
 def validate_pos_close(pos_profile, terminal=None):
