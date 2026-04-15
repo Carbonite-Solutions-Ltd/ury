@@ -2032,7 +2032,10 @@ def get_latest_kot():
 
     See CLAUDE.md "Fixes log" 2026-04-16 (print revamp Round 1).
     """
-    from ury.ury.api.ury_print import resolve_kot_print_plan
+    from ury.ury.api.ury_print import (
+        resolve_kot_print_plan,
+        filter_plan_for_auto_print,
+    )
 
     try:
         current_user = frappe.session.user
@@ -2108,6 +2111,16 @@ def get_latest_kot():
                 pos_profile_name=pos_profile,
                 order_type=order_type,
             )
+
+            # Filter out departments that shouldn't auto-print on
+            # order submit. Default: Drinks doesn't auto-print (it's
+            # held until the cashier prints the bill). Admin can
+            # flip `custom_auto_print_drinks_kot` on POS Profile.
+            if plan:
+                pos_profile_doc = frappe.get_cached_doc(
+                    "POS Profile", pos_profile
+                )
+                plan = filter_plan_for_auto_print(plan, pos_profile_doc)
 
             if plan:
                 print_jobs = []

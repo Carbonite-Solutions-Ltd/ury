@@ -33,6 +33,7 @@ from ury.ury.api.ury_print import (
     _resolve_printer_for_department,
     resolve_kot_print_plan,
     apply_print_fallback,
+    filter_plan_for_auto_print,
 )
 
 
@@ -480,3 +481,52 @@ class TestURYPrintRouting(FrappeTestCase):
         entry = {"department": "Drinks", "items": [], "printer": None}
         should_print, printer, header = apply_print_fallback(entry, profile)
         self.assertFalse(should_print)
+
+    # ---------------------------------------------------------------
+    # 6. filter_plan_for_auto_print — drinks held by default
+    # ---------------------------------------------------------------
+
+    def test_auto_print_filter_drops_drinks_by_default(self):
+        """Default `custom_auto_print_drinks_kot=0` → drinks entries
+        are filtered out of the auto-print plan."""
+        profile = self._make_profile_doc(custom_auto_print_drinks_kot=0)
+        plan = [
+            {"department": "Food", "printer": PRINTER_PREFIX + "Kitchen", "items": []},
+            {"department": "Drinks", "printer": PRINTER_PREFIX + "Bar", "items": []},
+            {"department": "Other", "printer": PRINTER_PREFIX + "Kitchen", "items": []},
+        ]
+        filtered = filter_plan_for_auto_print(plan, profile)
+        depts = [e["department"] for e in filtered]
+        self.assertIn("Food", depts)
+        self.assertIn("Other", depts)
+        self.assertNotIn("Drinks", depts)
+
+    def test_auto_print_filter_keeps_drinks_when_enabled(self):
+        """Flipping `custom_auto_print_drinks_kot=1` → all departments
+        fire at order time (typical busy-bar workflow)."""
+        profile = self._make_profile_doc(custom_auto_print_drinks_kot=1)
+        plan = [
+            {"department": "Food", "printer": PRINTER_PREFIX + "Kitchen", "items": []},
+            {"department": "Drinks", "printer": PRINTER_PREFIX + "Bar", "items": []},
+        ]
+        filtered = filter_plan_for_auto_print(plan, profile)
+        self.assertEqual(len(filtered), 2)
+        depts = [e["department"] for e in filtered]
+        self.assertIn("Drinks", depts)
+
+    def test_auto_print_filter_returns_new_list(self):
+        """filter_plan_for_auto_print must NOT mutate the input."""
+        profile = self._make_profile_doc(custom_auto_print_drinks_kot=0)
+        plan = [
+            {"department": "Food", "printer": "X", "items": []},
+            {"department": "Drinks", "printer": "Y", "items": []},
+        ]
+        filtered = filter_plan_for_auto_print(plan, profile)
+        # Original untouched.
+        self.assertEqual(len(plan), 2)
+        # Filtered has only food.
+        self.assertEqual(len(filtered), 1)
+
+    def test_auto_print_filter_empty_plan(self):
+        profile = self._make_profile_doc()
+        self.assertEqual(filter_plan_for_auto_print([], profile), [])

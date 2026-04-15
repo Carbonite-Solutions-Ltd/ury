@@ -389,9 +389,20 @@ def signature_promise():
 @frappe.whitelist()
 def print_kot_on_create(doc, method=None):
     """
-    Auto-print KOT. 
-    If QZ is enabled, publish realtime event for client-side printing.
-    Otherwise use CUPS server-side printing.
+    Legacy `after_insert` hook for URY KOT. Pre-dates the 2026-04-16
+    unified print config.
+
+    **Neutered when the new config is set.** When the POS Profile has
+    `custom_print_mode` set (even to "Disabled"), this hook returns
+    early and lets `URYKOT.multi_print_kot` (the `on_submit` hook
+    rewritten in Round 1) handle printing entirely. Running both
+    hooks on the same KOT caused duplicate CUPS prints because each
+    path uses a different printer resolution strategy but they both
+    talk to the same CUPS server.
+
+    **Legacy mode** (new config unset / null): the old QZ + CUPS
+    dispatch below still runs so sites that haven't migrated yet
+    keep their existing behavior.
     """
     try:
         if isinstance(doc, str):
@@ -400,9 +411,24 @@ def print_kot_on_create(doc, method=None):
         else:
             kot = doc
             kot_name = doc.name
-        
+
         pos_profile = kot.pos_profile
-        
+
+        # Neuter: let the new multi_print_kot path handle it when
+        # the unified config is active. Any non-null value here
+        # means the admin configured the new Printers & Routing
+        # section on POS Profile.
+        new_mode = frappe.db.get_value(
+            "POS Profile", pos_profile, "custom_print_mode"
+        )
+        if new_mode:
+            return {
+                "status": "skipped",
+                "message": (
+                    "New print config active — multi_print_kot handles this KOT"
+                ),
+            }
+
         # 1. CHECK QZ STATUS
         if _get_qz_status(pos_profile):
             # Get printer settings for this POS Profile
@@ -758,6 +784,34 @@ def resolve_kot_print_plan(kot_doc, pos_profile_name, order_type=None):
             }
         )
     return plan
+
+
+def filter_plan_for_auto_print(plan, pos_profile_doc):
+    """Filter a print plan down to only the entries that should
+    AUTO-fire at order submit time.
+
+    Default policy: Food + Other auto-print, Drinks does NOT. Admins
+    can flip `custom_auto_print_drinks_kot` on the POS Profile to
+    enable drinks auto-print (typical for busy bars where the
+    bartender needs the ticket immediately).
+
+    The plan entries for departments that DON'T auto-print are
+    dropped from the list passed to the printer dispatch — the KOT
+    doc itself still contains those items, they just don't get
+    rendered + sent at order time. The cashier's Print Invoice
+    button on the Orders page fires any held KOT parts at payment
+    time (wired via a `print_pending_kots_for_invoice` call).
+
+    Returns a new list; does NOT mutate the input plan.
+
+    See CLAUDE.md "Fixes log" 2026-04-16 (KOT print workflow tuning).
+    """
+    auto_print_drinks = int(
+        pos_profile_doc.get("custom_auto_print_drinks_kot") or 0
+    ) == 1
+    if auto_print_drinks:
+        return list(plan)
+    return [entry for entry in plan if entry.get("department") != _DEPT_DRINKS]
 
 
 def apply_print_fallback(plan_entry, pos_profile_doc):

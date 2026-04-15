@@ -652,6 +652,15 @@ def get_custom_fields():
 				"depends_on": "eval:doc.custom_print_mode != 'Disabled'",
 				"description": "What happens when a KOT's target printer is offline.",
 			},
+			{
+				"fieldname": "custom_auto_print_drinks_kot",
+				"fieldtype": "Check",
+				"insert_after": "custom_print_fallback_mode",
+				"label": "Auto-print Drinks KOT on Order",
+				"default": "0",
+				"depends_on": "eval:doc.custom_print_mode != 'Disabled'",
+				"description": "When off (default), Drinks KOTs are held until the cashier prints the bill at payment time. When on, drinks auto-print at order time like food.",
+			},
 		],
 		"URY Menu Course": [
 			{

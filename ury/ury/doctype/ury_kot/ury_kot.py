@@ -52,9 +52,23 @@ class URYKOT(Document):
         from ury.ury.api.ury_print import (
             resolve_kot_print_plan,
             apply_print_fallback,
+            filter_plan_for_auto_print,
         )
 
         pos_profile = self.pos_profile
+
+        # Skip server-side printing entirely in QZ Tray mode. The
+        # frontend's kot-listener polls `get_latest_kot` and fires
+        # QZ for each plan entry — running server-side CUPS on top
+        # of that causes duplicate prints (and server-side CUPS is
+        # unreachable on cloud-hosted Frappe anyway). CUPS Direct
+        # mode still takes the full path below.
+        print_mode = frappe.db.get_value(
+            "POS Profile", pos_profile, "custom_print_mode"
+        )
+        if print_mode == "QZ Tray":
+            return
+
         order_type = None
         if getattr(self, "invoice", None):
             order_type = frappe.db.get_value(
@@ -68,6 +82,11 @@ class URYKOT(Document):
         # New path: the unified config had `custom_print_mode` set.
         if plan:
             pos_profile_doc = frappe.get_cached_doc("POS Profile", pos_profile)
+            # Auto-print policy: default holds Drinks. Cashier fires
+            # held KOTs at bill-print time via the Print Invoice button.
+            plan = filter_plan_for_auto_print(plan, pos_profile_doc)
+            if not plan:
+                return
             # The print format to use — read from the first row of
             # URY Printer Settings as a compat shim if the new config
             # doesn't carry its own format field (it currently doesn't).
