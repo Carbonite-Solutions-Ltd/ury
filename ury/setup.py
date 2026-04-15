@@ -364,6 +364,8 @@ def get_custom_fields():
 				"fieldtype": "Data",
 				"insert_after": "qz_print",
 				"label": "QZ Host",
+				"default": "localhost",
+				"description": "QZ Tray websocket host. Almost always 'localhost' — QZ Tray runs on the cashier's machine and the browser connects over localhost. Only change this for the rare case of QZ Tray running on a different machine on the same LAN.",
 				"translatable": 0,
 			},
 			# Shift hours / shift system fields. Same dual-source-of-truth
