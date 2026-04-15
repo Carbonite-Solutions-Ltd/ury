@@ -786,6 +786,83 @@ def resolve_kot_print_plan(kot_doc, pos_profile_name, order_type=None):
     return plan
 
 
+def _get_printed_departments(kot_doc):
+    """Return the set of departments already printed for this KOT.
+    Reads the `custom_printed_departments` JSON field defensively —
+    missing / null / malformed JSON returns an empty set.
+    """
+    import json as _json
+    raw = getattr(kot_doc, "custom_printed_departments", None) or ""
+    if not raw:
+        return set()
+    try:
+        parsed = _json.loads(raw)
+        if isinstance(parsed, list):
+            return set(parsed)
+    except Exception:
+        pass
+    return set()
+
+
+def _compute_all_departments_for_kot(kot_doc):
+    """Return the set of every department represented in this KOT's
+    items. Built by classifying each KOT item via its `course` field
+    (the same path the resolver uses). Used to decide whether the
+    KOT is 'fully printed' after a mark call.
+    """
+    return {
+        _classify_kot_item_department(item)
+        for item in _get_kot_items_list(kot_doc)
+    }
+
+
+def record_printed_departments(kot_name, departments):
+    """Merge `departments` into the KOT's `custom_printed_departments`
+    JSON field. If the result covers every department the KOT has
+    items in, also set `kot_printed = 1`.
+
+    Idempotent — adding an already-recorded department is a no-op.
+    Writes via `frappe.db.set_value` so URY KOT's validate/submit
+    hooks don't re-fire. Returns a dict with the updated state.
+    """
+    import json as _json
+    if not kot_name or not departments:
+        return {"kot_printed": None, "printed_departments": []}
+
+    kot_doc = frappe.get_doc("URY KOT", kot_name)
+    already = _get_printed_departments(kot_doc)
+    merged = already | set(departments)
+    all_depts = _compute_all_departments_for_kot(kot_doc)
+    fully_printed = bool(all_depts) and all_depts.issubset(merged)
+
+    updates = {"custom_printed_departments": _json.dumps(sorted(merged))}
+    if fully_printed:
+        updates["kot_printed"] = 1
+
+    frappe.db.set_value("URY KOT", kot_name, updates, update_modified=False)
+    return {
+        "kot_printed": 1 if fully_printed else 0,
+        "printed_departments": sorted(merged),
+        "all_departments": sorted(all_depts),
+    }
+
+
+@frappe.whitelist()
+def mark_kot_departments_printed(kot_name, departments):
+    """Whitelisted wrapper around `record_printed_departments` that
+    the frontend calls after a successful QZ print. `departments`
+    may be a JSON string or an already-parsed list."""
+    import json as _json
+    if isinstance(departments, str):
+        try:
+            departments = _json.loads(departments)
+        except Exception:
+            departments = []
+    if not isinstance(departments, (list, tuple)):
+        departments = []
+    return record_printed_departments(kot_name, list(departments))
+
+
 def filter_plan_for_auto_print(plan, pos_profile_doc):
     """Filter a print plan down to only the entries that should
     AUTO-fire at order submit time.

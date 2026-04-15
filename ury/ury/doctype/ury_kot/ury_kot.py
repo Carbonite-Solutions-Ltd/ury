@@ -53,6 +53,7 @@ class URYKOT(Document):
             resolve_kot_print_plan,
             apply_print_fallback,
             filter_plan_for_auto_print,
+            record_printed_departments,
         )
 
         pos_profile = self.pos_profile
@@ -69,15 +70,32 @@ class URYKOT(Document):
         if print_mode == "QZ Tray":
             return
 
+        # KDS routing mode gate. When the admin picked "URY Production
+        # Unit" for this profile, skip the new department-based plan
+        # entirely — it would route to the POS Profile's
+        # custom_kitchen/bar/parcel fields which the admin doesn't
+        # use in PU mode. Fall through to the legacy path below which
+        # reads each URY Production Unit's `printer_settings` child
+        # table. See CLAUDE.md "Fixes log" 2026-04-16 Phase D fix.
+        kds_mode = (
+            frappe.db.get_value(
+                "POS Profile", pos_profile, "custom_kds_routing_mode"
+            )
+            or "Menu Course"
+        )
+
         order_type = None
         if getattr(self, "invoice", None):
             order_type = frappe.db.get_value(
                 "POS Invoice", self.invoice, "order_type"
             )
 
-        plan = resolve_kot_print_plan(
-            self, pos_profile_name=pos_profile, order_type=order_type
-        )
+        if kds_mode == "URY Production Unit":
+            plan = []
+        else:
+            plan = resolve_kot_print_plan(
+                self, pos_profile_name=pos_profile, order_type=order_type
+            )
 
         # New path: the unified config had `custom_print_mode` set.
         if plan:
@@ -97,6 +115,7 @@ class URYKOT(Document):
             )
             kot_print_format = legacy_first or None
 
+            successfully_printed_depts = []
             for entry in plan:
                 printer = entry["printer"]
                 dept = entry["department"]
@@ -117,6 +136,7 @@ class URYKOT(Document):
                         filtered_doc, printer, kot_print_format
                     )
                     if ok:
+                        successfully_printed_depts.append(dept)
                         continue
 
                     # Printer was configured but failed.
@@ -136,21 +156,50 @@ class URYKOT(Document):
                 if not should_fallback:
                     continue
                 filtered_doc.flags.fallback_header = header
-                _try_print_kot(filtered_doc, fallback_printer, kot_print_format)
+                fb_ok, _fb_err = _try_print_kot(
+                    filtered_doc, fallback_printer, kot_print_format
+                )
+                if fb_ok:
+                    successfully_printed_depts.append(dept)
+
+            # Record what actually printed so get_latest_kot + the
+            # pending-KOT UI know which departments are still held.
+            if successfully_printed_depts:
+                record_printed_departments(self.name, successfully_printed_depts)
             return
 
         # ---- Legacy path: old custom_print_mode isn't set yet. ----
+        # Also the path that runs in URY Production Unit mode: the
+        # new unified config returns an empty plan (because
+        # resolve_kot_print_plan uses the course-department split
+        # which only makes sense in Menu Course mode), so we fall
+        # through here and read the production's printer_settings
+        # child table. The child's `printer` field now points at
+        # URY Printer (repointed 2026-04-16 Phase D), so the helper
+        # below routes through `ury_print_via_cups` instead of
+        # Frappe's `print_by_server` — that keeps the Production
+        # Unit path cloud-compatible (pycups catch-22 free) and
+        # consistent with the Menu Course path.
         def print_kot(printer, kot_print_format):
-            """Legacy print helper. Kept for the backwards-compat
-            path where an admin hasn't migrated to the new config.
-            Still wraps exceptions (but now logs them — no bare pass).
+            """Legacy / URY Production Unit print helper. Routes
+            through the URY Printer CUPS layer.
             """
-            try:
-                print_by_server("URY KOT", self.name, printer, kot_print_format)
-            except Exception:
+            if not printer:
+                return
+            from ury.ury.api.ury_print import ury_print_via_cups
+            ok, err_msg = ury_print_via_cups(
+                printer,
+                "URY KOT",
+                self.name,
+                print_format=kot_print_format,
+                doc=self,
+            )
+            if not ok:
                 frappe.log_error(
-                    title="URY KOT legacy print failed",
-                    message=f"KOT {self.name} printer={printer}\n{traceback.format_exc()}",
+                    title="URY KOT production-unit print failed",
+                    message=(
+                        f"KOT {self.name} printer={printer} err={err_msg}"
+                    ),
                 )
 
         pos_kot_printers = frappe.db.get_all(
@@ -211,20 +260,76 @@ class URYKOT(Document):
 
     # Function for displaying KOT-related information in real-time On KDS(Kitchen Display System)
     def kotDisplayRealtime(self):
+        """Publish this KOT to the KDS realtime channel(s).
+
+        **Legacy — URY Production Unit mode.** The POS Profile's
+        ``custom_kds_routing_mode`` is ``"URY Production Unit"``
+        (or the profile is old and doesn't have the field yet). One
+        KOT per production means one publish to
+        ``kot_update_<branch>_<production>`` — the KDS for that
+        production picks it up, every other station ignores it.
+        Unchanged from pre-revamp behavior.
+
+        **Menu Course mode.** The POS Profile is ``"Menu Course"``.
+        One KOT per order holds items from multiple departments, so
+        we fan out ONE publish per distinct department present in
+        this KOT, targeting
+        ``kot_update_<branch>_<Food|Drinks|Other>``. Each KDS filters
+        out messages it shouldn't see via its own target-filtered
+        poll + the same channel name. We ALSO publish to
+        ``kot_update_<branch>_All`` unconditionally so a "show
+        everything" KDS (``/URYMosaic/All``) receives a single ping
+        per KOT.
+
+        See CLAUDE.md "Fixes log" 2026-04-16 (print revamp Round 1 /
+        Phase C KDS routing mode).
+        """
         currentBranch = self.branch
         production = self.production
         kotjson = json.loads(frappe.as_json(self))
         audio_file = frappe.db.get_value(
             "POS Profile", self.pos_profile, "custom_kot_alert_sound"
         )
-        cache_key = "{}_{}_last_kot_time".format(currentBranch, production)
-        time = frappe.cache().get_value(cache_key)
-        kot_channel = "{}_{}_{}".format("kot_update", currentBranch, production)
-        frappe.publish_realtime(
-            kot_channel,
-            {"kot": kotjson, "audio_file": audio_file, "last_kot_time": time},
+
+        kds_mode = (
+            frappe.db.get_value(
+                "POS Profile", self.pos_profile, "custom_kds_routing_mode"
+            )
+            or "Menu Course"
         )
-        frappe.cache().set_value(cache_key, self.time)
+
+        def _publish(target):
+            cache_key = "{}_{}_last_kot_time".format(currentBranch, target)
+            time = frappe.cache().get_value(cache_key)
+            channel = "kot_update_{}_{}".format(currentBranch, target)
+            frappe.publish_realtime(
+                channel,
+                {
+                    "kot": kotjson,
+                    "audio_file": audio_file,
+                    "last_kot_time": time,
+                },
+            )
+            frappe.cache().set_value(cache_key, self.time)
+
+        if kds_mode == "URY Production Unit":
+            # Legacy path: one publish to the production's channel.
+            _publish(production)
+            return
+
+        # Menu Course mode: fan out per distinct department in the
+        # KOT's items plus the "All" broadcast.
+        from ury.ury.api.ury_print import (
+            _classify_kot_item_department,
+            _get_kot_items_list,
+        )
+        departments = {
+            _classify_kot_item_department(row)
+            for row in _get_kot_items_list(self)
+        }
+        for dept in departments:
+            _publish(dept)
+        _publish("All")
 
     def userSetting(self):
         userDoc = frappe.get_doc("User", self.owner)

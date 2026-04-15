@@ -28,6 +28,7 @@ import { useNavigate } from 'react-router-dom';
 import PaymentDialog from '../components/PaymentDialog';
 import ReturnDialog from '../components/ReturnDialog';
 import { printOrder } from '../lib/print';
+import { firePendingKotsForInvoice } from '../lib/kot-listener';
 import { call } from '../lib/frappe-sdk';
 import type { POSInvoice } from '../store/slices/orders-slice';
 import {
@@ -131,6 +132,13 @@ export default function Orders() {
   const [editLoading, setEditLoading] = React.useState(false);
   const [showPaymentDialog, setShowPaymentDialog] = React.useState(false);
   const [isPrinting, setIsPrinting] = React.useState(false);
+  // Bump this whenever an action should force OrderStatusSidebar to
+  // re-poll the pending-KOT badge count. Firing held KOTs at bill
+  // print time is the main trigger — the cashier expects the badge
+  // to drop immediately after they click Print Invoice, not at the
+  // next 15s poll tick.
+  const [pendingKotRefreshVersion, setPendingKotRefreshVersion] =
+    React.useState(0);
   const [showReturnDialog, setShowReturnDialog] = React.useState(false);
   const [reverseLoading, setReverseLoading] = React.useState(false);
 
@@ -326,6 +334,20 @@ export default function Orders() {
     if (!selectedOrder || !posStore.posProfile) return;
     setIsPrinting(true);
     try {
+      // Fire any held / un-printed KOT departments (default policy
+      // holds Drinks at order-submit time) BEFORE the bill prints.
+      // This is what bumps held bar tickets to the bar printer when
+      // the cashier closes out an order.
+      const fired = await firePendingKotsForInvoice(selectedOrder.name);
+      if (fired.length > 0) {
+        const depts = Array.from(new Set(fired.map((f) => f.department))).join(
+          ', ',
+        );
+        showToast.info(`Fired held KOT(s): ${depts}`);
+        // Bump the badge-refresh version so OrderStatusSidebar re-polls
+        // immediately instead of waiting for the 15s tick.
+        setPendingKotRefreshVersion((v) => v + 1);
+      }
       await printOrder({
         orderId: selectedOrder.name,
         posProfile: posStore.posProfile
@@ -365,6 +387,7 @@ export default function Orders() {
       <OrderStatusSidebar
         selectedStatus={selectedStatus}
         setSelectedStatus={setSelectedStatus}
+        refreshVersion={pendingKotRefreshVersion}
       />
 
       {/* Middle Section - Order list / cards */}

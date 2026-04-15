@@ -141,11 +141,23 @@ def process_items_for_kot(
     """
     kot_items = create_order_items(items)
     pos_profile = frappe.get_doc("POS Profile", pos_profile_id)
-    productions = frappe.db.get_all(
-        "URY Production Unit",
-        filters={"branch": pos_profile.branch},
-        fields=["name"],
-    )
+
+    # 2026-04-16 KDS routing mode switch. When the POS Profile is in
+    # "Menu Course" mode (default), skip production-unit splitting
+    # entirely — one KOT per order, item department classification
+    # drives downstream routing via ury_print.resolve_kot_print_plan
+    # and kot_list item filtering. When in "URY Production Unit" mode
+    # (legacy), fall through to the per-production splitting loop
+    # below.
+    kds_mode = pos_profile.get("custom_kds_routing_mode") or "Menu Course"
+    if kds_mode == "Menu Course":
+        productions = []
+    else:
+        productions = frappe.db.get_all(
+            "URY Production Unit",
+            filters={"branch": pos_profile.branch},
+            fields=["name"],
+        )
 
     # Track which items have already been assigned to a production.
     # Anything left over at the end becomes a fallback KOT.

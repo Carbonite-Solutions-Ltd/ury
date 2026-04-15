@@ -7,3 +7,4 @@ ury.patches.v0_2.backfill_opening_entry_terminal
 ury.patches.v0_2.migrate_print_config
 ury.patches.v0_2.backfill_kot_naming_series
 ury.patches.v0_2.backfill_qz_host
+ury.patches.v0_2.backfill_ury_printer_settings_links

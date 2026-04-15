@@ -40,7 +40,7 @@ export const DINE_IN="Dine In"
 export const DEFAULT_ORDER_TYPE="Take Away"
 export const DEFAULT_PAYMENT_MODE="Cash"
 
-export type OrderStatusType = "Draft" | "Unbilled" | "Recently Paid" | "Paid" | "Consolidated" | "Return" | "Room Charges";
+export type OrderStatusType = "Draft" | "Unbilled" | "Recently Paid" | "Paid" | "Consolidated" | "Return" | "Room Charges" | "Pending KOTs";
 
 // Base status types that are always available.
 // "Paid" was moved out of EXTENDED_ORDER_STATUS_TYPES on 2026-04-09
@@ -48,6 +48,12 @@ export type OrderStatusType = "Draft" | "Unbilled" | "Recently Paid" | "Paid" | 
 // they closed today, and gating it behind the POS Profile
 // view_all_status flag was an unnecessary speed bump. Consolidated
 // and Return stay in EXTENDED because they're admin-y.
+//
+// "Pending KOTs" (2026-04-16 print revamp Round 1) surfaces any
+// invoice that still has at least one URY KOT with kot_printed=0 —
+// a dedicated filter for the "did the bar miss this one?" glance.
+// Paired with a live badge count in OrderStatusSidebar so cashiers
+// see the state without having to click in.
 export const BASE_ORDER_STATUS_TYPES = [
     {
         label: "Draft",
@@ -60,6 +66,10 @@ export const BASE_ORDER_STATUS_TYPES = [
     {
         label: "Paid",
         value: "Paid"
+    },
+    {
+        label: "Pending KOTs",
+        value: "Pending KOTs"
     }
 ];
 
