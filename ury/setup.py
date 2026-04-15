@@ -534,6 +534,22 @@ def get_custom_fields():
 				"mandatory_depends_on": "eval:doc.custom_ihotel_enabled",
 				"description": "Charge Type used on the iHotel Profile's folio row when charging to room.",
 			},
+			# KOT naming series default (2026-04-16). This field was
+			# shipped in custom_field.json years ago without a default,
+			# which meant every new POS Profile silently broke KOT
+			# creation until an admin set it manually. Ships via
+			# setup.py too per the dual-source-of-truth rule so
+			# existing sites pick up the default on next migrate.
+			# A backfill patch populates the value for profiles that
+			# still have a null/empty value.
+			{
+				"fieldname": "custom_kot_naming_series",
+				"fieldtype": "Data",
+				"insert_after": "custom_kot_settings",
+				"label": "URY KOT Naming Series",
+				"default": "KOT-.YYYY.-.####",
+				"description": "Frappe naming-series pattern for auto-generated KOT docs. Default produces KOT-2026-0001, KOT-2026-0002, etc.",
+			},
 			# Print configuration (2026-04-16 unified print round). Replaces
 			# the legacy printer_settings child table + custom_table_order_printer
 			# + custom_parcel_order_printer. The backend reads these first and

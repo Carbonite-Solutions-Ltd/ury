@@ -5,3 +5,4 @@ ury.patches.v0_2.backfill_terminal_pos_profile
 ury.patches.v0_2.backfill_item_price_uom
 ury.patches.v0_2.backfill_opening_entry_terminal
 ury.patches.v0_2.migrate_print_config
+ury.patches.v0_2.backfill_kot_naming_series
