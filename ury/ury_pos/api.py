@@ -1991,83 +1991,226 @@ def validate_pos_close(pos_profile, terminal=None):
 
 @frappe.whitelist(allow_guest=True)
 def get_latest_kot():
-    """Get the latest unprinted KOT for the current user's POS Profile"""
+    """Get the latest unprinted KOT for the current user's POS Profile.
+
+    Response shapes (depends on which print config is active):
+
+    **New unified config** (POS Profile.custom_print_mode == "QZ Tray"):
+        {
+            "kot_name": "...",
+            "pos_profile": "...",
+            "kot_printed": 0,
+            "print_jobs": [
+                {
+                    "printer": "<URY Printer name>",
+                    "department": "Drinks",
+                    "html": "<html>...</html>",
+                },
+                ...
+            ],
+        }
+
+    Each `print_jobs` entry carries its own PRE-RENDERED HTML that
+    only contains the items for THAT department. This is how mixed
+    KOTs get split — the bar only sees drinks, the kitchen only
+    sees food. The frontend iterates `print_jobs` and sends each
+    (printer, html) pair to QZ Tray via `printKotWithQz`.
+
+    **Legacy config** (qz_print == 1, new custom_print_mode unset):
+        {
+            "kot_name": "...",
+            "pos_profile": "...",
+            "kot_printed": 0,
+            "printers": [{"printer": "...", "custom_kot_print_format": "..."}]
+        }
+
+    The legacy path returns a list of printers and the frontend prints
+    the WHOLE KOT to each — no department splitting.
+
+    **No print mode** (both qz_print == 0 AND custom_print_mode unset / Disabled):
+        {"debug": "qz_not_enabled", ...}
+
+    See CLAUDE.md "Fixes log" 2026-04-16 (print revamp Round 1).
+    """
+    from ury.ury.api.ury_print import resolve_kot_print_plan
+
     try:
         current_user = frappe.session.user
-        
+
         # Get user's active POS Profile
         pos_opening = frappe.get_all(
             "POS Opening Entry",
             filters={
                 "user": current_user,
                 "docstatus": 1,
-                "status": "Open"
+                "status": "Open",
             },
             fields=["pos_profile"],
-            limit=1
+            limit=1,
         )
-        
+
         if not pos_opening:
             return {"debug": "no_pos_opening", "user": current_user}
-        
+
         pos_profile = pos_opening[0].pos_profile
-        
-        # Check if QZ is enabled
-        qz_print = frappe.db.get_value("POS Profile", pos_profile, "qz_print")
-        
-        if qz_print != 1:
-            return {"debug": "qz_not_enabled", "qz_print": qz_print, "pos_profile": pos_profile}
-        
-        # Get latest unprinted KOT
-        kot = frappe.get_all(
+
+        # Check whether QZ is enabled via EITHER the new unified
+        # config (custom_print_mode == "QZ Tray") OR the legacy
+        # qz_print flag. Round 1 introduced the new config but didn't
+        # yet migrate the legacy flag, so we honor both.
+        profile_row = frappe.db.get_value(
+            "POS Profile",
+            pos_profile,
+            ["qz_print", "custom_print_mode"],
+            as_dict=True,
+        ) or {}
+        legacy_qz = int(profile_row.get("qz_print") or 0) == 1
+        new_mode = profile_row.get("custom_print_mode") or ""
+        new_qz = new_mode == "QZ Tray"
+
+        if not legacy_qz and not new_qz:
+            return {
+                "debug": "qz_not_enabled",
+                "qz_print": profile_row.get("qz_print"),
+                "custom_print_mode": new_mode,
+                "pos_profile": pos_profile,
+            }
+
+        # Get latest unprinted KOT (both flag shapes — older installs
+        # use `kot_printed`, newer may use `printed`).
+        kot_rows = frappe.get_all(
             "URY KOT",
             filters={
                 "pos_profile": pos_profile,
                 "kot_printed": 0,
-                "docstatus": ["!=", 2]
+                "docstatus": ["!=", 2],
             },
             fields=["name", "kot_printed", "creation"],
             order_by="creation desc",
-            limit=1
+            limit=1,
         )
-        
-        if not kot:
+
+        if not kot_rows:
             return {"debug": "no_unprinted_kots", "pos_profile": pos_profile}
-        
-        kot_doc = kot[0]
-        
-        # Get printer settings - FIXED: Removed item_group which doesn't exist
+
+        kot_doc = frappe.get_doc("URY KOT", kot_rows[0].name)
+
+        # ---- New unified config path ----
+        if new_qz:
+            order_type = None
+            if getattr(kot_doc, "invoice", None):
+                order_type = frappe.db.get_value(
+                    "POS Invoice", kot_doc.invoice, "order_type"
+                )
+
+            plan = resolve_kot_print_plan(
+                kot_doc,
+                pos_profile_name=pos_profile,
+                order_type=order_type,
+            )
+
+            if plan:
+                print_jobs = []
+                # Try to pick a reasonable print format. We still read
+                # it from the legacy URY Printer Settings child table
+                # as a compat shim — a future round will add a
+                # first-class custom_kot_print_format field on POS
+                # Profile directly.
+                kot_print_format = frappe.db.get_value(
+                    "URY Printer Settings",
+                    {
+                        "parent": pos_profile,
+                        "parenttype": "POS Profile",
+                        "custom_kot_print": 1,
+                    },
+                    "custom_kot_print_format",
+                )
+
+                for entry in plan:
+                    printer = entry.get("printer")
+                    if not printer:
+                        continue
+
+                    # Render a filtered copy of the KOT with ONLY
+                    # this department's items. Same pattern as
+                    # ury_kot.multi_print_kot's new path.
+                    filtered_doc = frappe.copy_doc(kot_doc)
+                    filtered_doc.items = entry["items"]
+                    filtered_doc.flags.kot_department = entry["department"]
+
+                    try:
+                        html = frappe.get_print(
+                            "URY KOT",
+                            kot_doc.name,
+                            kot_print_format,
+                            doc=filtered_doc,
+                            no_letterhead=1,
+                        )
+                    except Exception as e:
+                        frappe.log_error(
+                            title="URY get_latest_kot render failed",
+                            message=(
+                                f"KOT {kot_doc.name} department={entry['department']} "
+                                f"err={e}"
+                            ),
+                        )
+                        continue
+
+                    print_jobs.append(
+                        {
+                            "printer": printer,
+                            "department": entry["department"],
+                            "html": html,
+                        }
+                    )
+
+                if not print_jobs:
+                    return {
+                        "debug": "no_print_jobs_after_plan",
+                        "pos_profile": pos_profile,
+                        "kot_name": kot_doc.name,
+                    }
+
+                return {
+                    "kot_name": kot_doc.name,
+                    "pos_profile": pos_profile,
+                    "kot_printed": kot_rows[0].kot_printed,
+                    "print_jobs": print_jobs,
+                }
+            # Plan was empty — fall through to legacy so we still
+            # print SOMETHING during the migration window.
+
+        # ---- Legacy path ----
         printer_settings = frappe.get_all(
             "URY Printer Settings",
             filters={
                 "parent": pos_profile,
                 "parentfield": "printer_settings",
-                "custom_kot_print": 1
+                "custom_kot_print": 1,
             },
-            fields=["printer", "custom_kot_print_format"]
+            fields=["printer", "custom_kot_print_format"],
         )
-        
+
         if not printer_settings:
             return {
-                "debug": "no_printers", 
-                "pos_profile": pos_profile, 
-                "kot_name": kot_doc.name  # FIXED: Include kot_name in debug response
+                "debug": "no_printers",
+                "pos_profile": pos_profile,
+                "kot_name": kot_doc.name,
             }
-        
-        # FIXED: Return proper structure
+
         return {
             "kot_name": kot_doc.name,
             "pos_profile": pos_profile,
-            "kot_printed": kot_doc.kot_printed,
-            "printers": printer_settings
+            "kot_printed": kot_rows[0].kot_printed,
+            "printers": printer_settings,
         }
-        
+
     except Exception as e:
         import traceback
         return {
             "debug": "exception",
             "error": str(e),
-            "traceback": traceback.format_exc()
+            "traceback": traceback.format_exc(),
         }
 
 @frappe.whitelist(methods=['GET'])

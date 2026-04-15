@@ -23,38 +23,80 @@ async function checkForNewKots() {
     // Get the latest KOT
     const response = await fetch('/api/method/ury.ury_pos.api.get_latest_kot');
     const result = await response.json();
-    
+
     if (!result?.message) return;
-    
-    const { kot_name, pos_profile, printers, kot_printed } = result.message;
-    
+
+    const {
+      kot_name,
+      pos_profile: _pos_profile,
+      printers,
+      print_jobs,
+      kot_printed,
+    } = result.message as {
+      kot_name?: string;
+      pos_profile?: string;
+      kot_printed?: number;
+      // Legacy shape — whole-KOT prints to a list of printers.
+      printers?: Array<{ printer: string; custom_kot_print_format?: string }>;
+      // New shape (2026-04-16 print revamp) — per-department print
+      // jobs with pre-rendered filtered HTML.
+      print_jobs?: Array<{
+        printer: string;
+        department: string;
+        html: string;
+      }>;
+    };
+
     // Skip if already printed or if we've already processed this KOT
-    if (kot_printed || kot_name === lastCheckedKot) return;
-    
+    if (!kot_name || kot_printed || kot_name === lastCheckedKot) return;
+
     console.log('🔔 New KOT detected:', kot_name);
     lastCheckedKot = kot_name;
-    
+
+    // ---- New unified config path ----
+    // Backend already filtered the items per department and
+    // rendered each print job's HTML. We just iterate and send.
+    if (print_jobs && print_jobs.length > 0) {
+      for (const job of print_jobs) {
+        try {
+          console.log(
+            `🖨️ Printing ${job.department} KOT ${kot_name} to ${job.printer}`,
+          );
+          await printKotWithQz(job.printer, job.html);
+          console.log(`✅ ${job.department} KOT printed to ${job.printer}`);
+        } catch (error) {
+          console.error(
+            `❌ Failed to print ${job.department} KOT to ${job.printer}:`,
+            error,
+          );
+        }
+      }
+      // Mark the KOT as printed ONCE after all print jobs, not per job.
+      await markKotAsPrinted(kot_name);
+      return;
+    }
+
+    // ---- Legacy path ----
     if (!printers || printers.length === 0) {
       console.error('No printers configured for KOT');
       return;
     }
 
-    // Print to each configured printer
     for (const printerSetting of printers) {
       const printerName = printerSetting.printer;
       const printFormat = printerSetting.custom_kot_print_format || 'KOT Print';
-      
+
       try {
         console.log(`🖨️ Printing KOT ${kot_name} to ${printerName}`);
-        
-        // Fetch KOT HTML
+
+        // Fetch KOT HTML (legacy path renders the full KOT per printer)
         const html = await getKotPrintHtml(kot_name, printFormat);
-        
+
         // Print with QZ to specific printer
         await printKotWithQz(printerName, html);
-        
+
         console.log(`✅ KOT printed to ${printerName}`);
-        
+
         // Mark as printed
         await markKotAsPrinted(kot_name);
       } catch (error) {

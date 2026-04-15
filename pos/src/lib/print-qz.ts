@@ -25,14 +25,35 @@ export function disconnectQzPrinter(): void {
   if (qz.websocket.isActive()) qz.websocket.disconnect();
 }
 
-export async function printWithQz(host: string, htmlToPrint: string): Promise<void> {
+/**
+ * Send an HTML payload to QZ Tray.
+ *
+ * When `printerName` is supplied, QZ prints to that exact printer
+ * (matched against the local OS printer list — must match exactly).
+ * When omitted, falls back to `qz.printers.getDefault()` for
+ * backwards compat with the legacy call sites.
+ *
+ * The printer name must match what the cashier's OS reports for the
+ * physical printer — e.g. "EPSON TM-T88V" on Windows, "Kitchen_Star"
+ * on CUPS. URY Printer records store this string exactly as the
+ * admin types it, so the chain is:
+ *
+ *   POS Profile.custom_bill_printer (string)
+ *     → URY Printer.printer_name (string)
+ *     → QZ Tray (matches against local OS printer)
+ */
+export async function printWithQz(
+  host: string,
+  htmlToPrint: string,
+  printerName?: string | null,
+): Promise<void> {
   const printing = async () => {
-    const printer = await qz.printers.getDefault();
-    console.log('🖨️ Selected printer:', printer);
-    
+    const target = printerName || (await qz.printers.getDefault());
+    console.log('🖨️ Selected printer:', target);
+
     const data = [{ type: 'html', format: 'plain', data: htmlToPrint }];
-    const config = qz.configs.create(printer);
-    
+    const config = qz.configs.create(target);
+
     console.log('📄 Sending to printer...');
     await qz.print(config, data as any);
     console.log('✅ Print job sent successfully');
