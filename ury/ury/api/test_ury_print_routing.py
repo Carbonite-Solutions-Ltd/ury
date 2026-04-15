@@ -231,6 +231,23 @@ class TestURYPrintRouting(FrappeTestCase):
         buckets = _split_kot_items_by_department(kot)
         self.assertEqual(buckets, {})
 
+    def test_split_reads_kot_items_attribute(self):
+        """_get_kot_items_list must prefer `kot_items` (the real URY
+        KOT child table name) over `items`. Previously the helper
+        used only `items` which threw AttributeError on real KOT
+        docs — reported by the user on 2026-04-16."""
+        self._make_course("Mains", "Food")
+        self._make_course("Beers", "Drinks")
+        # Simulate a real URY KOT doc — kot_items, not items.
+        kot = types.SimpleNamespace(
+            kot_items=[
+                self._make_kot_item("Burger", "Mains"),
+                self._make_kot_item("Beer", "Beers"),
+            ]
+        )
+        buckets = _split_kot_items_by_department(kot)
+        self.assertEqual(set(buckets.keys()), {"Food", "Drinks"})
+
     # ---------------------------------------------------------------
     # 3. _resolve_printer_for_department
     # ---------------------------------------------------------------

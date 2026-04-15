@@ -85,9 +85,10 @@ class URYKOT(Document):
 
                 # Build a filtered copy of self with only this
                 # department's items. We mutate a shallow clone so
-                # the in-memory self isn't disturbed.
+                # the in-memory self isn't disturbed. Note: URY KOT's
+                # child table is `kot_items`, NOT the generic `items`.
                 filtered_doc = frappe.copy_doc(self)
-                filtered_doc.items = items
+                filtered_doc.kot_items = items
                 # Stamp a flag the print format can read to show the
                 # department in the KOT header.
                 filtered_doc.flags.kot_department = dept

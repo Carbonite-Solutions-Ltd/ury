@@ -618,6 +618,22 @@ def _classify_kot_item_department(item):
     return dept_map.get(course, _DEPT_FOOD)
 
 
+def _get_kot_items_list(kot_doc):
+    """Return the list of KOT item rows off a URY KOT doc.
+
+    Real URY KOT docs use `kot_items` (Table → URY KOT Items) as
+    their child-table field name — NOT the generic `items`. We read
+    from `kot_items` first and fall back to `items` only so unit-test
+    mocks (which use a SimpleNamespace with `items=[...]`) keep
+    working. Returns an empty list when neither attribute is set.
+    """
+    rows = getattr(kot_doc, "kot_items", None)
+    if rows:
+        return rows
+    rows = getattr(kot_doc, "items", None)
+    return rows or []
+
+
 def _split_kot_items_by_department(kot_doc):
     """Bucket a KOT's items into {department: [items]}.
 
@@ -626,7 +642,7 @@ def _split_kot_items_by_department(kot_doc):
     items are present in the output.
     """
     buckets = {}
-    for item in (kot_doc.items or []):
+    for item in _get_kot_items_list(kot_doc):
         dept = _classify_kot_item_department(item)
         buckets.setdefault(dept, []).append(item)
     return buckets

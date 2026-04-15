@@ -2133,9 +2133,10 @@ def get_latest_kot():
 
                     # Render a filtered copy of the KOT with ONLY
                     # this department's items. Same pattern as
-                    # ury_kot.multi_print_kot's new path.
+                    # ury_kot.multi_print_kot's new path. URY KOT's
+                    # child table is `kot_items`, NOT `items`.
                     filtered_doc = frappe.copy_doc(kot_doc)
-                    filtered_doc.items = entry["items"]
+                    filtered_doc.kot_items = entry["items"]
                     filtered_doc.flags.kot_department = entry["department"]
 
                     try:
