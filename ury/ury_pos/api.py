@@ -1455,12 +1455,30 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
         # specific-user filter. We also stamp the `cashier` custom
         # field (used in some URY print paths) and set a transfer
         # audit note via the `remarks` field.
+        #
+        # Discoverability fix (2026-04-16): clear `custom_terminal`
+        # AND reset `posting_date`/`posting_time` to now. Without
+        # this the receiving cashier's default Orders page filter
+        # (their current terminal + today's date) hides the
+        # transfers silently — we've seen it in the wild. Clearing
+        # the terminal lets the defensive null fallback in
+        # `getPosInvoice` ("terminal IS NULL OR terminal = '' OR
+        # terminal = ?") surface them on whichever terminal the
+        # receiver is on within the branch. Updating posting_date
+        # is a semantic call: the draft now belongs to today's
+        # business flow under the new cashier, not yesterday's
+        # under the original; the `remarks` field preserves the
+        # audit trail. If the receiver wants to dig, the original
+        # opening entry is in the remarks line.
         target_full_name = (
             frappe.db.get_value("User", transfer_to, "full_name") or transfer_to
         )
         transfer_note = (
             f"Transferred from {me} on shift close ({opening_doc.name})"
         )
+        now_datetime = frappe.utils.now_datetime()
+        now_date = now_datetime.date()
+        now_time = now_datetime.time()
         for row in draft:
             frappe.db.set_value(
                 "POS Invoice",
@@ -1469,6 +1487,9 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
                     "owner": transfer_to,
                     "cashier": target_full_name,
                     "remarks": transfer_note,
+                    "custom_terminal": None,
+                    "posting_date": now_date,
+                    "posting_time": now_time,
                 },
                 update_modified=True,
             )

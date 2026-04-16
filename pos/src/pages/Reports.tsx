@@ -112,6 +112,41 @@ export default function Reports() {
   const [error, setError] = useState<string | null>(null);
   const printRef = useRef<HTMLDivElement>(null);
 
+  // Date input refs + click-opens-picker helper. Native date inputs
+  // only open on a direct click of the built-in calendar icon; we
+  // want the whole pill area to trigger the picker. Labels focus
+  // the input when clicked (semantic HTML), then `showPicker()`
+  // reliably opens the native picker on modern browsers. Guarded
+  // with `typeof === 'function'` so older browsers degrade to the
+  // default focus-then-input-click-required behavior.
+  const selectedDateRef = useRef<HTMLInputElement>(null);
+  const fromDateRef = useRef<HTMLInputElement>(null);
+  const toDateRef = useRef<HTMLInputElement>(null);
+
+  const openDatePicker = (
+    ref: React.RefObject<HTMLInputElement>,
+    event: React.MouseEvent
+  ) => {
+    const input = ref.current;
+    if (!input) return;
+    // If the user clicked the input itself, the native picker is
+    // already on its way — skip showPicker() to avoid a double-open
+    // flicker in some browsers.
+    if (event.target === input) return;
+    const anyInput = input as HTMLInputElement & {
+      showPicker?: () => void;
+    };
+    if (typeof anyInput.showPicker === 'function') {
+      try {
+        anyInput.showPicker();
+      } catch {
+        input.focus();
+      }
+    } else {
+      input.focus();
+    }
+  };
+
   const { terminalName } = usePOSStore();
   const { user } = useRootStore();
   const isAdmin = canSeeAdminReports(user);
@@ -564,39 +599,64 @@ export default function Reports() {
             <p className="text-sm text-gray-500 mt-1">View your sales performance and analytics</p>
           </div>
           <div className="flex items-center gap-3">
-            {/* Single-date picker for Dashboard + Daily Sales */}
+            {/* Single-date picker for Dashboard + Daily Sales.
+                Whole component is clickable (label + showPicker
+                fallback) so users don't have to aim at the native
+                icon on the right edge of the input. */}
             {isSingleDateTab && (
-              <div className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2 border border-gray-200">
-                <Calendar className="w-4 h-4 text-gray-500" />
+              <label
+                className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2 border border-gray-200 cursor-pointer hover:bg-gray-100 transition-colors"
+                onClick={(e) => openDatePicker(selectedDateRef, e)}
+              >
+                <Calendar className="w-4 h-4 text-gray-500 pointer-events-none" />
                 <input
+                  ref={selectedDateRef}
                   type="date"
                   value={selectedDate}
                   onChange={(e) => setSelectedDate(e.target.value)}
-                  className="text-sm bg-transparent border-none focus:outline-none"
+                  className="text-sm bg-transparent border-none focus:outline-none cursor-pointer"
                 />
-              </div>
+              </label>
             )}
 
-            {/* From/To range picker for admin reports */}
+            {/* From/To range picker — two labels inside one pill so
+                each half is independently clickable. */}
             {isRangeTab && (
               <div className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2 border border-gray-200">
-                <Calendar className="w-4 h-4 text-gray-500" />
-                <input
-                  type="date"
-                  value={fromDate}
-                  onChange={(e) => setFromDate(e.target.value)}
-                  max={toDate}
-                  className="text-sm bg-transparent border-none focus:outline-none"
-                />
-                <span className="text-xs text-gray-400">to</span>
-                <input
-                  type="date"
-                  value={toDate}
-                  onChange={(e) => setToDate(e.target.value)}
-                  min={fromDate}
-                  max={todayIso()}
-                  className="text-sm bg-transparent border-none focus:outline-none"
-                />
+                <label
+                  className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity"
+                  onClick={(e) => openDatePicker(fromDateRef, e)}
+                >
+                  <Calendar className="w-4 h-4 text-gray-500 pointer-events-none" />
+                  <input
+                    ref={fromDateRef}
+                    type="date"
+                    value={fromDate}
+                    onChange={(e) => setFromDate(e.target.value)}
+                    max={toDate}
+                    className="text-sm bg-transparent border-none focus:outline-none cursor-pointer"
+                  />
+                </label>
+                <span
+                  className="text-xs text-gray-400 cursor-pointer"
+                  onClick={(e) => openDatePicker(toDateRef, e)}
+                >
+                  to
+                </span>
+                <label
+                  className="flex items-center cursor-pointer hover:opacity-80 transition-opacity"
+                  onClick={(e) => openDatePicker(toDateRef, e)}
+                >
+                  <input
+                    ref={toDateRef}
+                    type="date"
+                    value={toDate}
+                    onChange={(e) => setToDate(e.target.value)}
+                    min={fromDate}
+                    max={todayIso()}
+                    className="text-sm bg-transparent border-none focus:outline-none cursor-pointer"
+                  />
+                </label>
               </div>
             )}
 
