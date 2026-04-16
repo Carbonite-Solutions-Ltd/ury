@@ -389,9 +389,20 @@ def signature_promise():
 @frappe.whitelist()
 def print_kot_on_create(doc, method=None):
     """
-    Auto-print KOT. 
-    If QZ is enabled, publish realtime event for client-side printing.
-    Otherwise use CUPS server-side printing.
+    Legacy `after_insert` hook for URY KOT. Pre-dates the 2026-04-16
+    unified print config.
+
+    **Neutered when the new config is set.** When the POS Profile has
+    `custom_print_mode` set (even to "Disabled"), this hook returns
+    early and lets `URYKOT.multi_print_kot` (the `on_submit` hook
+    rewritten in Round 1) handle printing entirely. Running both
+    hooks on the same KOT caused duplicate CUPS prints because each
+    path uses a different printer resolution strategy but they both
+    talk to the same CUPS server.
+
+    **Legacy mode** (new config unset / null): the old QZ + CUPS
+    dispatch below still runs so sites that haven't migrated yet
+    keep their existing behavior.
     """
     try:
         if isinstance(doc, str):
@@ -400,9 +411,24 @@ def print_kot_on_create(doc, method=None):
         else:
             kot = doc
             kot_name = doc.name
-        
+
         pos_profile = kot.pos_profile
-        
+
+        # Neuter: let the new multi_print_kot path handle it when
+        # the unified config is active. Any non-null value here
+        # means the admin configured the new Printers & Routing
+        # section on POS Profile.
+        new_mode = frappe.db.get_value(
+            "POS Profile", pos_profile, "custom_print_mode"
+        )
+        if new_mode:
+            return {
+                "status": "skipped",
+                "message": (
+                    "New print config active — multi_print_kot handles this KOT"
+                ),
+            }
+
         # 1. CHECK QZ STATUS
         if _get_qz_status(pos_profile):
             # Get printer settings for this POS Profile
@@ -618,6 +644,22 @@ def _classify_kot_item_department(item):
     return dept_map.get(course, _DEPT_FOOD)
 
 
+def _get_kot_items_list(kot_doc):
+    """Return the list of KOT item rows off a URY KOT doc.
+
+    Real URY KOT docs use `kot_items` (Table → URY KOT Items) as
+    their child-table field name — NOT the generic `items`. We read
+    from `kot_items` first and fall back to `items` only so unit-test
+    mocks (which use a SimpleNamespace with `items=[...]`) keep
+    working. Returns an empty list when neither attribute is set.
+    """
+    rows = getattr(kot_doc, "kot_items", None)
+    if rows:
+        return rows
+    rows = getattr(kot_doc, "items", None)
+    return rows or []
+
+
 def _split_kot_items_by_department(kot_doc):
     """Bucket a KOT's items into {department: [items]}.
 
@@ -626,7 +668,7 @@ def _split_kot_items_by_department(kot_doc):
     items are present in the output.
     """
     buckets = {}
-    for item in (kot_doc.items or []):
+    for item in _get_kot_items_list(kot_doc):
         dept = _classify_kot_item_department(item)
         buckets.setdefault(dept, []).append(item)
     return buckets
@@ -742,6 +784,111 @@ def resolve_kot_print_plan(kot_doc, pos_profile_name, order_type=None):
             }
         )
     return plan
+
+
+def _get_printed_departments(kot_doc):
+    """Return the set of departments already printed for this KOT.
+    Reads the `custom_printed_departments` JSON field defensively —
+    missing / null / malformed JSON returns an empty set.
+    """
+    import json as _json
+    raw = getattr(kot_doc, "custom_printed_departments", None) or ""
+    if not raw:
+        return set()
+    try:
+        parsed = _json.loads(raw)
+        if isinstance(parsed, list):
+            return set(parsed)
+    except Exception:
+        pass
+    return set()
+
+
+def _compute_all_departments_for_kot(kot_doc):
+    """Return the set of every department represented in this KOT's
+    items. Built by classifying each KOT item via its `course` field
+    (the same path the resolver uses). Used to decide whether the
+    KOT is 'fully printed' after a mark call.
+    """
+    return {
+        _classify_kot_item_department(item)
+        for item in _get_kot_items_list(kot_doc)
+    }
+
+
+def record_printed_departments(kot_name, departments):
+    """Merge `departments` into the KOT's `custom_printed_departments`
+    JSON field. If the result covers every department the KOT has
+    items in, also set `kot_printed = 1`.
+
+    Idempotent — adding an already-recorded department is a no-op.
+    Writes via `frappe.db.set_value` so URY KOT's validate/submit
+    hooks don't re-fire. Returns a dict with the updated state.
+    """
+    import json as _json
+    if not kot_name or not departments:
+        return {"kot_printed": None, "printed_departments": []}
+
+    kot_doc = frappe.get_doc("URY KOT", kot_name)
+    already = _get_printed_departments(kot_doc)
+    merged = already | set(departments)
+    all_depts = _compute_all_departments_for_kot(kot_doc)
+    fully_printed = bool(all_depts) and all_depts.issubset(merged)
+
+    updates = {"custom_printed_departments": _json.dumps(sorted(merged))}
+    if fully_printed:
+        updates["kot_printed"] = 1
+
+    frappe.db.set_value("URY KOT", kot_name, updates, update_modified=False)
+    return {
+        "kot_printed": 1 if fully_printed else 0,
+        "printed_departments": sorted(merged),
+        "all_departments": sorted(all_depts),
+    }
+
+
+@frappe.whitelist()
+def mark_kot_departments_printed(kot_name, departments):
+    """Whitelisted wrapper around `record_printed_departments` that
+    the frontend calls after a successful QZ print. `departments`
+    may be a JSON string or an already-parsed list."""
+    import json as _json
+    if isinstance(departments, str):
+        try:
+            departments = _json.loads(departments)
+        except Exception:
+            departments = []
+    if not isinstance(departments, (list, tuple)):
+        departments = []
+    return record_printed_departments(kot_name, list(departments))
+
+
+def filter_plan_for_auto_print(plan, pos_profile_doc):
+    """Filter a print plan down to only the entries that should
+    AUTO-fire at order submit time.
+
+    Default policy: Food + Other auto-print, Drinks does NOT. Admins
+    can flip `custom_auto_print_drinks_kot` on the POS Profile to
+    enable drinks auto-print (typical for busy bars where the
+    bartender needs the ticket immediately).
+
+    The plan entries for departments that DON'T auto-print are
+    dropped from the list passed to the printer dispatch — the KOT
+    doc itself still contains those items, they just don't get
+    rendered + sent at order time. The cashier's Print Invoice
+    button on the Orders page fires any held KOT parts at payment
+    time (wired via a `print_pending_kots_for_invoice` call).
+
+    Returns a new list; does NOT mutate the input plan.
+
+    See CLAUDE.md "Fixes log" 2026-04-16 (KOT print workflow tuning).
+    """
+    auto_print_drinks = int(
+        pos_profile_doc.get("custom_auto_print_drinks_kot") or 0
+    ) == 1
+    if auto_print_drinks:
+        return list(plan)
+    return [entry for entry in plan if entry.get("department") != _DEPT_DRINKS]
 
 
 def apply_print_fallback(plan_entry, pos_profile_doc):

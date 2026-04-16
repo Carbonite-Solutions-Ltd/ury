@@ -40,7 +40,8 @@
   "table_takeaway",
   "user",
   "amended_from",
-  "kot_printed"
+  "kot_printed",
+  "custom_printed_departments"
  ],
  "fields": [
   {
@@ -259,7 +260,16 @@
    "default": "0",
    "fieldname": "kot_printed",
    "fieldtype": "Check",
-   "label": "KOT Printed"
+   "label": "KOT Printed",
+   "description": "1 when every department in this KOT's items has been printed (auto-fire + manual re-fires). Used by the Orders page's pending-KOTs filter — an invoice is 'pending KOT' when at least one of its KOTs still has kot_printed=0."
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "[]",
+   "fieldname": "custom_printed_departments",
+   "fieldtype": "Small Text",
+   "label": "Printed Departments (JSON)",
+   "description": "JSON array of department names whose items have been successfully printed for this KOT. Added 2026-04-16 for the auto-print-hold / pending-KOT workflow. Example: `[\"Food\"]` means the Food portion auto-fired but Drinks is still held for manual print at bill time."
   }
  ],
  "index_web_pages_for_search": 1,

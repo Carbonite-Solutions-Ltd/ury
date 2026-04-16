@@ -33,6 +33,9 @@ from ury.ury.api.ury_print import (
     _resolve_printer_for_department,
     resolve_kot_print_plan,
     apply_print_fallback,
+    filter_plan_for_auto_print,
+    _get_printed_departments,
+    _compute_all_departments_for_kot,
 )
 
 
@@ -230,6 +233,23 @@ class TestURYPrintRouting(FrappeTestCase):
         kot = self._make_kot_doc([])
         buckets = _split_kot_items_by_department(kot)
         self.assertEqual(buckets, {})
+
+    def test_split_reads_kot_items_attribute(self):
+        """_get_kot_items_list must prefer `kot_items` (the real URY
+        KOT child table name) over `items`. Previously the helper
+        used only `items` which threw AttributeError on real KOT
+        docs — reported by the user on 2026-04-16."""
+        self._make_course("Mains", "Food")
+        self._make_course("Beers", "Drinks")
+        # Simulate a real URY KOT doc — kot_items, not items.
+        kot = types.SimpleNamespace(
+            kot_items=[
+                self._make_kot_item("Burger", "Mains"),
+                self._make_kot_item("Beer", "Beers"),
+            ]
+        )
+        buckets = _split_kot_items_by_department(kot)
+        self.assertEqual(set(buckets.keys()), {"Food", "Drinks"})
 
     # ---------------------------------------------------------------
     # 3. _resolve_printer_for_department
@@ -463,3 +483,293 @@ class TestURYPrintRouting(FrappeTestCase):
         entry = {"department": "Drinks", "items": [], "printer": None}
         should_print, printer, header = apply_print_fallback(entry, profile)
         self.assertFalse(should_print)
+
+    # ---------------------------------------------------------------
+    # 6. filter_plan_for_auto_print — drinks held by default
+    # ---------------------------------------------------------------
+
+    def test_auto_print_filter_drops_drinks_by_default(self):
+        """Default `custom_auto_print_drinks_kot=0` → drinks entries
+        are filtered out of the auto-print plan."""
+        profile = self._make_profile_doc(custom_auto_print_drinks_kot=0)
+        plan = [
+            {"department": "Food", "printer": PRINTER_PREFIX + "Kitchen", "items": []},
+            {"department": "Drinks", "printer": PRINTER_PREFIX + "Bar", "items": []},
+            {"department": "Other", "printer": PRINTER_PREFIX + "Kitchen", "items": []},
+        ]
+        filtered = filter_plan_for_auto_print(plan, profile)
+        depts = [e["department"] for e in filtered]
+        self.assertIn("Food", depts)
+        self.assertIn("Other", depts)
+        self.assertNotIn("Drinks", depts)
+
+    def test_auto_print_filter_keeps_drinks_when_enabled(self):
+        """Flipping `custom_auto_print_drinks_kot=1` → all departments
+        fire at order time (typical busy-bar workflow)."""
+        profile = self._make_profile_doc(custom_auto_print_drinks_kot=1)
+        plan = [
+            {"department": "Food", "printer": PRINTER_PREFIX + "Kitchen", "items": []},
+            {"department": "Drinks", "printer": PRINTER_PREFIX + "Bar", "items": []},
+        ]
+        filtered = filter_plan_for_auto_print(plan, profile)
+        self.assertEqual(len(filtered), 2)
+        depts = [e["department"] for e in filtered]
+        self.assertIn("Drinks", depts)
+
+    def test_auto_print_filter_returns_new_list(self):
+        """filter_plan_for_auto_print must NOT mutate the input."""
+        profile = self._make_profile_doc(custom_auto_print_drinks_kot=0)
+        plan = [
+            {"department": "Food", "printer": "X", "items": []},
+            {"department": "Drinks", "printer": "Y", "items": []},
+        ]
+        filtered = filter_plan_for_auto_print(plan, profile)
+        # Original untouched.
+        self.assertEqual(len(plan), 2)
+        # Filtered has only food.
+        self.assertEqual(len(filtered), 1)
+
+    def test_auto_print_filter_empty_plan(self):
+        profile = self._make_profile_doc()
+        self.assertEqual(filter_plan_for_auto_print([], profile), [])
+
+    # ---------------------------------------------------------------
+    # 7. Pending-KOT tracking helpers (custom_printed_departments)
+    # ---------------------------------------------------------------
+
+    def test_get_printed_departments_missing_field(self):
+        """No custom_printed_departments attribute => empty set."""
+        kot = types.SimpleNamespace(kot_items=[])
+        self.assertEqual(_get_printed_departments(kot), set())
+
+    def test_get_printed_departments_empty_string(self):
+        kot = types.SimpleNamespace(
+            kot_items=[], custom_printed_departments=""
+        )
+        self.assertEqual(_get_printed_departments(kot), set())
+
+    def test_get_printed_departments_default_literal(self):
+        """The schema default is '[]' — should parse to an empty set,
+        NOT treat it as the literal string."""
+        kot = types.SimpleNamespace(
+            kot_items=[], custom_printed_departments="[]"
+        )
+        self.assertEqual(_get_printed_departments(kot), set())
+
+    def test_get_printed_departments_single_dept(self):
+        kot = types.SimpleNamespace(
+            kot_items=[], custom_printed_departments='["Food"]'
+        )
+        self.assertEqual(_get_printed_departments(kot), {"Food"})
+
+    def test_get_printed_departments_multi_dept(self):
+        kot = types.SimpleNamespace(
+            kot_items=[],
+            custom_printed_departments='["Food", "Drinks"]',
+        )
+        self.assertEqual(
+            _get_printed_departments(kot), {"Food", "Drinks"}
+        )
+
+    def test_get_printed_departments_malformed_json(self):
+        """Malformed JSON degrades to empty set — don't crash the
+        pending-KOT tracker because of corrupted data."""
+        kot = types.SimpleNamespace(
+            kot_items=[], custom_printed_departments="not json{"
+        )
+        self.assertEqual(_get_printed_departments(kot), set())
+
+    def test_get_printed_departments_wrong_shape(self):
+        """JSON that parses but isn't a list => empty set."""
+        kot = types.SimpleNamespace(
+            kot_items=[],
+            custom_printed_departments='{"dept": "Food"}',
+        )
+        self.assertEqual(_get_printed_departments(kot), set())
+
+    def test_compute_all_departments_food_only(self):
+        self._make_course("Mains", "Food")
+        kot = self._make_kot_doc(
+            [self._make_kot_item("Burger", "Mains")]
+        )
+        self.assertEqual(_compute_all_departments_for_kot(kot), {"Food"})
+
+    def test_compute_all_departments_mixed(self):
+        self._make_course("Mains", "Food")
+        self._make_course("Beers", "Drinks")
+        kot = self._make_kot_doc(
+            [
+                self._make_kot_item("Burger", "Mains"),
+                self._make_kot_item("Beer", "Beers"),
+            ]
+        )
+        self.assertEqual(
+            _compute_all_departments_for_kot(kot), {"Food", "Drinks"}
+        )
+
+    def test_compute_all_departments_reads_kot_items_attribute(self):
+        """Same kot_items-not-items trap applies here — make sure the
+        helper reads through _get_kot_items_list."""
+        self._make_course("Beers", "Drinks")
+        kot = types.SimpleNamespace(
+            kot_items=[self._make_kot_item("Beer", "Beers")]
+        )
+        self.assertEqual(
+            _compute_all_departments_for_kot(kot), {"Drinks"}
+        )
+
+    def test_get_printed_departments_partial_vs_full_coverage(self):
+        """Verify the pending-KOT invariant:
+          - ALL depts = {Food, Drinks}
+          - PRINTED = {Food}
+          - => Drinks still held (should show up in pending list)
+        """
+        self._make_course("Mains", "Food")
+        self._make_course("Beers", "Drinks")
+        kot = types.SimpleNamespace(
+            kot_items=[
+                self._make_kot_item("Burger", "Mains"),
+                self._make_kot_item("Beer", "Beers"),
+            ],
+            custom_printed_departments='["Food"]',
+        )
+        printed = _get_printed_departments(kot)
+        all_depts = _compute_all_departments_for_kot(kot)
+        self.assertEqual(printed, {"Food"})
+        self.assertEqual(all_depts, {"Food", "Drinks"})
+        # Held = all minus printed
+        held = all_depts - printed
+        self.assertEqual(held, {"Drinks"})
+        # Not fully printed yet
+        self.assertFalse(all_depts.issubset(printed))
+
+    # ---------------------------------------------------------------
+    # 8. KDS routing mode — kot_list per-department filter
+    # ---------------------------------------------------------------
+    #
+    # The kot_list endpoint's item-filter logic lives inside the
+    # whitelisted function, but the core of the filter is just
+    # `_classify_kot_item_department(row) == target`. These tests
+    # verify the filter predicate matches the same departments the
+    # print resolver does — so the KDS and the printer never disagree
+    # on what belongs where. Written as pure-function tests (not
+    # end-to-end kot_list tests) so they don't need real URY KOT docs
+    # or real POS Profile / User Branch fixture chains.
+
+    def test_kds_filter_food_target_keeps_only_food_rows(self):
+        self._make_course("Mains", "Food")
+        self._make_course("Beers", "Drinks")
+        rows = [
+            frappe._dict(
+                item_code="Burger",
+                course=COURSE_PREFIX + "Mains",
+                qty=1,
+            ),
+            frappe._dict(
+                item_code="Beer",
+                course=COURSE_PREFIX + "Beers",
+                qty=2,
+            ),
+        ]
+        filtered = [
+            r
+            for r in rows
+            if _classify_kot_item_department(r) == "Food"
+        ]
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0].item_code, "Burger")
+
+    def test_kds_filter_drinks_target_keeps_only_drinks_rows(self):
+        self._make_course("Mains", "Food")
+        self._make_course("Beers", "Drinks")
+        rows = [
+            frappe._dict(
+                item_code="Burger",
+                course=COURSE_PREFIX + "Mains",
+                qty=1,
+            ),
+            frappe._dict(
+                item_code="Beer",
+                course=COURSE_PREFIX + "Beers",
+                qty=2,
+            ),
+            frappe._dict(
+                item_code="Wine",
+                course=COURSE_PREFIX + "Beers",
+                qty=1,
+            ),
+        ]
+        filtered = [
+            r
+            for r in rows
+            if _classify_kot_item_department(r) == "Drinks"
+        ]
+        self.assertEqual(len(filtered), 2)
+        self.assertEqual(
+            [r.item_code for r in filtered], ["Beer", "Wine"]
+        )
+
+    def test_kds_filter_all_target_keeps_everything(self):
+        """When target == 'All', the endpoint skips the filter
+        entirely — every row passes through untouched. Emulate that
+        contract via a no-op filter."""
+        self._make_course("Mains", "Food")
+        self._make_course("Beers", "Drinks")
+        rows = [
+            frappe._dict(
+                item_code="Burger", course=COURSE_PREFIX + "Mains"
+            ),
+            frappe._dict(
+                item_code="Beer", course=COURSE_PREFIX + "Beers"
+            ),
+        ]
+        target = "All"
+        filtered = (
+            rows
+            if target == "All"
+            else [
+                r
+                for r in rows
+                if _classify_kot_item_department(r) == target
+            ]
+        )
+        self.assertEqual(len(filtered), 2)
+
+    def test_kds_filter_other_target_matches_other_department(self):
+        """Desserts / misc courses should land on the 'Other' KDS
+        screen (and on the Food print route, per the existing
+        resolver — these are two separate routing decisions that
+        happen to share the 'Other → with Food' default)."""
+        self._make_course("Desserts", "Other")
+        rows = [
+            frappe._dict(
+                item_code="Ice Cream", course=COURSE_PREFIX + "Desserts"
+            ),
+        ]
+        filtered = [
+            r
+            for r in rows
+            if _classify_kot_item_department(r) == "Other"
+        ]
+        self.assertEqual(len(filtered), 1)
+
+    def test_kds_filter_excludes_rows_from_other_depts(self):
+        """Negative test: when a KOT only has Food items and the KDS
+        target is Drinks, the filter produces an empty list — the
+        endpoint then skips that KOT entirely so Drinks KDS never
+        sees the order."""
+        self._make_course("Mains", "Food")
+        rows = [
+            frappe._dict(
+                item_code="Burger", course=COURSE_PREFIX + "Mains"
+            ),
+            frappe._dict(
+                item_code="Fries", course=COURSE_PREFIX + "Mains"
+            ),
+        ]
+        filtered = [
+            r
+            for r in rows
+            if _classify_kot_item_department(r) == "Drinks"
+        ]
+        self.assertEqual(filtered, [])

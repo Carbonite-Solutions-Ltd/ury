@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Calendar, FileText, Users } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Button } from './ui';
@@ -6,12 +6,21 @@ import { getOrderStatusTypes, OrderStatusType } from '../data/order-types';
 import { usePOSStore } from '../store/pos-store';
 import { useRootStore } from '../store/root-store';
 import { canSeeAllTerminalOrders } from '../lib/role-utils';
+import { getPendingKotCount } from '../lib/invoice-api';
 
 interface OrderStatusSidebarProps {
   disabled?: boolean;
   selectedStatus: OrderStatusType;
   setSelectedStatus: (status: OrderStatusType) => void;
   getStatusCount?: (status: OrderStatusType) => number;
+  /**
+   * Version counter the parent bumps whenever an order list refresh
+   * should also re-poll the pending-KOT badge (e.g. after firing held
+   * KOTs via the Print Invoice button). Undefined means "ignore". The
+   * sidebar also polls on its own every 15s so the badge never gets
+   * stale for longer than a small window.
+   */
+  refreshVersion?: number;
 }
 
 const todayIso = (): string => {
@@ -23,8 +32,9 @@ const OrderStatusSidebar = ({
   disabled,
   selectedStatus,
   setSelectedStatus,
+  refreshVersion,
 }: OrderStatusSidebarProps) => {
-  const { posProfile } = usePOSStore();
+  const { posProfile, terminalName } = usePOSStore();
   const {
     user,
     selectedDate,
@@ -47,6 +57,23 @@ const OrderStatusSidebar = ({
     () => canSeeAllTerminalOrders(user),
     [user]
   );
+
+  const [pendingKotCount, setPendingKotCount] = useState<number>(0);
+
+  const refreshPendingCount = useCallback(async () => {
+    const count = await getPendingKotCount(terminalName, selectedDate);
+    setPendingKotCount(count);
+  }, [terminalName, selectedDate]);
+
+  // Poll the pending-KOT count on mount, when the date or terminal
+  // changes, when the parent tells us to refresh, and on a 15s timer
+  // as a safety net. 15s is a reasonable tradeoff between "fresh
+  // enough for the cashier to trust" and "not hammering the DB".
+  useEffect(() => {
+    refreshPendingCount();
+    const interval = setInterval(refreshPendingCount, 15000);
+    return () => clearInterval(interval);
+  }, [refreshPendingCount, refreshVersion]);
 
   // Lazy-load the cashier list once when the captain mounts the page.
   useEffect(() => {
@@ -73,28 +100,49 @@ const OrderStatusSidebar = ({
           </h2>
 
           <div className="space-y-1">
-            {statusTypes.map((status) => (
-              <Button
-                key={status.value}
-                onClick={() => setSelectedStatus(status.value as OrderStatusType)}
-                variant="ghost"
-                className={cn(
-                  'w-full flex items-center justify-between px-3 py-2.5 text-sm font-medium transition-all duration-200 group relative',
-                  selectedStatus === status.value
-                    ? 'bg-white text-gray-900 shadow-sm font-semibold'
-                    : 'text-gray-700 hover:bg-white/60 hover:text-gray-900'
-                )}
-                disabled={disabled}
-              >
-                {selectedStatus === status.value && (
-                  <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-blue-600 rounded-r-full" />
-                )}
-                <div className="flex items-center gap-3 ml-1">
-                  <FileText className="w-4 h-4 text-gray-500" />
-                  <span>{status.label}</span>
-                </div>
-              </Button>
-            ))}
+            {statusTypes.map((status) => {
+              const isPendingKots = status.value === 'Pending KOTs';
+              const badgeCount = isPendingKots ? pendingKotCount : 0;
+              return (
+                <Button
+                  key={status.value}
+                  onClick={() => setSelectedStatus(status.value as OrderStatusType)}
+                  variant="ghost"
+                  className={cn(
+                    'w-full flex items-center justify-between px-3 py-2.5 text-sm font-medium transition-all duration-200 group relative',
+                    selectedStatus === status.value
+                      ? 'bg-white text-gray-900 shadow-sm font-semibold'
+                      : 'text-gray-700 hover:bg-white/60 hover:text-gray-900'
+                  )}
+                  disabled={disabled}
+                >
+                  {selectedStatus === status.value && (
+                    <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-blue-600 rounded-r-full" />
+                  )}
+                  <div className="flex items-center gap-3 ml-1">
+                    <FileText
+                      className={cn(
+                        'w-4 h-4',
+                        isPendingKots && badgeCount > 0
+                          ? 'text-orange-500'
+                          : 'text-gray-500'
+                      )}
+                    />
+                    <span>{status.label}</span>
+                  </div>
+                  {isPendingKots && badgeCount > 0 && (
+                    <span
+                      className="min-w-[1.5rem] px-1.5 py-0.5 text-xs font-bold rounded-full bg-orange-500 text-white"
+                      title={`${badgeCount} order${
+                        badgeCount === 1 ? '' : 's'
+                      } with un-printed KOT`}
+                    >
+                      {badgeCount}
+                    </span>
+                  )}
+                </Button>
+              );
+            })}
           </div>
         </div>
 

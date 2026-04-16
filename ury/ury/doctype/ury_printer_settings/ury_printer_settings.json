@@ -22,7 +22,7 @@
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Printer",
-   "options": "Network Printer Settings"
+   "options": "URY Printer"
   }
  ],
  "index_web_pages_for_search": 1,

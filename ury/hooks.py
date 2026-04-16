@@ -395,6 +395,7 @@ fixtures = [
                     "POS Profile-custom_food_kot_route",
                     "POS Profile-custom_takeaway_kot_route",
                     "POS Profile-custom_print_fallback_mode",
+                    "POS Profile-custom_auto_print_drinks_kot",
                     "Employee-payment_amount",
                     "Employee-payment_type"
                 },

@@ -269,6 +269,7 @@ export default {
       call: frappe.call(),
       production: "",
       branch: "",
+      kds_routing_mode: "Menu Course",
       kot_channel: "",
       clickedItems: new Set(),
       struckThroughItems: {},
@@ -307,14 +308,24 @@ export default {
     fetchKOT() {
       return new Promise((resolve, reject) => {
         try {
+          // Pass the URL target (production-name OR department OR
+          // "All") so the backend can decide how to filter. In
+          // Menu Course mode the target is a department name and
+          // the backend trims each KOT's kot_items accordingly;
+          // in URY Production Unit mode the target is ignored
+          // server-side and the v-if filter below still works.
           this.call
-            .get("ury.ury.api.ury_kot_display.kot_list", {})
+            .get("ury.ury.api.ury_kot_display.kot_list", {
+              target: this.production,
+            })
             .then((result) => {
-              console.log(result,"..............result")
+              console.log(result, "..............result");
               this.branch = result.message.Branch;
               this.kot_alert_time = result.message.kot_alert_time;
               this.audio_alert = result.message.audio_alert;
               this.daily_order_number = result.message.daily_order_number;
+              this.kds_routing_mode =
+                result.message.kds_routing_mode || "Menu Course";
               this.kot_channel = `kot_update_${this.branch}_${this.production}`;
               this.kot = result.message.KOT;
               this.updateQtyColorTable();

@@ -364,6 +364,8 @@ def get_custom_fields():
 				"fieldtype": "Data",
 				"insert_after": "qz_print",
 				"label": "QZ Host",
+				"default": "localhost",
+				"description": "QZ Tray websocket host. Almost always 'localhost' — QZ Tray runs on the cashier's machine and the browser connects over localhost. Only change this for the rare case of QZ Tray running on a different machine on the same LAN.",
 				"translatable": 0,
 			},
 			# Shift hours / shift system fields. Same dual-source-of-truth
@@ -534,6 +536,22 @@ def get_custom_fields():
 				"mandatory_depends_on": "eval:doc.custom_ihotel_enabled",
 				"description": "Charge Type used on the iHotel Profile's folio row when charging to room.",
 			},
+			# KOT naming series default (2026-04-16). This field was
+			# shipped in custom_field.json years ago without a default,
+			# which meant every new POS Profile silently broke KOT
+			# creation until an admin set it manually. Ships via
+			# setup.py too per the dual-source-of-truth rule so
+			# existing sites pick up the default on next migrate.
+			# A backfill patch populates the value for profiles that
+			# still have a null/empty value.
+			{
+				"fieldname": "custom_kot_naming_series",
+				"fieldtype": "Data",
+				"insert_after": "custom_kot_settings",
+				"label": "URY KOT Naming Series",
+				"default": "KOT-.YYYY.-.####",
+				"description": "Frappe naming-series pattern for auto-generated KOT docs. Default produces KOT-2026-0001, KOT-2026-0002, etc.",
+			},
 			# Print configuration (2026-04-16 unified print round). Replaces
 			# the legacy printer_settings child table + custom_table_order_printer
 			# + custom_parcel_order_printer. The backend reads these first and
@@ -573,8 +591,8 @@ def get_custom_fields():
 				"insert_after": "custom_bill_printer",
 				"label": "Kitchen KOT Printer",
 				"options": "URY Printer",
-				"depends_on": "eval:doc.custom_print_mode != 'Disabled'",
-				"description": "The printer in the kitchen (food KOT target). Falls back to Bill when empty.",
+				"depends_on": "eval:doc.custom_print_mode != 'Disabled' && doc.custom_kds_routing_mode != 'URY Production Unit'",
+				"description": "The printer in the kitchen (food KOT target). Falls back to Bill when empty. Hidden in URY Production Unit mode — routing is set on each URY Production Unit's Printers table instead.",
 			},
 			{
 				"fieldname": "custom_bar_kot_printer",
@@ -582,8 +600,8 @@ def get_custom_fields():
 				"insert_after": "custom_kitchen_kot_printer",
 				"label": "Bar KOT Printer",
 				"options": "URY Printer",
-				"depends_on": "eval:doc.custom_print_mode != 'Disabled'",
-				"description": "The printer at the bar (drinks KOT target). Falls back to Kitchen, then Bill.",
+				"depends_on": "eval:doc.custom_print_mode != 'Disabled' && doc.custom_kds_routing_mode != 'URY Production Unit'",
+				"description": "The printer at the bar (drinks KOT target). Falls back to Kitchen, then Bill. Hidden in URY Production Unit mode.",
 			},
 			{
 				"fieldname": "custom_parcel_kot_printer",
@@ -591,8 +609,8 @@ def get_custom_fields():
 				"insert_after": "custom_bar_kot_printer",
 				"label": "Parcel KOT Printer",
 				"options": "URY Printer",
-				"depends_on": "eval:doc.custom_print_mode != 'Disabled'",
-				"description": "The printer for parcel/takeaway KOTs. Falls back to Kitchen.",
+				"depends_on": "eval:doc.custom_print_mode != 'Disabled' && doc.custom_kds_routing_mode != 'URY Production Unit'",
+				"description": "The printer for parcel/takeaway KOTs. Falls back to Kitchen. Hidden in URY Production Unit mode.",
 			},
 			{
 				"fieldname": "custom_drinks_kot_route",
@@ -601,8 +619,8 @@ def get_custom_fields():
 				"label": "Drinks KOT Route",
 				"options": "Bar\nKitchen\nBill",
 				"default": "Bar",
-				"depends_on": "eval:doc.custom_print_mode != 'Disabled'",
-				"description": "Where drinks-department KOTs print. Drinks items are detected via URY Menu Course's Department.",
+				"depends_on": "eval:doc.custom_print_mode != 'Disabled' && doc.custom_kds_routing_mode != 'URY Production Unit'",
+				"description": "Where drinks-department KOTs print. Drinks items are detected via URY Menu Course's Department. Hidden in URY Production Unit mode.",
 			},
 			{
 				"fieldname": "custom_food_kot_route",
@@ -611,8 +629,8 @@ def get_custom_fields():
 				"label": "Food KOT Route",
 				"options": "Kitchen\nBar\nBill",
 				"default": "Kitchen",
-				"depends_on": "eval:doc.custom_print_mode != 'Disabled'",
-				"description": "Where food-department KOTs print. Defaults to Kitchen.",
+				"depends_on": "eval:doc.custom_print_mode != 'Disabled' && doc.custom_kds_routing_mode != 'URY Production Unit'",
+				"description": "Where food-department KOTs print. Defaults to Kitchen. Hidden in URY Production Unit mode.",
 			},
 			{
 				"fieldname": "custom_takeaway_kot_route",
@@ -621,8 +639,8 @@ def get_custom_fields():
 				"label": "Takeaway KOT Route",
 				"options": "Parcel\nKitchen",
 				"default": "Parcel",
-				"depends_on": "eval:doc.custom_print_mode != 'Disabled'",
-				"description": "Where parcel/takeaway KOTs print. Fallback to Kitchen if the Parcel printer is empty.",
+				"depends_on": "eval:doc.custom_print_mode != 'Disabled' && doc.custom_kds_routing_mode != 'URY Production Unit'",
+				"description": "Where parcel/takeaway KOTs print. Fallback to Kitchen if the Parcel printer is empty. Hidden in URY Production Unit mode.",
 			},
 			{
 				"fieldname": "custom_print_fallback_mode",
@@ -633,6 +651,25 @@ def get_custom_fields():
 				"default": "Fallback to Bill Printer",
 				"depends_on": "eval:doc.custom_print_mode != 'Disabled'",
 				"description": "What happens when a KOT's target printer is offline.",
+			},
+			{
+				"fieldname": "custom_auto_print_drinks_kot",
+				"fieldtype": "Check",
+				"insert_after": "custom_print_fallback_mode",
+				"label": "Auto-print Drinks KOT on Order",
+				"default": "0",
+				"depends_on": "eval:doc.custom_print_mode != 'Disabled' && doc.custom_kds_routing_mode != 'URY Production Unit'",
+				"description": "When off (default), Drinks KOTs are held until the cashier prints the bill at payment time. When on, drinks auto-print at order time like food. Hidden in URY Production Unit mode.",
+			},
+			{
+				"fieldname": "custom_kds_routing_mode",
+				"fieldtype": "Select",
+				"insert_after": "custom_auto_print_drinks_kot",
+				"label": "KDS Routing Mode",
+				"options": "Menu Course\nURY Production Unit",
+				"default": "Menu Course",
+				"depends_on": "eval:doc.custom_print_mode != 'Disabled'",
+				"description": "Controls how URYMosaic groups KOTs into screens. Menu Course (default): one KOT per order, split by item course department; KDS URL is /URYMosaic/Food|Drinks|Other|All. URY Production Unit: legacy multi-KOT-per-order flow split by Production Unit; KDS URL is /URYMosaic/<production-name>.",
 			},
 		],
 		"URY Menu Course": [

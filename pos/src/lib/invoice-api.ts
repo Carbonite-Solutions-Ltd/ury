@@ -341,6 +341,33 @@ export async function getCashierUsersForTerminal(
   }
 }
 
+/**
+ * Return the number of draft POS Invoices that still have at least
+ * one URY KOT with kot_printed=0. Drives the live badge next to the
+ * "Pending KOTs" entry in the Orders page sidebar. Scope follows the
+ * same rules as getPOSInvoices (branch + optional terminal + optional
+ * posting_date), but cashier scoping is deliberately omitted — pending
+ * KOTs are a kitchen/bar concern, not a per-cashier ledger.
+ */
+export async function getPendingKotCount(
+  terminal?: string | null,
+  posting_date?: string | null
+): Promise<number> {
+  try {
+    const params: Record<string, unknown> = {};
+    if (terminal) params.terminal = terminal;
+    if (posting_date) params.posting_date = posting_date;
+    const response = await call.get<{ message: { count: number } }>(
+      'ury.ury_pos.api.get_pending_kot_count',
+      params
+    );
+    return response?.message?.count ?? 0;
+  } catch (error) {
+    console.error('Error fetching pending KOT count:', error);
+    return 0;
+  }
+}
+
 export async function getPOSInvoiceItems(invoiceId: string) {
   try {
     const response = await call.get<GetPOSInvoiceItemsResponse>(
