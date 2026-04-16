@@ -49,8 +49,21 @@ website_context = {"splash_image": "/assets/ury/Images/ury-logo.jpg"}
 
 website_route_rules = [
     {"from_route": "/pos/<path:app_path>", "to_route": "pos"},
-    {"from_route": "/urypos/<path:app_path>", "to_route": "urypos"},
     {"from_route": "/URYMosaic/<path:app_path>", "to_route": "URYMosaic"},
+]
+
+# Legacy Vue POS (urypos/) was sunset by print-revamp Round 3 on
+# 2026-04-16. Bookmarks and old deep-links still need to land
+# somewhere useful, so we 301 them to the React POS (pos/). Two
+# rules because Frappe's redirect matcher doesn't automatically
+# collapse the root path into the wildcard.
+website_redirects = [
+    {"source": "/urypos", "target": "/pos"},
+    {
+        "source": r"/urypos/(.*)",
+        "target": r"/pos/\1",
+        "match_with_query_string": True,
+    },
 ]
 # Home Pages
 # ----------
