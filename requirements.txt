@@ -1,16 +1,29 @@
 # frappe -- https://github.com/frappe/frappe is installed via 'bench init'
 # Node version minimum 18.18.0
 
-# CUPS Python bindings — required for the Network Printer Settings
-# "Get Printers List" button and for URY's CUPS Direct print mode.
-# Note: this is a C extension that links against libcups2 — the OS
-# package `libcups2-dev` (Debian/Ubuntu) or `cups-devel` (RHEL/Fedora)
-# MUST be installed BEFORE pip can build pycups. If `bench install-app ury`
-# fails on this line, run:
-#     sudo apt-get install -y libcups2-dev          (Debian/Ubuntu)
-#     sudo dnf install -y cups-devel                (RHEL/Fedora)
-#     sudo pacman -S libcups                        (Arch)
-# then retry `bench setup requirements --python` to rebuild URY's deps.
-# URY's after_install / after_migrate hooks also surface this with
-# clearer messaging — see ury/install.py:_check_cups_dependency.
-pycups>=2.0.1
+# ─────────────────────────────────────────────────────────────────
+# pycups — OPTIONAL, for CUPS Direct print mode only
+# ─────────────────────────────────────────────────────────────────
+# `pycups` is a C extension that links against libcups2. It is NOT
+# required for the default print path (QZ Tray, which runs in the
+# cashier's browser). Making it a hard dependency blocked installs
+# on cloud-hosted benches that didn't have libcups2-dev on the box
+# — the pip wheel build fails with "cups/http.h: No such file or
+# directory" before URY's own install hooks can even surface the
+# error. All URY call sites that import `cups` are wrapped in a
+# try/except ImportError that degrades to a friendly "pycups is not
+# installed" message, so URY runs end-to-end without pycups as long
+# as the admin stays on QZ Tray mode.
+#
+# To enable CUPS Direct mode, install the CUPS dev headers FIRST,
+# then add pycups to your bench's Python env:
+#
+#     sudo apt-get install -y libcups2-dev        # Debian / Ubuntu
+#     sudo dnf install -y cups-devel              # RHEL / Fedora
+#     sudo pacman -S libcups                      # Arch
+#
+#     ./env/bin/pip install 'pycups>=2.0.1'
+#     bench restart
+#
+# URY's after_install / after_migrate hooks surface this as a
+# yellow warning too — see ury/install.py:_check_cups_dependency.

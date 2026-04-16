@@ -173,22 +173,18 @@ def _check_cups_dependency():
 
     click.secho(
         "\n" + "=" * 72 + "\n"
-        "[URY] WARNING: pycups (CUPS Python bindings) is missing.\n"
-        "=" * 72 + "\n\n"
-        "Effect: the Network Printer Settings 'Get Printers List' button\n"
-        "and URY's CUPS Direct print mode will not work. URY's QZ Tray\n"
-        "print mode (the cloud-hosted default) is unaffected — you can\n"
-        "ignore this warning if you're using QZ Tray.\n\n"
-        "To enable CUPS-based printing, run these commands as a user\n"
-        "with sudo access:\n\n"
+        "[URY] INFO: pycups is not installed — CUPS Direct mode is\n"
+        "      unavailable. QZ Tray mode (the default, cloud-friendly\n"
+        "      print path) works fine without it. IGNORE this message\n"
+        "      if you're using QZ Tray.\n"
+        + "=" * 72 + "\n\n"
+        "To enable CUPS Direct printing only:\n\n"
         f"  1. Install the OS-level CUPS development headers:\n"
         f"     {os_install}\n\n"
         f"  2. {bench_root_hint}\n"
-        f"     ./env/bin/pip install pycups\n\n"
+        f"     ./env/bin/pip install 'pycups>=2.0.1'\n\n"
         f"  3. Restart bench so the new module is picked up:\n"
         f"     bench restart\n\n"
-        "Alternatively, run `bench setup requirements --python` from\n"
-        "your bench root to retry the full Python dependency install.\n"
         + "=" * 72 + "\n",
-        fg="yellow",
+        fg="cyan",
     )
