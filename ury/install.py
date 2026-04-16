@@ -1,7 +1,7 @@
 import click
 import frappe
 
-from ury.setup import after_install as setup
+from ury.setup import after_install as setup, get_custom_fields
 from ury.permissions import ensure_role_permissions
 
 
@@ -27,25 +27,77 @@ def after_migrate():
     installs in a URY-compatible state as the app evolves. See CLAUDE.md
     "Fixes log" 2026-04-08 / 2026-04-09 for context.
 
-    Calls `setup()` (create_custom_fields) so Custom Fields added in
+    Calls `_safe_refresh_custom_fields` so Custom Fields added in
     newer URY releases land on pre-existing sites. Without this,
     dual-source-of-truth fields listed in ury/setup.py never reach
     older installs — fixtures only run on `bench install-app`, not
     on `bench migrate`. See the 2026-04-09 fixes log entry about
     `custom_terminal` silently missing after a feature upgrade.
     """
-    try:
-        setup()
-    except Exception as e:
-        click.secho(
-            f"[URY] Failed to refresh custom fields: {e}. "
-            f"Run `bench --site <site> execute ury.setup.after_install` "
-            f"manually to retry.",
-            fg="red",
-        )
+    _safe_refresh_custom_fields()
     ensure_pos_settings_configured()
     _safe_ensure_role_permissions()
     _check_cups_dependency()
+
+
+def _safe_refresh_custom_fields():
+    """Per-field defensive wrapper around the ury/setup.py
+    get_custom_fields() spec. Frappe's `create_custom_fields` processes
+    fields in a loop and aborts on the first raise — which means a
+    single legacy field with an incompatible fieldtype (e.g. an
+    old `Data` field the new spec wants as `Time`) blocks every
+    subsequent field from getting created on an existing site. We
+    iterate per-field here so one bad apple doesn't spoil the batch.
+
+    Failed fields are logged as a yellow warning with their doctype
+    + fieldname + error — admin can investigate those individually
+    without losing the fields that did apply.
+    """
+    from frappe.custom.doctype.custom_field.custom_field import (
+        create_custom_fields,
+    )
+
+    try:
+        all_fields = get_custom_fields()
+    except Exception as e:
+        click.secho(
+            f"[URY] Failed to load custom field spec: {e}", fg="red"
+        )
+        return
+
+    successes = 0
+    failures = []
+    for doctype, fields in all_fields.items():
+        if isinstance(fields, dict):
+            fields = [fields]
+        for field_spec in fields:
+            fieldname = field_spec.get("fieldname", "<no fieldname>")
+            try:
+                create_custom_fields({doctype: [field_spec]})
+                successes += 1
+            except Exception as e:
+                failures.append((doctype, fieldname, str(e)))
+
+    if failures:
+        click.secho(
+            f"[URY] Custom field refresh: {successes} fields OK, "
+            f"{len(failures)} failed:",
+            fg="yellow",
+        )
+        for dt, fn, err in failures:
+            click.secho(f"    {dt}.{fn} — {err}", fg="yellow")
+        click.secho(
+            "  These failures usually mean a legacy field on this site "
+            "has an incompatible fieldtype vs the current spec. Inspect "
+            "the field in the desk (Customize Form) and either align "
+            "it with setup.py or delete + recreate.",
+            fg="yellow",
+        )
+    else:
+        click.secho(
+            f"[URY] Custom field refresh: {successes} fields OK.",
+            fg="green",
+        )
 
 
 def _safe_ensure_role_permissions():
