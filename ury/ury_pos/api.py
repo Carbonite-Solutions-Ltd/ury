@@ -3832,6 +3832,172 @@ def get_merge_report(from_date=None, to_date=None, terminal=None):
 
 
 @frappe.whitelist()
+def get_payment_splits_report(from_date=None, to_date=None, terminal=None):
+    """Surface every paid POS Invoice that was settled with two or
+    more payment rows in the date window — i.e. anything where the
+    Split Bill flow OR a multi-mode single-payer settlement was used.
+
+    Admin / captain only. We can't distinguish "Split Bill" (multiple
+    payers, same payment dialog flow) from "single payer with mixed
+    modes" purely from the saved data — both produce N>1 rows in
+    `tabSales Invoice Payment` after collapsePayers groups by mode.
+    For reporting we treat them the same: any invoice with > 1
+    payment row is a "split payment".
+
+    Each event row carries the invoice metadata plus the per-mode
+    breakdown so the UI can render `Cash 30.00 + Card 20.00` style
+    summaries inline.
+    """
+    if not _user_can_see_admin_reports():
+        frappe.throw(
+            _("You don't have permission to see split-payment reports."),
+            frappe.PermissionError,
+        )
+
+    from_date, to_date = _reports_date_range(from_date, to_date)
+    branch = getBranch()
+
+    where_parts = [
+        "pi.branch = %s",
+        "pi.docstatus = 1",
+        "pi.posting_date BETWEEN %s AND %s",
+        "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
+    ]
+    params = [branch, from_date, to_date]
+    if terminal:
+        where_parts.append(
+            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
+        )
+        params.append(terminal)
+
+    invoices = frappe.db.sql(
+        f"""
+        SELECT
+            pi.name,
+            pi.posting_date,
+            pi.posting_time,
+            pi.owner,
+            COALESCE(u.full_name, pi.owner) AS owner_full_name,
+            pi.customer,
+            pi.customer_name,
+            pi.grand_total,
+            pi.restaurant_table,
+            pi.custom_terminal,
+            pi.is_return,
+            (
+                SELECT COUNT(p.name)
+                FROM `tabSales Invoice Payment` AS p
+                WHERE p.parent = pi.name
+            ) AS payment_count
+        FROM `tabPOS Invoice` AS pi
+        LEFT JOIN `tabUser` AS u ON u.name = pi.owner
+        WHERE {" AND ".join(where_parts)}
+          AND (
+            SELECT COUNT(p2.name)
+            FROM `tabSales Invoice Payment` AS p2
+            WHERE p2.parent = pi.name
+          ) > 1
+        ORDER BY pi.posting_date DESC, pi.posting_time DESC
+        """,
+        tuple(params),
+        as_dict=True,
+    )
+
+    if not invoices:
+        return {
+            "from_date": from_date,
+            "to_date": to_date,
+            "branch": branch,
+            "terminal": terminal or None,
+            "rows": [],
+            "summary": {
+                "count": 0,
+                "total_amount": 0,
+                "by_mode": [],
+            },
+        }
+
+    invoice_names = [r["name"] for r in invoices]
+    placeholders = ", ".join(["%s"] * len(invoice_names))
+    payment_rows = frappe.db.sql(
+        f"""
+        SELECT parent, mode_of_payment, amount, base_amount
+        FROM `tabSales Invoice Payment`
+        WHERE parent IN ({placeholders})
+        ORDER BY idx
+        """,
+        tuple(invoice_names),
+        as_dict=True,
+    )
+
+    payments_by_invoice: dict = {}
+    for p in payment_rows:
+        # Skip zero-amount rows — they appear when a cashier added a
+        # mode but zeroed it before submitting; not interesting.
+        if not (float(p.get("amount") or 0)):
+            continue
+        payments_by_invoice.setdefault(p["parent"], []).append(
+            {
+                "mode_of_payment": p["mode_of_payment"],
+                "amount": float(p["amount"] or 0),
+            }
+        )
+
+    rows = []
+    by_mode_totals: dict = {}
+    grand_total_sum = 0.0
+    for inv in invoices:
+        payments = payments_by_invoice.get(inv["name"], [])
+        # The N>1 SQL filter counts ALL rows; if we filtered out
+        # zero-amount rows above and there's now <2 left, this isn't
+        # a meaningful split — skip it.
+        if len(payments) < 2:
+            continue
+        rows.append(
+            {
+                "name": inv["name"],
+                "posting_date": str(inv["posting_date"] or ""),
+                "posting_time": _time_str(inv["posting_time"]),
+                "owner": inv["owner"],
+                "owner_full_name": inv["owner_full_name"],
+                "customer": inv["customer"],
+                "customer_name": inv["customer_name"] or inv["customer"],
+                "grand_total": float(inv["grand_total"] or 0),
+                "restaurant_table": inv["restaurant_table"],
+                "custom_terminal": inv["custom_terminal"],
+                "is_return": int(inv.get("is_return") or 0),
+                "payment_count": len(payments),
+                "payments": payments,
+            }
+        )
+        grand_total_sum += float(inv["grand_total"] or 0)
+        for p in payments:
+            agg = by_mode_totals.setdefault(
+                p["mode_of_payment"],
+                {"mode_of_payment": p["mode_of_payment"], "amount": 0.0, "count": 0},
+            )
+            agg["amount"] += p["amount"]
+            agg["count"] += 1
+
+    return {
+        "from_date": from_date,
+        "to_date": to_date,
+        "branch": branch,
+        "terminal": terminal or None,
+        "rows": rows,
+        "summary": {
+            "count": len(rows),
+            "total_amount": grand_total_sum,
+            "by_mode": sorted(
+                by_mode_totals.values(),
+                key=lambda r: r["amount"],
+                reverse=True,
+            ),
+        },
+    }
+
+
+@frappe.whitelist()
 def get_transfer_report(from_date=None, to_date=None, terminal=None):
     """Return every POS Invoice that was transferred to another
     cashier at shift-close time, in the given date range.
@@ -3926,7 +4092,64 @@ def get_transfer_report(from_date=None, to_date=None, terminal=None):
         # Swallow the noisy remarks field now that we've parsed it.
         del row["remarks"]
 
-    # Summary: distinct from/to pair count and total amount moved.
+    # Group invoices into one row per shift-close event. The natural
+    # event key is (opening_entry, from_cashier, new_cashier) — every
+    # invoice transferred during the same shift close shares all three.
+    # Within a group we surface the latest transfer_time as the event
+    # timestamp, count + total amount in the header, and the per-invoice
+    # rows in `invoices` so the frontend can render an expandable
+    # details panel.
+    events_by_key: dict = {}
+    for row in rows:
+        key = (
+            row.get("opening_entry") or "",
+            row.get("from_cashier") or "?",
+            row.get("new_cashier") or "?",
+        )
+        ev = events_by_key.setdefault(
+            key,
+            {
+                "opening_entry": row.get("opening_entry"),
+                "from_cashier": row.get("from_cashier"),
+                "from_cashier_full_name": row.get("from_cashier_full_name"),
+                "to_cashier": row.get("new_cashier"),
+                "to_cashier_full_name": row.get("new_cashier_full_name"),
+                "transfer_time": row.get("transfer_time"),
+                "count": 0,
+                "total_amount": 0.0,
+                "custom_terminal": row.get("custom_terminal"),
+                "invoices": [],
+            },
+        )
+        # Keep the latest transfer_time as the event timestamp.
+        rt = row.get("transfer_time")
+        if rt and (not ev["transfer_time"] or rt > ev["transfer_time"]):
+            ev["transfer_time"] = rt
+        ev["count"] += 1
+        ev["total_amount"] += float(row.get("grand_total") or 0)
+        ev["invoices"].append(
+            {
+                "name": row.get("name"),
+                "customer": row.get("customer"),
+                "customer_name": row.get("customer_name") or row.get("customer"),
+                "restaurant_table": row.get("restaurant_table"),
+                "posting_date": str(row.get("posting_date") or ""),
+                "status": row.get("status"),
+                "docstatus": row.get("docstatus"),
+                "grand_total": float(row.get("grand_total") or 0),
+                "custom_terminal": row.get("custom_terminal"),
+            }
+        )
+
+    # Stable sort: latest events first.
+    events = sorted(
+        events_by_key.values(),
+        key=lambda e: e.get("transfer_time") or "",
+        reverse=True,
+    )
+    for ev in events:
+        ev["transfer_time"] = str(ev["transfer_time"] or "")
+
     total_amount = sum(
         float(r.get("grand_total") or 0) for r in rows
     )
@@ -3940,8 +4163,12 @@ def get_transfer_report(from_date=None, to_date=None, terminal=None):
         "to_date": to_date,
         "branch": branch,
         "terminal": terminal or None,
+        "events": events,
+        # Flat per-invoice list kept around for backwards compat with
+        # any caller that still wants the un-grouped view.
         "rows": rows,
         "summary": {
+            "event_count": len(events),
             "count": len(rows),
             "total_amount": total_amount,
             "distinct_pairs": len(pairs),

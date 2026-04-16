@@ -331,17 +331,105 @@ export interface TransferRow {
   custom_terminal: string | null;
 }
 
+// One per-invoice row nested under a TransferEvent.
+export interface TransferEventInvoice {
+  name: string;
+  customer: string | null;
+  customer_name: string | null;
+  restaurant_table: string | null;
+  posting_date: string;
+  status: string;
+  docstatus: number;
+  grand_total: number;
+  custom_terminal: string | null;
+}
+
+// One row per shift-close transfer event (grouped by opening_entry +
+// from/to pair). Backend serves these alongside the flat `rows` for
+// backwards compat; the Reports UI renders the grouped events with
+// an expandable details list inside.
+export interface TransferEvent {
+  opening_entry: string | null;
+  from_cashier: string | null;
+  from_cashier_full_name: string | null;
+  to_cashier: string;
+  to_cashier_full_name: string;
+  transfer_time: string;
+  count: number;
+  total_amount: number;
+  custom_terminal: string | null;
+  invoices: TransferEventInvoice[];
+}
+
 export interface TransferReportResponse {
   from_date: string;
   to_date: string;
   branch: string;
   terminal: string | null;
+  events: TransferEvent[];
   rows: TransferRow[];
   summary: {
+    event_count: number;
     count: number;
     total_amount: number;
     distinct_pairs: number;
   };
+}
+
+// ---------------------------------------------------------------
+// Payment Splits report (admin only)
+// ---------------------------------------------------------------
+
+export interface PaymentSplitPaymentRow {
+  mode_of_payment: string;
+  amount: number;
+}
+
+export interface PaymentSplitRow {
+  name: string;
+  posting_date: string;
+  posting_time: string;
+  owner: string;
+  owner_full_name: string;
+  customer: string | null;
+  customer_name: string | null;
+  grand_total: number;
+  restaurant_table: string | null;
+  custom_terminal: string | null;
+  is_return: number;
+  payment_count: number;
+  payments: PaymentSplitPaymentRow[];
+}
+
+export interface PaymentSplitsResponse {
+  from_date: string;
+  to_date: string;
+  branch: string;
+  terminal: string | null;
+  rows: PaymentSplitRow[];
+  summary: {
+    count: number;
+    total_amount: number;
+    by_mode: Array<{
+      mode_of_payment: string;
+      amount: number;
+      count: number;
+    }>;
+  };
+}
+
+export async function getPaymentSplitsReport(
+  range: ReportDateRange = {}
+): Promise<PaymentSplitsResponse> {
+  const params: Record<string, unknown> = {};
+  if (range.from_date) params.from_date = range.from_date;
+  if (range.to_date) params.to_date = range.to_date;
+  if (range.terminal) params.terminal = range.terminal;
+  const res = await call.get<{ message: PaymentSplitsResponse }>(
+    'ury.ury_pos.api.get_payment_splits_report',
+    params
+  );
+  return res.message;
 }
 
 export async function getMergeReport(
