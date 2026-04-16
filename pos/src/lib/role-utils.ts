@@ -127,6 +127,24 @@ export const canAccessDeskAndTerminalSwitch = (
  *
  * Backend re-validates the same gate in `_user_can_return_orders`.
  */
+/**
+ * Whether the current user can see the cross-cashier admin reports
+ * (Sales by Cashier, Sales by Category, Top / Bottom Items) on the
+ * Reports page. Cashiers see only their own shift summary + the
+ * existing per-user Daily Sales + Dashboard tabs.
+ *
+ * Backend re-validates the same role list in
+ * ``_user_can_see_admin_reports`` so a malicious frontend can't
+ * escalate by spoofing the endpoint.
+ */
+export const canSeeAdminReports = (user: User | null): boolean => {
+  if (!user) return false;
+  if (user.name === 'Administrator') return true;
+  if (!user.roles) return false;
+  const allowed = ['System Manager', 'URY Manager', 'URY Captain'];
+  return user.roles.some((role) => allowed.includes(role));
+};
+
 export const canReturnOrders = (
   user: User | null,
   posProfile: PosProfileCombined | null
