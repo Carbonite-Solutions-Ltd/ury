@@ -769,7 +769,7 @@ def get_custom_fields():
 			},
 		],
 
-		"POS Invoice Iten": [
+		"POS Invoice Item": [
 			{
 				"fieldname": "comment",
 				"fieldtype": "Data",
