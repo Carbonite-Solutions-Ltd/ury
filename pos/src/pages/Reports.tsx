@@ -1,31 +1,51 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { 
-  TrendingUp, 
-  DollarSign, 
-  ShoppingCart, 
-  Users, 
-  Calendar,
+import {
+  TrendingUp,
+  DollarSign,
+  ShoppingCart,
+  Users,
   Printer,
-  RefreshCw
+  RefreshCw,
+  UserCircle,
+  PieChart,
+  Trophy,
+  ClipboardList,
+  GitMerge,
+  ArrowRightLeft,
+  RotateCcw,
+  CreditCard,
+  Tag,
 } from 'lucide-react';
 import { Card, CardContent, Badge } from '../components/ui';
 import { Button } from '../components/ui/button';
 import { Spinner } from '../components/ui/spinner';
+import { DatePicker } from '../components/ui/date-picker';
 import { call } from '../lib/frappe-sdk';
 import { formatCurrency } from '../lib/utils';
 import { showToast } from '../components/ui/toast';
+import { usePOSStore } from '../store/pos-store';
+import { useRootStore } from '../store/root-store';
+import { canSeeAdminReports } from '../lib/role-utils';
+import {
+  getSalesByCashier,
+  getSalesByCategory,
+  getTopBottomItems,
+  getMyShiftSummary,
+  getMergeReport,
+  getTransferReport,
+  type SalesByCashierResponse,
+  type SalesByCategoryResponse,
+  type TopBottomItemsResponse,
+  type ShiftSummaryResponse,
+  type MergeReportResponse,
+  type TransferReportResponse,
+  type DashboardStatsExtended,
+} from '../lib/reports-api';
 
-interface DashboardStats {
-  total_sales: number;
-  total_orders: number;
-  total_customers: number;
-  average_order_value: number;
-  top_selling_items: Array<{
-    item_name: string;
-    quantity: number;
-    total_amount: number;
-  }>;
-}
+// Legacy alias — kept so downstream local references compile while the
+// real response type now carries admin-only extras (order-type mix,
+// payment-mode mix, active cashiers). See reports-api.ts.
+type DashboardStats = DashboardStatsExtended;
 
 interface SalesInvoice {
   name: string;
@@ -48,23 +68,83 @@ interface DailySalesResponse {
   payment_totals: PaymentTotal[];
 }
 
+type ReportTab =
+  | 'dashboard'
+  | 'daily-sales'
+  | 'my-shift'
+  | 'by-cashier'
+  | 'by-category'
+  | 'top-bottom'
+  | 'merges'
+  | 'transfers';
+
+const todayIso = (): string => new Date().toISOString().split('T')[0];
+const daysAgoIso = (n: number): string => {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().split('T')[0];
+};
+
 export default function Reports() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'daily-sales'>('dashboard');
+  const [activeTab, setActiveTab] = useState<ReportTab>('dashboard');
   const [loading, setLoading] = useState(false);
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [selectedDate, setSelectedDate] = useState(todayIso());
+  // Range-based tabs (by-cashier / by-category / top-bottom) share
+  // one from/to pair. Default is last 7 days.
+  const [fromDate, setFromDate] = useState(daysAgoIso(6));
+  const [toDate, setToDate] = useState(todayIso());
   const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
   const [salesInvoices, setSalesInvoices] = useState<SalesInvoice[]>([]);
   const [paymentTotals, setPaymentTotals] = useState<PaymentTotal[]>([]);
+  // New report data slots
+  const [shiftSummary, setShiftSummary] =
+    useState<ShiftSummaryResponse | null>(null);
+  const [salesByCashier, setSalesByCashier] =
+    useState<SalesByCashierResponse | null>(null);
+  const [salesByCategory, setSalesByCategory] =
+    useState<SalesByCategoryResponse | null>(null);
+  const [topBottom, setTopBottom] =
+    useState<TopBottomItemsResponse | null>(null);
+  const [mergeReport, setMergeReport] =
+    useState<MergeReportResponse | null>(null);
+  const [transferReport, setTransferReport] =
+    useState<TransferReportResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const printRef = useRef<HTMLDivElement>(null);
+
+  const { terminalName } = usePOSStore();
+  const { user } = useRootStore();
+  const isAdmin = canSeeAdminReports(user);
+
+  const isRangeTab =
+    activeTab === 'by-cashier' ||
+    activeTab === 'by-category' ||
+    activeTab === 'top-bottom' ||
+    activeTab === 'merges' ||
+    activeTab === 'transfers';
+  const isSingleDateTab =
+    activeTab === 'dashboard' || activeTab === 'daily-sales';
 
   useEffect(() => {
     if (activeTab === 'dashboard') {
       fetchDashboardStats();
     } else if (activeTab === 'daily-sales') {
       fetchDailySales();
+    } else if (activeTab === 'my-shift') {
+      fetchShiftSummary();
+    } else if (activeTab === 'by-cashier') {
+      fetchSalesByCashier();
+    } else if (activeTab === 'by-category') {
+      fetchSalesByCategory();
+    } else if (activeTab === 'top-bottom') {
+      fetchTopBottom();
+    } else if (activeTab === 'merges') {
+      fetchMergeReport();
+    } else if (activeTab === 'transfers') {
+      fetchTransferReport();
     }
-  }, [activeTab, selectedDate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, selectedDate, fromDate, toDate, terminalName]);
 
   const fetchDashboardStats = async () => {
     setLoading(true);
@@ -98,12 +178,114 @@ export default function Reports() {
     }
   };
 
-  const handleRefresh = () => {
-    if (activeTab === 'dashboard') {
-      fetchDashboardStats();
-    } else {
-      fetchDailySales();
+  const fetchShiftSummary = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getMyShiftSummary(terminalName);
+      setShiftSummary(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch shift summary');
+    } finally {
+      setLoading(false);
     }
+  };
+
+  const fetchSalesByCashier = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getSalesByCashier({
+        from_date: fromDate,
+        to_date: toDate,
+        terminal: terminalName,
+      });
+      setSalesByCashier(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch sales by cashier');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchSalesByCategory = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getSalesByCategory({
+        from_date: fromDate,
+        to_date: toDate,
+        terminal: terminalName,
+      });
+      setSalesByCategory(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch sales by category');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchTopBottom = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getTopBottomItems({
+        from_date: fromDate,
+        to_date: toDate,
+        terminal: terminalName,
+        limit: 10,
+      });
+      setTopBottom(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch top/bottom items');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchMergeReport = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getMergeReport({
+        from_date: fromDate,
+        to_date: toDate,
+        terminal: terminalName,
+      });
+      setMergeReport(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch merge report');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchTransferReport = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getTransferReport({
+        from_date: fromDate,
+        to_date: toDate,
+        terminal: terminalName,
+      });
+      setTransferReport(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch transfer report');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRefresh = () => {
+    if (activeTab === 'dashboard') fetchDashboardStats();
+    else if (activeTab === 'daily-sales') fetchDailySales();
+    else if (activeTab === 'my-shift') fetchShiftSummary();
+    else if (activeTab === 'by-cashier') fetchSalesByCashier();
+    else if (activeTab === 'by-category') fetchSalesByCategory();
+    else if (activeTab === 'top-bottom') fetchTopBottom();
+    else if (activeTab === 'merges') fetchMergeReport();
+    else if (activeTab === 'transfers') fetchTransferReport();
   };
 
   const handlePrint = () => {
@@ -382,17 +564,33 @@ export default function Reports() {
             <p className="text-sm text-gray-500 mt-1">View your sales performance and analytics</p>
           </div>
           <div className="flex items-center gap-3">
-            {/* Date Picker */}
-            <div className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2 border border-gray-200">
-              <Calendar className="w-4 h-4 text-gray-500" />
-              <input
-                type="date"
+            {/* Shared branded date pickers — popover + react-day-picker
+                calendar, whole component clickable, keyboard-friendly. */}
+            {isSingleDateTab && (
+              <DatePicker
                 value={selectedDate}
-                onChange={(e) => setSelectedDate(e.target.value)}
-                className="text-sm bg-transparent border-none focus:outline-none"
+                onChange={setSelectedDate}
+                max={todayIso()}
               />
-            </div>
-            
+            )}
+
+            {isRangeTab && (
+              <div className="flex items-center gap-2">
+                <DatePicker
+                  value={fromDate}
+                  onChange={setFromDate}
+                  max={toDate || todayIso()}
+                />
+                <span className="text-xs text-gray-500 font-medium">to</span>
+                <DatePicker
+                  value={toDate}
+                  onChange={setToDate}
+                  min={fromDate}
+                  max={todayIso()}
+                />
+              </div>
+            )}
+
             <Button
               variant="outline"
               size="sm"
@@ -421,33 +619,59 @@ export default function Reports() {
       {/* Tabs */}
       <div className="bg-white border-b border-gray-200">
         <div className="px-6">
-          <div className="flex space-x-8">
-            <button
+          <div className="flex space-x-8 overflow-x-auto">
+            <TabButton
+              active={activeTab === 'dashboard'}
               onClick={() => setActiveTab('dashboard')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                activeTab === 'dashboard'
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <TrendingUp className="w-5 h-5" />
-                <span>Dashboard</span>
-              </div>
-            </button>
-            <button
+              icon={<TrendingUp className="w-5 h-5" />}
+              label="Dashboard"
+            />
+            <TabButton
+              active={activeTab === 'daily-sales'}
               onClick={() => setActiveTab('daily-sales')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                activeTab === 'daily-sales'
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <ShoppingCart className="w-5 h-5" />
-                <span>Daily Sales</span>
-              </div>
-            </button>
+              icon={<ShoppingCart className="w-5 h-5" />}
+              label="Daily Sales"
+            />
+            <TabButton
+              active={activeTab === 'my-shift'}
+              onClick={() => setActiveTab('my-shift')}
+              icon={<ClipboardList className="w-5 h-5" />}
+              label="My Shift"
+            />
+            {isAdmin && (
+              <>
+                <TabButton
+                  active={activeTab === 'by-cashier'}
+                  onClick={() => setActiveTab('by-cashier')}
+                  icon={<UserCircle className="w-5 h-5" />}
+                  label="Sales by Cashier"
+                />
+                <TabButton
+                  active={activeTab === 'by-category'}
+                  onClick={() => setActiveTab('by-category')}
+                  icon={<PieChart className="w-5 h-5" />}
+                  label="Sales by Category"
+                />
+                <TabButton
+                  active={activeTab === 'top-bottom'}
+                  onClick={() => setActiveTab('top-bottom')}
+                  icon={<Trophy className="w-5 h-5" />}
+                  label="Top / Bottom Items"
+                />
+                <TabButton
+                  active={activeTab === 'merges'}
+                  onClick={() => setActiveTab('merges')}
+                  icon={<GitMerge className="w-5 h-5" />}
+                  label="Merges"
+                />
+                <TabButton
+                  active={activeTab === 'transfers'}
+                  onClick={() => setActiveTab('transfers')}
+                  icon={<ArrowRightLeft className="w-5 h-5" />}
+                  label="Transfers"
+                />
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -462,8 +686,41 @@ export default function Reports() {
           <div className="text-center py-12">
             <p className="text-red-600 font-medium">{error}</p>
           </div>
+        ) : activeTab === 'my-shift' ? (
+          <ShiftSummaryView summary={shiftSummary} />
+        ) : activeTab === 'by-cashier' ? (
+          <SalesByCashierView report={salesByCashier} />
+        ) : activeTab === 'by-category' ? (
+          <SalesByCategoryView report={salesByCategory} />
+        ) : activeTab === 'top-bottom' ? (
+          <TopBottomView report={topBottom} />
+        ) : activeTab === 'merges' ? (
+          <MergeReportView report={mergeReport} />
+        ) : activeTab === 'transfers' ? (
+          <TransferReportView report={transferReport} />
         ) : activeTab === 'dashboard' ? (
           <div className="max-w-7xl mx-auto space-y-6">
+            {/* Scope badge — shows whether numbers are branch-wide (admin)
+                or per-cashier. Relies on is_admin flag from the server so
+                it stays honest even if the frontend role helper drifts. */}
+            {dashboardStats && (
+              <div className="flex items-center gap-2 text-sm text-gray-600">
+                <Badge
+                  variant={dashboardStats.scope === 'branch' ? 'default' : 'secondary'}
+                  className="text-xs uppercase"
+                >
+                  {dashboardStats.scope === 'branch'
+                    ? 'Branch-wide'
+                    : 'My orders'}
+                </Badge>
+                <span className="text-xs text-gray-500">
+                  {dashboardStats.scope === 'branch'
+                    ? 'You are seeing every cashier on this branch.'
+                    : 'Only your own rings are included.'}
+                </span>
+              </div>
+            )}
+
             {/* Stats Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               <Card>
@@ -530,6 +787,157 @@ export default function Reports() {
                 </CardContent>
               </Card>
             </div>
+
+            {/* Returns tile — visible to everyone but only interesting when
+                the count is non-zero. */}
+            {dashboardStats && (dashboardStats.returns_count ?? 0) > 0 && (
+              <Card>
+                <CardContent className="p-6">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                        <RotateCcw className="w-5 h-5 text-red-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-gray-500">Returns</p>
+                        <p className="text-xl font-bold text-gray-900">
+                          {dashboardStats.returns_count} ·{' '}
+                          <span className="text-red-600">
+                            −{formatCurrency(dashboardStats.returns_amount || 0)}
+                          </span>
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Admin-only dashboard extras */}
+            {dashboardStats?.is_admin === 1 && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* Order type breakdown */}
+                <Card>
+                  <CardContent className="p-6">
+                    <div className="flex items-center gap-2 mb-4">
+                      <Tag className="w-5 h-5 text-gray-500" />
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        Order Type Breakdown
+                      </h3>
+                    </div>
+                    {(dashboardStats.order_type_breakdown || []).length === 0 ? (
+                      <p className="text-sm text-gray-500 italic">
+                        No orders yet today.
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {(dashboardStats.order_type_breakdown || []).map((row) => (
+                          <div
+                            key={row.order_type}
+                            className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0"
+                          >
+                            <div>
+                              <p className="font-medium text-gray-900">
+                                {row.order_type}
+                              </p>
+                              <p className="text-xs text-gray-500">
+                                {row.count} order{row.count === 1 ? '' : 's'}
+                              </p>
+                            </div>
+                            <p className="font-semibold text-gray-900">
+                              {formatCurrency(row.amount)}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Payment mode breakdown */}
+                <Card>
+                  <CardContent className="p-6">
+                    <div className="flex items-center gap-2 mb-4">
+                      <CreditCard className="w-5 h-5 text-gray-500" />
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        Payment Mode Breakdown
+                      </h3>
+                    </div>
+                    {(dashboardStats.payment_mode_breakdown || []).length === 0 ? (
+                      <p className="text-sm text-gray-500 italic">
+                        No payments recorded today.
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {(dashboardStats.payment_mode_breakdown || []).map((row) => (
+                          <div
+                            key={row.mode_of_payment}
+                            className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0"
+                          >
+                            <p className="font-medium text-gray-900">
+                              {row.mode_of_payment}
+                            </p>
+                            <p className="font-semibold text-blue-600">
+                              {formatCurrency(row.amount)}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+
+            {/* Active cashiers (admin only) */}
+            {dashboardStats?.is_admin === 1 &&
+              (dashboardStats.active_cashiers || []).length > 0 && (
+                <Card>
+                  <CardContent className="p-6">
+                    <div className="flex items-center gap-2 mb-4">
+                      <Users className="w-5 h-5 text-gray-500" />
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        Active Cashiers Today
+                      </h3>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50 border-y border-gray-200">
+                          <tr>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                              Cashier
+                            </th>
+                            <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                              Orders
+                            </th>
+                            <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                              Total
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200">
+                          {(dashboardStats.active_cashiers || []).map((row) => (
+                            <tr key={row.user}>
+                              <td className="px-4 py-3">
+                                <p className="font-medium text-gray-900">
+                                  {row.full_name}
+                                </p>
+                                <p className="text-xs text-gray-500">{row.user}</p>
+                              </td>
+                              <td className="px-4 py-3 text-right text-gray-600">
+                                {row.invoice_count}
+                              </td>
+                              <td className="px-4 py-3 text-right font-semibold text-gray-900">
+                                {formatCurrency(row.grand_total)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
 
             {/* Top Selling Items */}
             {dashboardStats?.top_selling_items && dashboardStats.top_selling_items.length > 0 && (
@@ -646,4 +1054,804 @@ export default function Reports() {
       </div>
     </div>
   );
+}
+
+// ---------------------------------------------------------------
+// Shared tab button + per-report sub-components
+// ---------------------------------------------------------------
+
+interface TabButtonProps {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}
+
+function TabButton({ active, onClick, icon, label }: TabButtonProps) {
+  return (
+    <button
+      onClick={onClick}
+      className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors whitespace-nowrap ${
+        active
+          ? 'border-blue-500 text-blue-600'
+          : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        {icon}
+        <span>{label}</span>
+      </div>
+    </button>
+  );
+}
+
+function ShiftSummaryView({ summary }: { summary: ShiftSummaryResponse | null }) {
+  if (!summary) return <EmptyState message="Loading…" />;
+  if (!summary.has_open_shift) {
+    return (
+      <div className="max-w-3xl mx-auto text-center py-12">
+        <ClipboardList className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+        <p className="text-gray-700 text-lg font-medium">No open shift</p>
+        <p className="text-gray-500 text-sm mt-2">
+          Start a shift via the POS opening dialog to see live totals here.
+        </p>
+      </div>
+    );
+  }
+
+  const diff = (p: { opening_amount: number; expected_amount: number; closing_amount: number }) =>
+    (p.closing_amount || 0) - (p.opening_amount || 0) - (p.expected_amount || 0);
+
+  return (
+    <div className="max-w-5xl mx-auto space-y-6">
+      <Card>
+        <CardContent className="p-6">
+          <div className="flex items-start justify-between mb-6">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">
+                Shift: {summary.opening_entry}
+              </h3>
+              <p className="text-sm text-gray-500">
+                Cashier: {summary.full_name} · Profile: {summary.pos_profile}
+              </p>
+              <p className="text-sm text-gray-500">
+                Started: {summary.period_start_date}
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <StatTile
+              label="Paid Invoices"
+              value={String(summary.paid_count ?? 0)}
+              tone="blue"
+            />
+            <StatTile
+              label="Grand Total"
+              value={formatCurrency(summary.grand_total ?? 0)}
+              tone="green"
+            />
+            <StatTile
+              label="Unpaid Drafts"
+              value={`${summary.draft_count ?? 0} · ${formatCurrency(
+                summary.draft_grand_total ?? 0
+              )}`}
+              tone="orange"
+            />
+            <StatTile
+              label="Tax Collected"
+              value={formatCurrency(summary.total_tax ?? 0)}
+              tone="purple"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      {summary.payments && summary.payments.length > 0 && (
+        <Card>
+          <CardContent className="p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+              Payment Reconciliation (expected)
+            </h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-y border-gray-200">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Mode
+                    </th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Opening
+                    </th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Collected
+                    </th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Expected Total
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {summary.payments.map((p, idx) => (
+                    <tr key={idx}>
+                      <td className="px-4 py-3 text-gray-900 font-medium">
+                        {p.mode_of_payment}
+                      </td>
+                      <td className="px-4 py-3 text-gray-600 text-right">
+                        {formatCurrency(p.opening_amount)}
+                      </td>
+                      <td className="px-4 py-3 text-gray-600 text-right">
+                        {formatCurrency(p.expected_amount)}
+                      </td>
+                      <td className="px-4 py-3 text-gray-900 font-semibold text-right">
+                        {formatCurrency(p.opening_amount + p.expected_amount)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-xs text-gray-400 mt-3">
+              * Closing totals + variance will be computed when you open the
+              End Shift dialog from the header menu.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function SalesByCashierView({
+  report,
+}: {
+  report: SalesByCashierResponse | null;
+}) {
+  if (!report) return <EmptyState message="Loading…" />;
+  if (!report.rows.length) {
+    return (
+      <EmptyState message={`No sales between ${report.from_date} and ${report.to_date}`} />
+    );
+  }
+  const grand = report.totals.grand_total || 0;
+  return (
+    <div className="max-w-7xl mx-auto space-y-4">
+      <Card>
+        <CardContent className="p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">
+                Sales by Cashier
+              </h3>
+              <p className="text-sm text-gray-500">
+                {report.from_date} → {report.to_date} · {report.rows.length}{' '}
+                cashier{report.rows.length === 1 ? '' : 's'}
+                {report.terminal ? ` · ${report.terminal}` : ''}
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-sm text-gray-500">Grand total</p>
+              <p className="text-2xl font-bold text-gray-900">
+                {formatCurrency(grand)}
+              </p>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-y border-gray-200">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Cashier
+                  </th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    Invoices
+                  </th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    Returns
+                  </th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    Discount
+                  </th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    AOV
+                  </th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    Net
+                  </th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    Grand Total
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {report.rows.map((row) => (
+                  <tr key={row.user}>
+                    <td className="px-4 py-3">
+                      <p className="font-medium text-gray-900">{row.full_name}</p>
+                      <p className="text-xs text-gray-500">{row.user}</p>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <span className="font-semibold">{row.sale_count}</span>
+                      {row.return_count > 0 && (
+                        <span className="text-xs text-red-500 ml-1">
+                          (−{row.return_count})
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-600">
+                      {row.return_amount > 0
+                        ? `−${formatCurrency(row.return_amount)}`
+                        : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-600">
+                      {row.discount_amount > 0
+                        ? formatCurrency(row.discount_amount)
+                        : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-600">
+                      {formatCurrency(row.average_order_value)}
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-600">
+                      {formatCurrency(row.net_total)}
+                    </td>
+                    <td className="px-4 py-3 text-right font-semibold text-gray-900">
+                      {formatCurrency(row.grand_total)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function SalesByCategoryView({
+  report,
+}: {
+  report: SalesByCategoryResponse | null;
+}) {
+  if (!report) return <EmptyState message="Loading…" />;
+  if (!report.rows.length) {
+    return (
+      <EmptyState message={`No sales between ${report.from_date} and ${report.to_date}`} />
+    );
+  }
+  const grand = report.totals.total_amount || 0;
+  const toneByDept: Record<string, string> = {
+    Food: 'bg-green-500',
+    Drinks: 'bg-blue-500',
+    Other: 'bg-amber-500',
+  };
+  return (
+    <div className="max-w-5xl mx-auto space-y-4">
+      <Card>
+        <CardContent className="p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">
+                Sales by Category
+              </h3>
+              <p className="text-sm text-gray-500">
+                {report.from_date} → {report.to_date} · classified via URY
+                Menu Course department
+                {report.terminal ? ` · ${report.terminal}` : ''}
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-sm text-gray-500">Total</p>
+              <p className="text-2xl font-bold text-gray-900">
+                {formatCurrency(grand)}
+              </p>
+            </div>
+          </div>
+          <div className="space-y-4">
+            {report.rows.map((row) => (
+              <div key={row.department}>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`w-3 h-3 rounded-full ${
+                        toneByDept[row.department] || 'bg-gray-400'
+                      }`}
+                    />
+                    <span className="font-medium text-gray-900">
+                      {row.department}
+                    </span>
+                    <span className="text-xs text-gray-500">
+                      ({row.total_qty.toFixed(0)} items · {row.invoice_count} orders)
+                    </span>
+                  </div>
+                  <div className="text-right">
+                    <span className="font-semibold text-gray-900">
+                      {formatCurrency(row.total_amount)}
+                    </span>
+                    <span className="text-xs text-gray-500 ml-2">
+                      {row.percentage.toFixed(1)}%
+                    </span>
+                  </div>
+                </div>
+                <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
+                  <div
+                    className={`h-full ${
+                      toneByDept[row.department] || 'bg-gray-400'
+                    }`}
+                    style={{ width: `${Math.min(row.percentage, 100)}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function TopBottomView({ report }: { report: TopBottomItemsResponse | null }) {
+  if (!report) return <EmptyState message="Loading…" />;
+  if (!report.top.length && !report.bottom.length) {
+    return (
+      <EmptyState message={`No sales between ${report.from_date} and ${report.to_date}`} />
+    );
+  }
+  return (
+    <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <ItemRankCard
+        title="Top Sellers"
+        subtitle={`${report.from_date} → ${report.to_date}`}
+        items={report.top}
+        tone="green"
+      />
+      <ItemRankCard
+        title="Slow Movers"
+        subtitle={`${report.from_date} → ${report.to_date}`}
+        items={report.bottom}
+        tone="red"
+      />
+    </div>
+  );
+}
+
+interface ItemRankCardProps {
+  title: string;
+  subtitle: string;
+  items: TopBottomItemsResponse['top'];
+  tone: 'green' | 'red';
+}
+
+function ItemRankCard({ title, subtitle, items, tone }: ItemRankCardProps) {
+  const accent = tone === 'green' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700';
+  return (
+    <Card>
+      <CardContent className="p-6">
+        <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
+        <p className="text-sm text-gray-500 mb-4">{subtitle}</p>
+        {items.length === 0 ? (
+          <p className="text-sm text-gray-500 italic">No items</p>
+        ) : (
+          <div className="space-y-2">
+            {items.map((item, idx) => (
+              <div
+                key={item.item_code}
+                className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0"
+              >
+                <div className="flex items-center gap-3">
+                  <div
+                    className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${accent}`}
+                  >
+                    #{idx + 1}
+                  </div>
+                  <div>
+                    <p className="font-medium text-gray-900">{item.item_name}</p>
+                    <p className="text-xs text-gray-500">
+                      {item.total_qty.toFixed(0)} sold · {item.order_count} orders
+                    </p>
+                  </div>
+                </div>
+                <p className="font-semibold text-gray-900">
+                  {formatCurrency(item.total_amount)}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+interface StatTileProps {
+  label: string;
+  value: string;
+  tone: 'blue' | 'green' | 'orange' | 'purple';
+}
+
+function StatTile({ label, value, tone }: StatTileProps) {
+  const map = {
+    blue: 'bg-blue-50 text-blue-700',
+    green: 'bg-green-50 text-green-700',
+    orange: 'bg-orange-50 text-orange-700',
+    purple: 'bg-purple-50 text-purple-700',
+  } as const;
+  return (
+    <div className={`rounded-lg p-4 ${map[tone]}`}>
+      <p className="text-xs uppercase font-medium opacity-80">{label}</p>
+      <p className="text-xl font-bold mt-1">{value}</p>
+    </div>
+  );
+}
+
+function EmptyState({ message }: { message: string }) {
+  return (
+    <div className="max-w-3xl mx-auto text-center py-12">
+      <p className="text-gray-500">{message}</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------
+// Merge report view — two stacked tables, one for order merges and
+// one for table merges. Merge Log and Table Merge Log share the
+// same acting-user + status + timestamp columns so the sub-tables
+// share a common shape.
+// ---------------------------------------------------------------
+
+function MergeReportView({ report }: { report: MergeReportResponse | null }) {
+  if (!report) return <EmptyState message="Loading…" />;
+  const { summary, order_merges, table_merges } = report;
+  const hasAny = order_merges.length > 0 || table_merges.length > 0;
+  if (!hasAny) {
+    return (
+      <EmptyState
+        message={`No merges between ${report.from_date} and ${report.to_date}`}
+      />
+    );
+  }
+
+  return (
+    <div className="max-w-7xl mx-auto space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <StatTile
+          label="Order Merges"
+          value={`${summary.order_merge_count} · ${summary.order_merge_active} active`}
+          tone="blue"
+        />
+        <StatTile
+          label="Table Merges"
+          value={`${summary.table_merge_count} · ${summary.table_merge_active} active`}
+          tone="purple"
+        />
+      </div>
+
+      {order_merges.length > 0 && (
+        <Card>
+          <CardContent className="p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+              Order Merges
+            </h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-y border-gray-200">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Log
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Master
+                    </th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Sources
+                    </th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Sources Total
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Merged by
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Merged at
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Status
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {order_merges.map((row) => (
+                    <tr key={row.name}>
+                      <td className="px-4 py-3 font-mono text-xs text-gray-600">
+                        {row.name}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-gray-900">
+                        {row.master_invoice}
+                      </td>
+                      <td className="px-4 py-3 text-right text-gray-600">
+                        {row.source_count}
+                      </td>
+                      <td className="px-4 py-3 text-right text-gray-600">
+                        {formatCurrency(row.sources_total)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <p className="text-gray-900">
+                          {row.merged_by_full_name}
+                        </p>
+                        {row.status === 'Unmerged' &&
+                          row.unmerged_by_full_name && (
+                            <p className="text-xs text-gray-500">
+                              undone by {row.unmerged_by_full_name}
+                            </p>
+                          )}
+                      </td>
+                      <td className="px-4 py-3 text-gray-600">
+                        {shortDateTime(row.merged_at)}
+                        {row.status === 'Unmerged' && row.unmerged_at && (
+                          <p className="text-xs text-gray-500">
+                            undone {shortDateTime(row.unmerged_at)}
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge
+                          variant={row.status === 'Active' ? 'default' : 'secondary'}
+                          className={`text-xs ${
+                            row.status === 'Active'
+                              ? 'bg-blue-100 text-blue-700'
+                              : 'bg-gray-100 text-gray-600'
+                          }`}
+                        >
+                          {row.status}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {table_merges.length > 0 && (
+        <Card>
+          <CardContent className="p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+              Table Merges
+            </h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-y border-gray-200">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Log
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Master Table
+                    </th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Sources
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">
+                      Orders Merged
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Merged by
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Merged at
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Status
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {table_merges.map((row) => (
+                    <tr key={row.name}>
+                      <td className="px-4 py-3 font-mono text-xs text-gray-600">
+                        {row.name}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-gray-900">
+                        {row.master_table}
+                      </td>
+                      <td className="px-4 py-3 text-right text-gray-600">
+                        {row.source_count}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        {row.merged_orders === 1 ? (
+                          <Badge className="text-xs bg-green-100 text-green-700">
+                            Yes
+                          </Badge>
+                        ) : (
+                          <span className="text-xs text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <p className="text-gray-900">
+                          {row.merged_by_full_name}
+                        </p>
+                        {row.status === 'Unmerged' &&
+                          row.unmerged_by_full_name && (
+                            <p className="text-xs text-gray-500">
+                              undone by {row.unmerged_by_full_name}
+                            </p>
+                          )}
+                      </td>
+                      <td className="px-4 py-3 text-gray-600">
+                        {shortDateTime(row.merged_at)}
+                        {row.status === 'Unmerged' && row.unmerged_at && (
+                          <p className="text-xs text-gray-500">
+                            undone {shortDateTime(row.unmerged_at)}
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge
+                          variant={row.status === 'Active' ? 'default' : 'secondary'}
+                          className={`text-xs ${
+                            row.status === 'Active'
+                              ? 'bg-purple-100 text-purple-700'
+                              : 'bg-gray-100 text-gray-600'
+                          }`}
+                        >
+                          {row.status}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------
+// Transfer report view — every POS Invoice that was transferred to
+// another cashier at shift-close time. Cashiers can't see this
+// (admin-only); captains use it to audit "who dumped what onto
+// whom" during the end-of-day draft-transfer flow.
+// ---------------------------------------------------------------
+
+function TransferReportView({
+  report,
+}: {
+  report: TransferReportResponse | null;
+}) {
+  if (!report) return <EmptyState message="Loading…" />;
+  const { summary, rows } = report;
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        message={`No shift-close transfers between ${report.from_date} and ${report.to_date}`}
+      />
+    );
+  }
+
+  return (
+    <div className="max-w-7xl mx-auto space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <StatTile
+          label="Transfers"
+          value={String(summary.count)}
+          tone="orange"
+        />
+        <StatTile
+          label="Total moved"
+          value={formatCurrency(summary.total_amount)}
+          tone="blue"
+        />
+        <StatTile
+          label="Distinct pairs"
+          value={String(summary.distinct_pairs)}
+          tone="purple"
+        />
+      </div>
+
+      <Card>
+        <CardContent className="p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-1">
+            Shift-Close Transfers
+          </h3>
+          <p className="text-sm text-gray-500 mb-4">
+            Draft orders reassigned when the original cashier closed their
+            shift. The new cashier picked them up on their next Orders page
+            visit.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-y border-gray-200">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Invoice
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    From
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    To
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Shift
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    When
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Now
+                  </th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    Amount
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {rows.map((row) => (
+                  <tr key={row.name}>
+                    <td className="px-4 py-3">
+                      <p className="font-mono text-xs text-gray-900">
+                        {row.name}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {row.customer_name || row.customer}
+                        {row.restaurant_table
+                          ? ` · ${row.restaurant_table}`
+                          : ''}
+                      </p>
+                    </td>
+                    <td className="px-4 py-3 text-gray-700">
+                      {row.from_cashier_full_name || '?'}
+                    </td>
+                    <td className="px-4 py-3 text-gray-900 font-medium">
+                      <ArrowRightLeft className="inline w-3 h-3 mr-1 text-orange-500" />
+                      {row.new_cashier_full_name}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-gray-600">
+                      {row.opening_entry || '—'}
+                    </td>
+                    <td className="px-4 py-3 text-gray-600">
+                      {shortDateTime(row.transfer_time)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <Badge
+                        variant="secondary"
+                        className={`text-xs ${
+                          row.status === 'Paid'
+                            ? 'bg-green-100 text-green-700'
+                            : 'bg-gray-100 text-gray-600'
+                        }`}
+                      >
+                        {row.status}
+                      </Badge>
+                    </td>
+                    <td className="px-4 py-3 text-right font-semibold text-gray-900">
+                      {formatCurrency(row.grand_total)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function shortDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso.replace(' ', 'T'));
+  if (isNaN(d.getTime())) return iso.slice(0, 16);
+  return d.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
 }

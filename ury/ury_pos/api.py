@@ -1455,12 +1455,30 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
         # specific-user filter. We also stamp the `cashier` custom
         # field (used in some URY print paths) and set a transfer
         # audit note via the `remarks` field.
+        #
+        # Discoverability fix (2026-04-16): clear `custom_terminal`
+        # AND reset `posting_date`/`posting_time` to now. Without
+        # this the receiving cashier's default Orders page filter
+        # (their current terminal + today's date) hides the
+        # transfers silently — we've seen it in the wild. Clearing
+        # the terminal lets the defensive null fallback in
+        # `getPosInvoice` ("terminal IS NULL OR terminal = '' OR
+        # terminal = ?") surface them on whichever terminal the
+        # receiver is on within the branch. Updating posting_date
+        # is a semantic call: the draft now belongs to today's
+        # business flow under the new cashier, not yesterday's
+        # under the original; the `remarks` field preserves the
+        # audit trail. If the receiver wants to dig, the original
+        # opening entry is in the remarks line.
         target_full_name = (
             frappe.db.get_value("User", transfer_to, "full_name") or transfer_to
         )
         transfer_note = (
             f"Transferred from {me} on shift close ({opening_doc.name})"
         )
+        now_datetime = frappe.utils.now_datetime()
+        now_date = now_datetime.date()
+        now_time = now_datetime.time()
         for row in draft:
             frappe.db.set_value(
                 "POS Invoice",
@@ -1469,6 +1487,9 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
                     "owner": transfer_to,
                     "cashier": target_full_name,
                     "remarks": transfer_note,
+                    "custom_terminal": None,
+                    "posting_date": now_date,
+                    "posting_time": now_time,
                 },
                 update_modified=True,
             )
@@ -2623,73 +2644,185 @@ def clear_notification(invoice_name):
 
 @frappe.whitelist()
 def get_dashboard_stats(date=None):
-    """Get dashboard statistics for a specific date"""
+    """Dashboard stats for a specific date, role-scoped.
+
+    **Cashier:** scoped to their own POS Invoices (``owner = session.user``).
+    **Admin / Captain / Manager:** scoped to the whole branch
+    (``branch = getBranch()``) — so the Dashboard gives them a bird's-eye
+    view of the day instead of just their own rings. An extra
+    ``is_admin`` flag + admin-only blocks (order-type breakdown,
+    payment-mode breakdown, active cashiers) ride along in the
+    response when the caller can see them.
+
+    Response shape (all tiles default to 0 / [] when no data):
+        {
+            is_admin: 0|1,
+            scope: 'user' | 'branch',
+            total_sales, total_orders, total_customers,
+            average_order_value,
+            returns_count, returns_amount,
+            top_selling_items: [...],
+            # Admin-only:
+            order_type_breakdown: [{order_type, count, amount}],
+            payment_mode_breakdown: [{mode_of_payment, amount}],
+            active_cashiers: [{user, full_name, invoice_count, grand_total}],
+        }
+    """
     try:
         if not date:
             date = frappe.utils.today()
-        
+
         user = frappe.session.user
-        
-        # Get total sales
-        total_sales = frappe.db.sql("""
-            SELECT COALESCE(SUM(grand_total), 0) as total
-            FROM `tabPOS Invoice`
-            WHERE posting_date = %s
-            AND owner = %s
-            AND docstatus = 1
-        """, (date, user), as_dict=True)[0].total
-        
-        # Get total orders
-        total_orders = frappe.db.count("POS Invoice", {
-            "posting_date": date,
-            "owner": user,
-            "docstatus": 1
-        })
-        
-        # Get unique customers
-        total_customers = frappe.db.sql("""
-            SELECT COUNT(DISTINCT customer) as count
-            FROM `tabPOS Invoice`
-            WHERE posting_date = %s
-            AND owner = %s
-            AND docstatus = 1
-        """, (date, user), as_dict=True)[0].count
-        
-        # Calculate average order value
-        average_order_value = total_sales / total_orders if total_orders > 0 else 0
-        
-        # Get top selling items
-        top_selling_items = frappe.db.sql("""
-            SELECT 
+        is_admin = _user_can_see_admin_reports()
+
+        # Scope the base query: admin sees branch-wide, cashier sees
+        # their own. Both exclude merged-source invoices (a merge
+        # master carries the combined total — counting the sources
+        # again would double-count).
+        where_parts = [
+            "pi.docstatus = 1",
+            "pi.posting_date = %s",
+            "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
+        ]
+        params = [date]
+        if is_admin:
+            branch = getBranch()
+            where_parts.append("pi.branch = %s")
+            params.append(branch)
+            scope_label = "branch"
+        else:
+            where_parts.append("pi.owner = %s")
+            params.append(user)
+            scope_label = "user"
+        where_sql = " AND ".join(where_parts)
+
+        # Core totals (excludes returns so the headline number matches
+        # "sales" not "net including refunds"; returns get their own
+        # tile).
+        row = frappe.db.sql(
+            f"""
+            SELECT
+                COALESCE(SUM(CASE WHEN pi.is_return = 0 THEN pi.grand_total ELSE 0 END), 0) AS total_sales,
+                SUM(CASE WHEN pi.is_return = 0 THEN 1 ELSE 0 END) AS total_orders,
+                COUNT(DISTINCT pi.customer) AS total_customers,
+                SUM(CASE WHEN pi.is_return = 1 THEN 1 ELSE 0 END) AS returns_count,
+                COALESCE(SUM(CASE WHEN pi.is_return = 1 THEN ABS(pi.grand_total) ELSE 0 END), 0) AS returns_amount
+            FROM `tabPOS Invoice` AS pi
+            WHERE {where_sql}
+            """,
+            tuple(params),
+            as_dict=True,
+        )[0]
+        total_sales = float(row.total_sales or 0)
+        total_orders = int(row.total_orders or 0)
+        total_customers = int(row.total_customers or 0)
+        returns_count = int(row.returns_count or 0)
+        returns_amount = float(row.returns_amount or 0)
+        average_order_value = (
+            total_sales / total_orders if total_orders > 0 else 0
+        )
+
+        # Top selling items — same scope.
+        top_selling_items = frappe.db.sql(
+            f"""
+            SELECT
                 ii.item_name,
-                SUM(ii.qty) as quantity,
-                SUM(ii.amount) as total_amount
-            FROM `tabPOS Invoice` pi
-            JOIN `tabPOS Invoice Item` ii ON ii.parent = pi.name
-            WHERE pi.posting_date = %s
-            AND pi.owner = %s
-            AND pi.docstatus = 1
+                SUM(ii.qty) AS quantity,
+                SUM(ii.amount) AS total_amount
+            FROM `tabPOS Invoice` AS pi
+            JOIN `tabPOS Invoice Item` AS ii ON ii.parent = pi.name
+            WHERE {where_sql}
+              AND pi.is_return = 0
             GROUP BY ii.item_code
             ORDER BY quantity DESC
             LIMIT 5
-        """, (date, user), as_dict=True)
-        
-        return {
-            "total_sales": float(total_sales),
+            """,
+            tuple(params),
+            as_dict=True,
+        )
+
+        response = {
+            "is_admin": 1 if is_admin else 0,
+            "scope": scope_label,
+            "date": date,
+            "total_sales": total_sales,
             "total_orders": total_orders,
             "total_customers": total_customers,
             "average_order_value": float(average_order_value),
-            "top_selling_items": top_selling_items
+            "returns_count": returns_count,
+            "returns_amount": returns_amount,
+            "top_selling_items": top_selling_items,
         }
-        
+
+        # Admin-only blocks below. Cashier's Dashboard stays lean.
+        if not is_admin:
+            return response
+
+        order_type_breakdown = frappe.db.sql(
+            f"""
+            SELECT
+                COALESCE(pi.order_type, 'Unknown') AS order_type,
+                COUNT(pi.name) AS count,
+                COALESCE(SUM(pi.grand_total), 0) AS amount
+            FROM `tabPOS Invoice` AS pi
+            WHERE {where_sql} AND pi.is_return = 0
+            GROUP BY pi.order_type
+            ORDER BY amount DESC
+            """,
+            tuple(params),
+            as_dict=True,
+        )
+
+        payment_mode_breakdown = frappe.db.sql(
+            f"""
+            SELECT
+                p.mode_of_payment,
+                COALESCE(SUM(p.base_amount), 0) AS amount
+            FROM `tabPOS Invoice` AS pi
+            JOIN `tabSales Invoice Payment` AS p ON p.parent = pi.name
+            WHERE {where_sql} AND pi.is_return = 0
+            GROUP BY p.mode_of_payment
+            ORDER BY amount DESC
+            """,
+            tuple(params),
+            as_dict=True,
+        )
+
+        active_cashiers = frappe.db.sql(
+            f"""
+            SELECT
+                pi.owner AS user,
+                COALESCE(u.full_name, pi.owner) AS full_name,
+                COUNT(pi.name) AS invoice_count,
+                COALESCE(SUM(pi.grand_total), 0) AS grand_total
+            FROM `tabPOS Invoice` AS pi
+            LEFT JOIN `tabUser` AS u ON u.name = pi.owner
+            WHERE {where_sql} AND pi.is_return = 0
+            GROUP BY pi.owner
+            ORDER BY grand_total DESC
+            """,
+            tuple(params),
+            as_dict=True,
+        )
+
+        response["order_type_breakdown"] = order_type_breakdown
+        response["payment_mode_breakdown"] = payment_mode_breakdown
+        response["active_cashiers"] = active_cashiers
+        return response
+
     except Exception as e:
         frappe.log_error(f"Error fetching dashboard stats: {str(e)}")
         return {
+            "is_admin": 0,
+            "scope": "user",
+            "date": date or frappe.utils.today(),
             "total_sales": 0,
             "total_orders": 0,
             "total_customers": 0,
             "average_order_value": 0,
-            "top_selling_items": []
+            "returns_count": 0,
+            "returns_amount": 0,
+            "top_selling_items": [],
         }
 
 
@@ -2747,6 +2880,561 @@ def get_daily_sales(date=None):
             "invoices": [],
             "payment_totals": []
         }
+
+
+# ============================================================
+# Reports endpoints (2026-04-16 — reports batch 1)
+# ------------------------------------------------------------
+# All of these are scoped by branch via getBranch(). The admin-only
+# endpoints re-check the caller's roles server-side via
+# _user_can_see_admin_reports — the frontend hides their tabs behind
+# canSeeAdminReports(user) but the server is the source of truth.
+# ============================================================
+
+
+def _user_can_see_admin_reports(user=None):
+    """Return True when the caller can see the cross-cashier reports
+    (Sales by Cashier, Sales by Category, Top/Bottom Items). Cashiers
+    can only see their own shift summary.
+    """
+    user = user or frappe.session.user
+    if user == "Administrator":
+        return True
+    roles = set(frappe.get_roles(user))
+    return bool(
+        roles & {"System Manager", "URY Manager", "URY Captain"}
+    )
+
+
+def _reports_date_range(from_date, to_date):
+    """Normalize a (from, to) date pair. Defaults: today-6d → today."""
+    today = frappe.utils.today()
+    if not from_date and not to_date:
+        from_date = frappe.utils.add_days(today, -6)
+        to_date = today
+    elif not from_date:
+        from_date = to_date
+    elif not to_date:
+        to_date = from_date
+    return from_date, to_date
+
+
+@frappe.whitelist()
+def get_sales_by_cashier(from_date=None, to_date=None, terminal=None):
+    """Per-cashier sales breakdown over a date range.
+
+    Admin / captain / manager only. Returns one row per cashier who
+    rang at least one invoice in the window — with invoice count,
+    grand total, average order value, returns, and discount totals.
+    Branch-scoped; optional terminal filter so a captain can audit a
+    single till.
+    """
+    if not _user_can_see_admin_reports():
+        frappe.throw(
+            _("You don't have permission to see cross-cashier reports."),
+            frappe.PermissionError,
+        )
+
+    from_date, to_date = _reports_date_range(from_date, to_date)
+    branch = getBranch()
+
+    where_parts = [
+        "pi.branch = %s",
+        "pi.docstatus = 1",
+        "pi.posting_date BETWEEN %s AND %s",
+        "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
+    ]
+    params = [branch, from_date, to_date]
+    if terminal:
+        where_parts.append(
+            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
+        )
+        params.append(terminal)
+
+    sql = f"""
+        SELECT
+            pi.owner AS user,
+            COALESCE(u.full_name, pi.owner) AS full_name,
+            COUNT(pi.name) AS invoice_count,
+            SUM(CASE WHEN pi.is_return = 0 THEN 1 ELSE 0 END) AS sale_count,
+            SUM(CASE WHEN pi.is_return = 1 THEN 1 ELSE 0 END) AS return_count,
+            SUM(COALESCE(pi.grand_total, 0)) AS grand_total,
+            SUM(COALESCE(pi.net_total, 0)) AS net_total,
+            SUM(CASE WHEN pi.is_return = 1 THEN ABS(COALESCE(pi.grand_total, 0)) ELSE 0 END) AS return_amount,
+            SUM(COALESCE(pi.discount_amount, 0)) AS discount_amount,
+            CASE
+                WHEN SUM(CASE WHEN pi.is_return = 0 THEN 1 ELSE 0 END) > 0
+                THEN SUM(CASE WHEN pi.is_return = 0 THEN COALESCE(pi.grand_total, 0) ELSE 0 END)
+                     / SUM(CASE WHEN pi.is_return = 0 THEN 1 ELSE 0 END)
+                ELSE 0
+            END AS average_order_value
+        FROM `tabPOS Invoice` AS pi
+        LEFT JOIN `tabUser` AS u ON u.name = pi.owner
+        WHERE {" AND ".join(where_parts)}
+        GROUP BY pi.owner
+        ORDER BY grand_total DESC
+    """
+    rows = frappe.db.sql(sql, tuple(params), as_dict=True)
+
+    total_grand = sum(float(r.get("grand_total") or 0) for r in rows)
+    total_invoices = sum(int(r.get("invoice_count") or 0) for r in rows)
+
+    return {
+        "from_date": from_date,
+        "to_date": to_date,
+        "branch": branch,
+        "terminal": terminal or None,
+        "rows": rows,
+        "totals": {
+            "grand_total": total_grand,
+            "invoice_count": total_invoices,
+        },
+    }
+
+
+@frappe.whitelist()
+def get_sales_by_category(from_date=None, to_date=None, terminal=None):
+    """Sales broken down by URY Menu Course department (Food / Drinks
+    / Other) over a date range.
+
+    Admin only. Joins POS Invoice Item → URY Menu Item → URY Menu
+    Course to classify every line item. Items not on any menu course
+    (or menus without a department) fall into 'Food' (the default
+    department — matches `_classify_kot_item_department`). The inner
+    subquery GROUP BYs by item code so an item appearing on multiple
+    menu rows doesn't duplicate in the line-item join.
+    """
+    if not _user_can_see_admin_reports():
+        frappe.throw(
+            _("You don't have permission to see cross-cashier reports."),
+            frappe.PermissionError,
+        )
+
+    from_date, to_date = _reports_date_range(from_date, to_date)
+    branch = getBranch()
+
+    where_parts = [
+        "pi.branch = %s",
+        "pi.docstatus = 1",
+        "pi.is_return = 0",
+        "pi.posting_date BETWEEN %s AND %s",
+        "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
+    ]
+    params = [branch, from_date, to_date]
+    if terminal:
+        where_parts.append(
+            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
+        )
+        params.append(terminal)
+
+    sql = f"""
+        SELECT
+            COALESCE(dept_map.department, 'Food') AS department,
+            SUM(COALESCE(pii.amount, 0)) AS total_amount,
+            SUM(COALESCE(pii.qty, 0)) AS total_qty,
+            COUNT(DISTINCT pi.name) AS invoice_count
+        FROM `tabPOS Invoice` AS pi
+        INNER JOIN `tabPOS Invoice Item` AS pii ON pii.parent = pi.name
+        LEFT JOIN (
+            SELECT umi.item AS item_code, MIN(umc.custom_department) AS department
+            FROM `tabURY Menu Item` AS umi
+            INNER JOIN `tabURY Menu Course` AS umc ON umc.name = umi.course
+            WHERE umi.item IS NOT NULL AND umi.item != ''
+            GROUP BY umi.item
+        ) AS dept_map ON dept_map.item_code = pii.item_code
+        WHERE {" AND ".join(where_parts)}
+        GROUP BY department
+        ORDER BY total_amount DESC
+    """
+    rows = frappe.db.sql(sql, tuple(params), as_dict=True)
+
+    grand = sum(float(r.get("total_amount") or 0) for r in rows)
+    # Stamp the percentage server-side so the UI doesn't have to
+    # re-compute on every render.
+    for r in rows:
+        r["percentage"] = (
+            (float(r.get("total_amount") or 0) / grand * 100.0)
+            if grand > 0
+            else 0.0
+        )
+
+    return {
+        "from_date": from_date,
+        "to_date": to_date,
+        "branch": branch,
+        "terminal": terminal or None,
+        "rows": rows,
+        "totals": {"total_amount": grand},
+    }
+
+
+@frappe.whitelist()
+def get_top_bottom_items(
+    from_date=None, to_date=None, limit=10, terminal=None
+):
+    """Top N and bottom N menu items by quantity sold over a date
+    range. Admin only.
+
+    Returns ``{top: [...], bottom: [...]}``. Both lists ordered by
+    total quantity (desc for top, asc for bottom). The bottom list
+    excludes items that never sold — it's meant to surface "slow
+    movers", not "never-ordered".
+    """
+    if not _user_can_see_admin_reports():
+        frappe.throw(
+            _("You don't have permission to see cross-cashier reports."),
+            frappe.PermissionError,
+        )
+
+    from_date, to_date = _reports_date_range(from_date, to_date)
+    branch = getBranch()
+    limit = max(1, min(int(limit or 10), 50))
+
+    where_parts = [
+        "pi.branch = %s",
+        "pi.docstatus = 1",
+        "pi.is_return = 0",
+        "pi.posting_date BETWEEN %s AND %s",
+        "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
+    ]
+    params_base = [branch, from_date, to_date]
+    if terminal:
+        where_parts.append(
+            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
+        )
+        params_base.append(terminal)
+
+    base_sql = f"""
+        SELECT
+            pii.item_code,
+            pii.item_name,
+            SUM(COALESCE(pii.qty, 0)) AS total_qty,
+            SUM(COALESCE(pii.amount, 0)) AS total_amount,
+            COUNT(DISTINCT pi.name) AS order_count
+        FROM `tabPOS Invoice` AS pi
+        INNER JOIN `tabPOS Invoice Item` AS pii ON pii.parent = pi.name
+        WHERE {" AND ".join(where_parts)}
+        GROUP BY pii.item_code, pii.item_name
+        HAVING SUM(COALESCE(pii.qty, 0)) > 0
+    """
+
+    top_sql = base_sql + " ORDER BY total_qty DESC LIMIT %s"
+    bottom_sql = base_sql + " ORDER BY total_qty ASC LIMIT %s"
+
+    top = frappe.db.sql(top_sql, tuple(params_base + [limit]), as_dict=True)
+    bottom = frappe.db.sql(
+        bottom_sql, tuple(params_base + [limit]), as_dict=True
+    )
+
+    return {
+        "from_date": from_date,
+        "to_date": to_date,
+        "branch": branch,
+        "terminal": terminal or None,
+        "limit": limit,
+        "top": top,
+        "bottom": bottom,
+    }
+
+
+@frappe.whitelist()
+def get_my_shift_summary(terminal=None):
+    """Return a snapshot of the current user's open shift — opening
+    entry, paid invoice totals, draft count, per-mode-of-payment
+    expected amounts.
+
+    Visible to every role. Re-uses ``preview_pos_closing_entry`` for
+    the heavy lifting so the numbers stay consistent with the Close
+    Shift dialog.
+
+    Scope: the current session's user + (optionally) the supplied
+    terminal. Returns ``{has_open_shift: 0}`` when the user has no
+    Open POS Opening Entry matching the filter.
+    """
+    user = frappe.session.user
+    filters = {
+        "user": user,
+        "docstatus": 1,
+        "status": "Open",
+    }
+    if terminal:
+        filters["custom_terminal"] = terminal
+
+    opening_name = frappe.db.get_value(
+        "POS Opening Entry",
+        filters,
+        "name",
+        order_by="creation desc",
+    )
+    if not opening_name:
+        return {
+            "has_open_shift": 0,
+            "user": user,
+            "terminal": terminal or None,
+        }
+
+    preview = preview_pos_closing_entry(opening_name)
+    # Compact the preview into a reports-friendly shape. Drop the
+    # transfer_candidates + draft_invoices lists (only useful inside
+    # the Close Shift dialog) and stamp has_open_shift=1. The field
+    # names here normalise on reports-friendly spellings (paid_count
+    # vs invoice_count, total_qty vs total_quantity) so the UI
+    # doesn't need to know which endpoint it's consuming.
+    return {
+        "has_open_shift": 1,
+        "user": user,
+        "full_name": frappe.db.get_value("User", user, "full_name") or user,
+        "opening_entry": preview.get("opening_entry"),
+        "period_start_date": preview.get("period_start_date"),
+        "period_end_date": preview.get("period_end_date"),
+        "pos_profile": preview.get("pos_profile"),
+        "paid_count": preview.get("invoice_count"),
+        "draft_count": preview.get("draft_count"),
+        "grand_total": preview.get("grand_total"),
+        "net_total": preview.get("net_total"),
+        "total_qty": preview.get("total_quantity"),
+        "total_tax": preview.get("total_taxes_and_charges"),
+        "draft_grand_total": preview.get("draft_grand_total"),
+        "payments": preview.get("payments"),
+    }
+
+
+@frappe.whitelist()
+def get_merge_report(from_date=None, to_date=None, terminal=None):
+    """Return every order-merge and table-merge log in the date range
+    so admin can audit what got merged, by whom, and whether it's
+    still active.
+
+    Admin / captain only. Returns ``{order_merges: [...], table_merges: [...]}``
+    with one row per merge log. Each row carries master name, source
+    count, status, who merged + at what time, and (for Unmerged rows)
+    who reversed it + when.
+    """
+    if not _user_can_see_admin_reports():
+        frappe.throw(
+            _("You don't have permission to see merge reports."),
+            frappe.PermissionError,
+        )
+
+    from_date, to_date = _reports_date_range(from_date, to_date)
+    branch = getBranch()
+
+    # Order merges — source_invoices child counted via subquery.
+    order_where = [
+        "ml.branch = %s",
+        "DATE(ml.merged_at) BETWEEN %s AND %s",
+    ]
+    order_params = [branch, from_date, to_date]
+    if terminal:
+        order_where.append(
+            "(ml.custom_terminal = %s OR ml.custom_terminal IS NULL OR ml.custom_terminal = '')"
+        )
+        order_params.append(terminal)
+
+    order_sql = f"""
+        SELECT
+            ml.name,
+            ml.master_invoice,
+            ml.status,
+            ml.merged_at,
+            ml.merged_by,
+            COALESCE(ml.merged_by_full_name, ml.merged_by) AS merged_by_full_name,
+            ml.unmerged_at,
+            ml.unmerged_by,
+            COALESCE(ml.unmerged_by_full_name, ml.unmerged_by) AS unmerged_by_full_name,
+            ml.notes,
+            (
+                SELECT COUNT(s.name)
+                FROM `tabURY Order Merge Source` AS s
+                WHERE s.parent = ml.name
+            ) AS source_count,
+            (
+                SELECT COALESCE(SUM(COALESCE(s2.original_grand_total, 0)), 0)
+                FROM `tabURY Order Merge Source` AS s2
+                WHERE s2.parent = ml.name
+            ) AS sources_total
+        FROM `tabURY Order Merge Log` AS ml
+        WHERE {" AND ".join(order_where)}
+        ORDER BY ml.merged_at DESC
+    """
+    order_merges = frappe.db.sql(order_sql, tuple(order_params), as_dict=True)
+
+    # Table merges — source_tables child counted via subquery.
+    table_where = [
+        "ml.branch = %s",
+        "DATE(ml.merged_at) BETWEEN %s AND %s",
+    ]
+    table_params = [branch, from_date, to_date]
+    if terminal:
+        table_where.append(
+            "(ml.custom_terminal = %s OR ml.custom_terminal IS NULL OR ml.custom_terminal = '')"
+        )
+        table_params.append(terminal)
+
+    table_sql = f"""
+        SELECT
+            ml.name,
+            ml.master_table,
+            ml.status,
+            ml.merged_at,
+            ml.merged_by,
+            COALESCE(ml.merged_by_full_name, ml.merged_by) AS merged_by_full_name,
+            ml.unmerged_at,
+            ml.unmerged_by,
+            COALESCE(ml.unmerged_by_full_name, ml.unmerged_by) AS unmerged_by_full_name,
+            ml.merged_orders,
+            ml.notes,
+            (
+                SELECT COUNT(s.name)
+                FROM `tabURY Table Merge Source` AS s
+                WHERE s.parent = ml.name
+            ) AS source_count
+        FROM `tabURY Table Merge Log` AS ml
+        WHERE {" AND ".join(table_where)}
+        ORDER BY ml.merged_at DESC
+    """
+    table_merges = frappe.db.sql(table_sql, tuple(table_params), as_dict=True)
+
+    # Summary tiles for the page header.
+    active_order_merges = sum(
+        1 for r in order_merges if r.get("status") == "Active"
+    )
+    active_table_merges = sum(
+        1 for r in table_merges if r.get("status") == "Active"
+    )
+
+    return {
+        "from_date": from_date,
+        "to_date": to_date,
+        "branch": branch,
+        "terminal": terminal or None,
+        "order_merges": order_merges,
+        "table_merges": table_merges,
+        "summary": {
+            "order_merge_count": len(order_merges),
+            "order_merge_active": active_order_merges,
+            "table_merge_count": len(table_merges),
+            "table_merge_active": active_table_merges,
+        },
+    }
+
+
+@frappe.whitelist()
+def get_transfer_report(from_date=None, to_date=None, terminal=None):
+    """Return every POS Invoice that was transferred to another
+    cashier at shift-close time, in the given date range.
+
+    Admin / captain only. Detection relies on the ``remarks`` field
+    that ``submit_pos_closing_entry`` stamps in the format
+    ``Transferred from <user> on shift close (<opening_entry>)``.
+    Each row surfaces the original cashier (parsed from the remarks),
+    the new cashier (current ``owner``), the opening entry the
+    transfer happened at, the invoice state, and the grand total so
+    admin can audit "who dumped what onto whom".
+    """
+    if not _user_can_see_admin_reports():
+        frappe.throw(
+            _("You don't have permission to see transfer reports."),
+            frappe.PermissionError,
+        )
+
+    from_date, to_date = _reports_date_range(from_date, to_date)
+    branch = getBranch()
+
+    where_parts = [
+        "pi.branch = %s",
+        "pi.remarks LIKE 'Transferred from %%'",
+        "pi.modified BETWEEN %s AND %s",
+    ]
+    params = [branch, f"{from_date} 00:00:00", f"{to_date} 23:59:59"]
+    if terminal:
+        where_parts.append(
+            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
+        )
+        params.append(terminal)
+
+    rows = frappe.db.sql(
+        f"""
+        SELECT
+            pi.name,
+            pi.owner AS new_cashier,
+            COALESCE(u.full_name, pi.owner) AS new_cashier_full_name,
+            pi.remarks,
+            pi.modified AS transfer_time,
+            pi.status,
+            pi.docstatus,
+            pi.grand_total,
+            pi.customer,
+            pi.customer_name,
+            pi.restaurant_table,
+            pi.posting_date,
+            pi.custom_terminal
+        FROM `tabPOS Invoice` AS pi
+        LEFT JOIN `tabUser` AS u ON u.name = pi.owner
+        WHERE {" AND ".join(where_parts)}
+        ORDER BY pi.modified DESC
+        """,
+        tuple(params),
+        as_dict=True,
+    )
+
+    # Parse "Transferred from <user> on shift close (<opening_entry>)"
+    # to surface the original cashier and the opening entry for
+    # display. Defensive: malformed remarks degrade to None rather
+    # than blow up the report.
+    import re
+
+    pattern = re.compile(
+        r"^Transferred from (\S+) on shift close \((.+)\)\s*$"
+    )
+    user_cache = {}
+
+    def _full_name(u):
+        if not u:
+            return None
+        if u in user_cache:
+            return user_cache[u]
+        name = frappe.db.get_value("User", u, "full_name") or u
+        user_cache[u] = name
+        return name
+
+    for row in rows:
+        remarks = row.get("remarks") or ""
+        m = pattern.match(remarks)
+        if m:
+            old_user = m.group(1)
+            opening_entry = m.group(2)
+            row["from_cashier"] = old_user
+            row["from_cashier_full_name"] = _full_name(old_user)
+            row["opening_entry"] = opening_entry
+        else:
+            row["from_cashier"] = None
+            row["from_cashier_full_name"] = None
+            row["opening_entry"] = None
+        # Swallow the noisy remarks field now that we've parsed it.
+        del row["remarks"]
+
+    # Summary: distinct from/to pair count and total amount moved.
+    total_amount = sum(
+        float(r.get("grand_total") or 0) for r in rows
+    )
+    pairs = {
+        (r.get("from_cashier") or "?", r.get("new_cashier") or "?")
+        for r in rows
+    }
+
+    return {
+        "from_date": from_date,
+        "to_date": to_date,
+        "branch": branch,
+        "terminal": terminal or None,
+        "rows": rows,
+        "summary": {
+            "count": len(rows),
+            "total_amount": total_amount,
+            "distinct_pairs": len(pairs),
+        },
+    }
 
 
 @frappe.whitelist()
