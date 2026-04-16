@@ -67,6 +67,10 @@ READ_ONLY_DOCTYPES = [
     # and Managers get write access via the captain extras list below.
     "URY Shift",
     "URY Shift Assignment",
+    # Print system (added 2026-04-16). Cashiers need read so their
+    # print calls can look up the printer doc server-side. Captains
+    # and Managers get write via captain extras below.
+    "URY Printer",
 ]
 
 # Doctypes the POS creates / updates / submits. Each entry includes the
@@ -158,6 +162,12 @@ CAPTAIN_EXTRA_WRITE_DOCTYPES: list[tuple[str, dict]] = [
     ),
     (
         "URY Shift Assignment",
+        {"read": 1, "write": 1, "create": 1, "select": 1, "report": 1},
+    ),
+    # Print system: captains + managers maintain the printer list.
+    # Cashiers stay read-only.
+    (
+        "URY Printer",
         {"read": 1, "write": 1, "create": 1, "select": 1, "report": 1},
     ),
 ]

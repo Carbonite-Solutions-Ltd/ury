@@ -1,0 +1,129 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:printer_name",
+ "creation": "2026-04-16 12:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "printer_name",
+  "description",
+  "column_break_1",
+  "disabled",
+  "section_break_cups",
+  "server_ip",
+  "port",
+  "cups_note"
+ ],
+ "fields": [
+  {
+   "fieldname": "printer_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Printer Name",
+   "reqd": 1,
+   "unique": 1,
+   "description": "Free text — type the printer name EXACTLY as it appears on the cashier's local OS (Windows: 'EPSON TM-T88V', macOS: 'Kitchen-Star', CUPS: 'Kitchen_Printer'). For QZ Tray mode, this is what the browser sends to the local printer driver. For CUPS Direct mode, this is what CUPS uses to look up the queue."
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description",
+   "description": "Optional. Where is this printer located? e.g. 'Bar station — behind the till' or 'Kitchen — food pass'."
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "disabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Disabled",
+   "description": "When checked, the POS will treat this printer as offline and fall back according to the POS Profile's Print Fallback Mode."
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_cups",
+   "fieldtype": "Section Break",
+   "label": "CUPS Direct Settings (optional)",
+   "description": "Only required when your POS Profile's Print Mode is set to 'CUPS (Direct)'. For QZ Tray mode, leave these blank — QZ reads the printer directly from the cashier's browser OS."
+  },
+  {
+   "default": "localhost",
+   "fieldname": "server_ip",
+   "fieldtype": "Data",
+   "label": "CUPS Server IP",
+   "description": "Hostname or IP of the CUPS server that hosts this printer. Only used when the POS Profile is in CUPS Direct mode."
+  },
+  {
+   "default": "631",
+   "fieldname": "port",
+   "fieldtype": "Int",
+   "label": "CUPS Port",
+   "description": "Port of the CUPS server (default 631)."
+  },
+  {
+   "fieldname": "cups_note",
+   "fieldtype": "HTML",
+   "options": "<div style=\"padding:8px; background:#fff7e6; border-left:3px solid #fa8c16; border-radius:4px; font-size:12px; color:#5a3e00;\"><b>Heads-up:</b> CUPS Direct mode requires the Frappe server to reach this CUPS server over the network AND the <code>pycups</code> Python package to be installed. On cloud-hosted Frappe deployments this is usually impossible because the server can't see the restaurant's local network. Use <b>QZ Tray</b> mode on the POS Profile instead — it runs in the cashier's browser and talks to the local printer directly.</div>"
+  }
+ ],
+ "links": [],
+ "modified": "2026-04-16 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "URY",
+ "name": "URY Printer",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "select": 1,
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "URY Manager",
+   "select": 1,
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "read": 1,
+   "report": 1,
+   "role": "URY Captain",
+   "select": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "URY Cashier",
+   "select": 1
+  }
+ ],
+ "quick_entry": 1,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

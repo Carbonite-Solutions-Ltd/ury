@@ -545,3 +545,341 @@ def update_invoice_status_on_kot_change(doc, method=None):
             f"Failed to update POS Invoice status from KOT {doc.name}: {str(e)}",
             "KOT Invoice Status Update Error"
         )
+
+
+# ---------------------------------------------------------------------
+# Unified print routing (2026-04-16)
+# ---------------------------------------------------------------------
+#
+# Round 1 of the print revamp replaces the scattered per-order-type and
+# per-venue printer fields on POS Profile with a single "Printers &
+# Routing" config block. The resolver below reads that config, classifies
+# each KOT item by department (via its URY Menu Course.custom_department),
+# and returns a list of (printer, filtered_items) pairs that the caller
+# should print.
+#
+# Design decisions:
+#
+# - **Department lives on URY Menu Course**, not per item. One tagging
+#   site, all items in that course inherit.
+# - **Mixed KOTs are split per department**. A KOT with 2 Beers + 1
+#   Burger produces two print jobs: beers -> bar printer, burger ->
+#   kitchen printer. Each station only sees its items. The same Print
+#   Format is reused — we pass a filtered in-memory copy of the KOT
+#   doc to frappe.get_print(), not a different format.
+# - **Backwards compat**. When the new custom_print_mode is empty or
+#   the new printer fields are blank, the resolver falls back to the
+#   legacy custom_table_order_printer / custom_parcel_order_printer
+#   / printer_settings child table. Existing installs keep working
+#   until their admin opens the POS Profile and saves the new config.
+# - **Fallback-if-offline**. When a target printer is missing OR the
+#   actual print call fails, behavior is controlled by
+#   custom_print_fallback_mode. Default = "Fallback to Bill Printer"
+#   which re-routes the items to the bill printer with a header like
+#   "DRINKS - BAR OFFLINE" so the bar staff sees the order even if
+#   their station printer is down.
+#
+# See CLAUDE.md "Fixes log" 2026-04-16 (print revamp Round 1).
+
+
+_DEPT_FOOD = "Food"
+_DEPT_DRINKS = "Drinks"
+_DEPT_OTHER = "Other"
+
+
+def _get_course_department_map():
+    """Return a dict of {course_name: department} for all URY Menu
+    Courses. Cached per request via frappe.local.flags to avoid an
+    N+1 fetch when classifying many KOT items.
+    """
+    cache = getattr(frappe.local, "_ury_course_dept_cache", None)
+    if cache is not None:
+        return cache
+    rows = frappe.get_all(
+        "URY Menu Course",
+        fields=["name", "custom_department"],
+    )
+    out = {r.name: (r.custom_department or _DEPT_FOOD) for r in rows}
+    frappe.local._ury_course_dept_cache = out
+    return out
+
+
+def _classify_kot_item_department(item):
+    """Return the department string for a single KOT item.
+
+    The URY KOT Items child has a `course` field populated at KOT
+    creation from the URY Menu Item's course. We look up the course
+    in the department map. Unknown/missing course defaults to Food.
+    """
+    course = getattr(item, "course", None) or getattr(item, "item_group", None)
+    if not course:
+        return _DEPT_FOOD
+    dept_map = _get_course_department_map()
+    return dept_map.get(course, _DEPT_FOOD)
+
+
+def _split_kot_items_by_department(kot_doc):
+    """Bucket a KOT's items into {department: [items]}.
+
+    Items with no department tag default to Food. Returns a dict
+    keyed by department name; only departments that actually have
+    items are present in the output.
+    """
+    buckets = {}
+    for item in (kot_doc.items or []):
+        dept = _classify_kot_item_department(item)
+        buckets.setdefault(dept, []).append(item)
+    return buckets
+
+
+def _resolve_printer_for_department(pos_profile_doc, department, order_type=None):
+    """Given a POS Profile doc (already loaded) and a department
+    (Food / Drinks / Other), return the Network Printer Settings
+    name that should print that department's items.
+
+    Routing rules (read from the new custom_print_* fields):
+      - Drinks  -> custom_drinks_kot_route (Bar | Kitchen | Bill)
+      - Food    -> custom_food_kot_route (Kitchen | Bar | Bill)
+      - Other   -> falls back to the Food route
+      - Takeaway order type overrides Food -> Parcel/Kitchen via
+        custom_takeaway_kot_route
+
+    Each route value maps to a printer field:
+      Bar     -> custom_bar_kot_printer
+      Kitchen -> custom_kitchen_kot_printer
+      Bill    -> custom_bill_printer
+      Parcel  -> custom_parcel_kot_printer
+
+    If the selected printer is empty, falls through to Bill.
+    """
+    if department == _DEPT_DRINKS:
+        route = pos_profile_doc.get("custom_drinks_kot_route") or "Bar"
+    elif department == _DEPT_FOOD:
+        # For takeaway orders, override to the takeaway route.
+        if order_type and order_type.lower() in ("take away", "takeaway", "parcel"):
+            takeaway_route = pos_profile_doc.get("custom_takeaway_kot_route") or "Parcel"
+            if takeaway_route == "Parcel":
+                return (
+                    pos_profile_doc.get("custom_parcel_kot_printer")
+                    or pos_profile_doc.get("custom_kitchen_kot_printer")
+                    or pos_profile_doc.get("custom_bill_printer")
+                    or None
+                )
+            # else fall through to Kitchen
+            route = "Kitchen"
+        else:
+            route = pos_profile_doc.get("custom_food_kot_route") or "Kitchen"
+    else:
+        # Other (dessert, misc) — route with food.
+        route = pos_profile_doc.get("custom_food_kot_route") or "Kitchen"
+
+    route_to_field = {
+        "Bar": "custom_bar_kot_printer",
+        "Kitchen": "custom_kitchen_kot_printer",
+        "Bill": "custom_bill_printer",
+        "Parcel": "custom_parcel_kot_printer",
+    }
+    field = route_to_field.get(route, "custom_kitchen_kot_printer")
+    printer = pos_profile_doc.get(field)
+    # Cascade fallback: if the preferred printer is empty, fall
+    # through Kitchen -> Bill so there's always SOMETHING.
+    if not printer and field != "custom_bill_printer":
+        printer = (
+            pos_profile_doc.get("custom_kitchen_kot_printer")
+            or pos_profile_doc.get("custom_bill_printer")
+        )
+    return printer
+
+
+def resolve_kot_print_plan(kot_doc, pos_profile_name, order_type=None):
+    """Build the list of (printer_name, items, fallback_note) tuples
+    that the KOT should print. Each tuple represents one print job.
+
+    Returns a list of dicts with keys::
+
+        {
+            "printer": <Network Printer Settings name or None>,
+            "department": "Food" | "Drinks" | "Other",
+            "items": [<filtered KOT item rows>],
+            "fallback": None | "<original printer went offline, now bill>",
+        }
+
+    When the new config (custom_print_mode) is unset, falls back to
+    the legacy `printer_settings` child table and per-order-type
+    fields — the caller passes each plan entry to the existing
+    `print_by_server()` / `network_printing()` helper as before.
+
+    `kot_doc` may be a frappe Document OR a dict-like. `pos_profile_name`
+    must be a string. `order_type` is the POS Invoice order type if
+    known (used for the Takeaway route override).
+    """
+    if not pos_profile_name:
+        return []
+
+    pos_profile_doc = frappe.get_cached_doc("POS Profile", pos_profile_name)
+    mode = pos_profile_doc.get("custom_print_mode")
+
+    # Backwards compat: when the new config isn't set yet, skip the
+    # new resolver entirely. The caller will fall back to the legacy
+    # multi_print_kot path.
+    if not mode or mode == "Disabled":
+        return []
+
+    buckets = _split_kot_items_by_department(kot_doc)
+    plan = []
+    for dept, items in buckets.items():
+        if not items:
+            continue
+        printer = _resolve_printer_for_department(
+            pos_profile_doc, dept, order_type=order_type
+        )
+        plan.append(
+            {
+                "printer": printer,
+                "department": dept,
+                "items": items,
+                "fallback": None,
+            }
+        )
+    return plan
+
+
+def apply_print_fallback(plan_entry, pos_profile_doc):
+    """Given a plan entry whose primary printer is missing or has
+    failed, apply the POS Profile's fallback mode.
+
+    Returns a (should_print, printer, header) tuple:
+      - should_print: bool — whether to attempt to print at all
+      - printer: Network Printer Settings name or None
+      - header: optional string prepended to the print format payload
+        (e.g. "DRINKS - BAR OFFLINE") so the receiving printer knows
+        it's handling a re-routed order
+
+    Modes:
+      - "Fallback to Bill Printer" (default) — route to the bill
+        printer with a loud header identifying the intended department.
+      - "Fail Silently" — drop the print job, no toast, no log.
+      - "Fail with Alert" — don't print, but the caller should raise
+        a user-visible error via realtime / toast so the cashier knows.
+    """
+    mode = pos_profile_doc.get("custom_print_fallback_mode") or "Fallback to Bill Printer"
+    department = plan_entry.get("department", _DEPT_FOOD)
+
+    if mode == "Fail Silently":
+        return (False, None, None)
+    if mode == "Fail with Alert":
+        return (False, None, None)
+
+    # Default / "Fallback to Bill Printer"
+    bill_printer = pos_profile_doc.get("custom_bill_printer")
+    if not bill_printer:
+        return (False, None, None)
+    # Header is a plain-text marker the print format can inspect via
+    # doc.flags.fallback_header (set by the caller before rendering)
+    # or that gets prepended to the text-template fallback.
+    target_label = department.upper()
+    header = f"{target_label} - TARGET PRINTER OFFLINE"
+    return (True, bill_printer, header)
+
+
+def ury_print_via_cups(
+    ury_printer_name,
+    doctype,
+    doc_name,
+    print_format=None,
+    doc=None,
+    no_letterhead=0,
+):
+    """Print a doc via CUPS, reading server_ip/port/printer_name from
+    a URY Printer record instead of Frappe's Network Printer Settings.
+
+    Required for the new print routing path — Frappe's
+    ``frappe.utils.print_format.print_by_server`` hard-requires a
+    Network Printer Settings doc (which in turn requires a reachable
+    CUPS server just to CREATE a record — the catch-22 that drove
+    URY's switch to a URY-owned printer doctype). This helper
+    replicates ``print_by_server``'s core behavior: resolve the
+    printer config, connect to CUPS, render the doc to PDF, print
+    the file.
+
+    Returns (ok, err_msg). Callers in the new path (multi_print_kot
+    new branch) use this instead of ``print_by_server``. The legacy
+    path still calls ``print_by_server`` because its data lives in
+    ``URY Printer Settings`` child rows that still point at
+    Network Printer Settings.
+
+    Raises nothing — all exceptions (missing printer, unreachable
+    CUPS, failed PDF render, CUPS IPPError) are caught and returned
+    as the second tuple element so the caller can apply the
+    POS Profile's ``custom_print_fallback_mode`` policy.
+
+    See CLAUDE.md "Fixes log" 2026-04-16 (print revamp Round 1).
+    """
+    if not ury_printer_name:
+        return (False, "no printer configured")
+
+    try:
+        printer_doc = frappe.get_cached_doc("URY Printer", ury_printer_name)
+    except frappe.DoesNotExistError:
+        return (False, f"URY Printer '{ury_printer_name}' not found")
+
+    if printer_doc.get("disabled"):
+        return (False, f"URY Printer '{ury_printer_name}' is disabled")
+
+    try:
+        import cups  # local import — pycups may be missing on QZ-only deployments
+    except ImportError:
+        return (
+            False,
+            "pycups is not installed — see install.py:_check_cups_dependency",
+        )
+
+    server_ip = printer_doc.get("server_ip") or "localhost"
+    port = int(printer_doc.get("port") or 631)
+    cups_printer_name = printer_doc.get("printer_name") or ury_printer_name
+
+    try:
+        cups.setServer(server_ip)
+        cups.setPort(port)
+        conn = cups.Connection()
+    except Exception as e:
+        return (False, f"CUPS connect failed ({server_ip}:{port}): {e}")
+
+    # Render the doc to a PDF temp file.
+    import os
+    import tempfile
+    from PyPDF2 import PdfWriter  # Frappe's print_by_server uses this too
+
+    try:
+        output = PdfWriter()
+        output = frappe.get_print(
+            doctype,
+            doc_name,
+            print_format,
+            doc=doc,
+            no_letterhead=no_letterhead,
+            as_pdf=True,
+            output=output,
+        )
+        fd, file_path = tempfile.mkstemp(
+            prefix=f"ury-kot-{frappe.generate_hash(length=6)}-",
+            suffix=".pdf",
+        )
+        os.close(fd)
+        with open(file_path, "wb") as f:
+            output.write(f)
+    except Exception as e:
+        return (False, f"PDF render failed: {e}")
+
+    try:
+        conn.printFile(cups_printer_name, file_path, doc_name, {})
+    except Exception as e:
+        return (False, f"CUPS print failed ({cups_printer_name}): {e}")
+    finally:
+        # Best-effort cleanup of the temp PDF.
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
+
+    return (True, None)

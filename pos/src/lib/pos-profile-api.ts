@@ -46,6 +46,29 @@ export interface PosProfileLimited {
    * "Fixes log" 2026-04-14.
    */
   custom_shift_system_mode?: 'Disabled' | 'URY Shift' | 'HRMS Shift Type';
+  /**
+   * Unified print routing config (2026-04-16). Replaces the legacy
+   * per-order-type printer fields. When `custom_print_mode` is unset
+   * the backend falls back to the legacy `custom_table_order_printer`
+   * / `custom_parcel_order_printer` chain. All the routing
+   * (Food/Drinks → which printer) is resolved server-side in
+   * `ury_print.resolve_kot_print_plan` — the React POS only reads
+   * `custom_print_mode` to decide the client print path (QZ vs
+   * CUPS vs Disabled).
+   */
+  custom_print_mode?: 'QZ Tray' | 'CUPS (Direct)' | 'Disabled' | null;
+  custom_bill_printer?: string | null;
+  custom_kitchen_kot_printer?: string | null;
+  custom_bar_kot_printer?: string | null;
+  custom_parcel_kot_printer?: string | null;
+  custom_drinks_kot_route?: 'Bar' | 'Kitchen' | 'Bill' | null;
+  custom_food_kot_route?: 'Kitchen' | 'Bar' | 'Bill' | null;
+  custom_takeaway_kot_route?: 'Parcel' | 'Kitchen' | null;
+  custom_print_fallback_mode?:
+    | 'Fallback to Bill Printer'
+    | 'Fail Silently'
+    | 'Fail with Alert'
+    | null;
 }
 
 export interface PosProfileLimitedResponse {
@@ -137,6 +160,19 @@ export interface PosProfileCombined extends PosProfileFull {
   custom_ihotel_enabled?: number;
   custom_ihotel_charge_type?: string | null;
   custom_shift_system_mode?: 'Disabled' | 'URY Shift' | 'HRMS Shift Type';
+  custom_print_mode?: 'QZ Tray' | 'CUPS (Direct)' | 'Disabled' | null;
+  custom_bill_printer?: string | null;
+  custom_kitchen_kot_printer?: string | null;
+  custom_bar_kot_printer?: string | null;
+  custom_parcel_kot_printer?: string | null;
+  custom_drinks_kot_route?: 'Bar' | 'Kitchen' | 'Bill' | null;
+  custom_food_kot_route?: 'Kitchen' | 'Bar' | 'Bill' | null;
+  custom_takeaway_kot_route?: 'Parcel' | 'Kitchen' | null;
+  custom_print_fallback_mode?:
+    | 'Fallback to Bill Printer'
+    | 'Fail Silently'
+    | 'Fail with Alert'
+    | null;
 }
 
 export interface Currency {
@@ -218,6 +254,15 @@ export async function getCombinedPosProfile(
     custom_ihotel_enabled: limitedProfile.custom_ihotel_enabled,
     custom_ihotel_charge_type: limitedProfile.custom_ihotel_charge_type,
     custom_shift_system_mode: limitedProfile.custom_shift_system_mode,
+    custom_print_mode: limitedProfile.custom_print_mode,
+    custom_bill_printer: limitedProfile.custom_bill_printer,
+    custom_kitchen_kot_printer: limitedProfile.custom_kitchen_kot_printer,
+    custom_bar_kot_printer: limitedProfile.custom_bar_kot_printer,
+    custom_parcel_kot_printer: limitedProfile.custom_parcel_kot_printer,
+    custom_drinks_kot_route: limitedProfile.custom_drinks_kot_route,
+    custom_food_kot_route: limitedProfile.custom_food_kot_route,
+    custom_takeaway_kot_route: limitedProfile.custom_takeaway_kot_route,
+    custom_print_fallback_mode: limitedProfile.custom_print_fallback_mode,
   };
 
   return combinedProfile;
