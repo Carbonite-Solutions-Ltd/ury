@@ -11,6 +11,11 @@ import {
   PieChart,
   Trophy,
   ClipboardList,
+  GitMerge,
+  ArrowRightLeft,
+  RotateCcw,
+  CreditCard,
+  Tag,
 } from 'lucide-react';
 import { Card, CardContent, Badge } from '../components/ui';
 import { Button } from '../components/ui/button';
@@ -26,23 +31,21 @@ import {
   getSalesByCategory,
   getTopBottomItems,
   getMyShiftSummary,
+  getMergeReport,
+  getTransferReport,
   type SalesByCashierResponse,
   type SalesByCategoryResponse,
   type TopBottomItemsResponse,
   type ShiftSummaryResponse,
+  type MergeReportResponse,
+  type TransferReportResponse,
+  type DashboardStatsExtended,
 } from '../lib/reports-api';
 
-interface DashboardStats {
-  total_sales: number;
-  total_orders: number;
-  total_customers: number;
-  average_order_value: number;
-  top_selling_items: Array<{
-    item_name: string;
-    quantity: number;
-    total_amount: number;
-  }>;
-}
+// Legacy alias — kept so downstream local references compile while the
+// real response type now carries admin-only extras (order-type mix,
+// payment-mode mix, active cashiers). See reports-api.ts.
+type DashboardStats = DashboardStatsExtended;
 
 interface SalesInvoice {
   name: string;
@@ -71,7 +74,9 @@ type ReportTab =
   | 'my-shift'
   | 'by-cashier'
   | 'by-category'
-  | 'top-bottom';
+  | 'top-bottom'
+  | 'merges'
+  | 'transfers';
 
 const todayIso = (): string => new Date().toISOString().split('T')[0];
 const daysAgoIso = (n: number): string => {
@@ -100,6 +105,10 @@ export default function Reports() {
     useState<SalesByCategoryResponse | null>(null);
   const [topBottom, setTopBottom] =
     useState<TopBottomItemsResponse | null>(null);
+  const [mergeReport, setMergeReport] =
+    useState<MergeReportResponse | null>(null);
+  const [transferReport, setTransferReport] =
+    useState<TransferReportResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const printRef = useRef<HTMLDivElement>(null);
 
@@ -110,7 +119,9 @@ export default function Reports() {
   const isRangeTab =
     activeTab === 'by-cashier' ||
     activeTab === 'by-category' ||
-    activeTab === 'top-bottom';
+    activeTab === 'top-bottom' ||
+    activeTab === 'merges' ||
+    activeTab === 'transfers';
   const isSingleDateTab =
     activeTab === 'dashboard' || activeTab === 'daily-sales';
 
@@ -127,6 +138,10 @@ export default function Reports() {
       fetchSalesByCategory();
     } else if (activeTab === 'top-bottom') {
       fetchTopBottom();
+    } else if (activeTab === 'merges') {
+      fetchMergeReport();
+    } else if (activeTab === 'transfers') {
+      fetchTransferReport();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, selectedDate, fromDate, toDate, terminalName]);
@@ -228,6 +243,40 @@ export default function Reports() {
     }
   };
 
+  const fetchMergeReport = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getMergeReport({
+        from_date: fromDate,
+        to_date: toDate,
+        terminal: terminalName,
+      });
+      setMergeReport(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch merge report');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchTransferReport = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getTransferReport({
+        from_date: fromDate,
+        to_date: toDate,
+        terminal: terminalName,
+      });
+      setTransferReport(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch transfer report');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleRefresh = () => {
     if (activeTab === 'dashboard') fetchDashboardStats();
     else if (activeTab === 'daily-sales') fetchDailySales();
@@ -235,6 +284,8 @@ export default function Reports() {
     else if (activeTab === 'by-cashier') fetchSalesByCashier();
     else if (activeTab === 'by-category') fetchSalesByCategory();
     else if (activeTab === 'top-bottom') fetchTopBottom();
+    else if (activeTab === 'merges') fetchMergeReport();
+    else if (activeTab === 'transfers') fetchTransferReport();
   };
 
   const handlePrint = () => {
@@ -616,6 +667,18 @@ export default function Reports() {
                   icon={<Trophy className="w-5 h-5" />}
                   label="Top / Bottom Items"
                 />
+                <TabButton
+                  active={activeTab === 'merges'}
+                  onClick={() => setActiveTab('merges')}
+                  icon={<GitMerge className="w-5 h-5" />}
+                  label="Merges"
+                />
+                <TabButton
+                  active={activeTab === 'transfers'}
+                  onClick={() => setActiveTab('transfers')}
+                  icon={<ArrowRightLeft className="w-5 h-5" />}
+                  label="Transfers"
+                />
               </>
             )}
           </div>
@@ -640,8 +703,33 @@ export default function Reports() {
           <SalesByCategoryView report={salesByCategory} />
         ) : activeTab === 'top-bottom' ? (
           <TopBottomView report={topBottom} />
+        ) : activeTab === 'merges' ? (
+          <MergeReportView report={mergeReport} />
+        ) : activeTab === 'transfers' ? (
+          <TransferReportView report={transferReport} />
         ) : activeTab === 'dashboard' ? (
           <div className="max-w-7xl mx-auto space-y-6">
+            {/* Scope badge — shows whether numbers are branch-wide (admin)
+                or per-cashier. Relies on is_admin flag from the server so
+                it stays honest even if the frontend role helper drifts. */}
+            {dashboardStats && (
+              <div className="flex items-center gap-2 text-sm text-gray-600">
+                <Badge
+                  variant={dashboardStats.scope === 'branch' ? 'default' : 'secondary'}
+                  className="text-xs uppercase"
+                >
+                  {dashboardStats.scope === 'branch'
+                    ? 'Branch-wide'
+                    : 'My orders'}
+                </Badge>
+                <span className="text-xs text-gray-500">
+                  {dashboardStats.scope === 'branch'
+                    ? 'You are seeing every cashier on this branch.'
+                    : 'Only your own rings are included.'}
+                </span>
+              </div>
+            )}
+
             {/* Stats Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               <Card>
@@ -708,6 +796,157 @@ export default function Reports() {
                 </CardContent>
               </Card>
             </div>
+
+            {/* Returns tile — visible to everyone but only interesting when
+                the count is non-zero. */}
+            {dashboardStats && (dashboardStats.returns_count ?? 0) > 0 && (
+              <Card>
+                <CardContent className="p-6">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                        <RotateCcw className="w-5 h-5 text-red-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-gray-500">Returns</p>
+                        <p className="text-xl font-bold text-gray-900">
+                          {dashboardStats.returns_count} ·{' '}
+                          <span className="text-red-600">
+                            −{formatCurrency(dashboardStats.returns_amount || 0)}
+                          </span>
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Admin-only dashboard extras */}
+            {dashboardStats?.is_admin === 1 && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* Order type breakdown */}
+                <Card>
+                  <CardContent className="p-6">
+                    <div className="flex items-center gap-2 mb-4">
+                      <Tag className="w-5 h-5 text-gray-500" />
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        Order Type Breakdown
+                      </h3>
+                    </div>
+                    {(dashboardStats.order_type_breakdown || []).length === 0 ? (
+                      <p className="text-sm text-gray-500 italic">
+                        No orders yet today.
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {(dashboardStats.order_type_breakdown || []).map((row) => (
+                          <div
+                            key={row.order_type}
+                            className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0"
+                          >
+                            <div>
+                              <p className="font-medium text-gray-900">
+                                {row.order_type}
+                              </p>
+                              <p className="text-xs text-gray-500">
+                                {row.count} order{row.count === 1 ? '' : 's'}
+                              </p>
+                            </div>
+                            <p className="font-semibold text-gray-900">
+                              {formatCurrency(row.amount)}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Payment mode breakdown */}
+                <Card>
+                  <CardContent className="p-6">
+                    <div className="flex items-center gap-2 mb-4">
+                      <CreditCard className="w-5 h-5 text-gray-500" />
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        Payment Mode Breakdown
+                      </h3>
+                    </div>
+                    {(dashboardStats.payment_mode_breakdown || []).length === 0 ? (
+                      <p className="text-sm text-gray-500 italic">
+                        No payments recorded today.
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {(dashboardStats.payment_mode_breakdown || []).map((row) => (
+                          <div
+                            key={row.mode_of_payment}
+                            className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0"
+                          >
+                            <p className="font-medium text-gray-900">
+                              {row.mode_of_payment}
+                            </p>
+                            <p className="font-semibold text-blue-600">
+                              {formatCurrency(row.amount)}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+
+            {/* Active cashiers (admin only) */}
+            {dashboardStats?.is_admin === 1 &&
+              (dashboardStats.active_cashiers || []).length > 0 && (
+                <Card>
+                  <CardContent className="p-6">
+                    <div className="flex items-center gap-2 mb-4">
+                      <Users className="w-5 h-5 text-gray-500" />
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        Active Cashiers Today
+                      </h3>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50 border-y border-gray-200">
+                          <tr>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                              Cashier
+                            </th>
+                            <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                              Orders
+                            </th>
+                            <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                              Total
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200">
+                          {(dashboardStats.active_cashiers || []).map((row) => (
+                            <tr key={row.user}>
+                              <td className="px-4 py-3">
+                                <p className="font-medium text-gray-900">
+                                  {row.full_name}
+                                </p>
+                                <p className="text-xs text-gray-500">{row.user}</p>
+                              </td>
+                              <td className="px-4 py-3 text-right text-gray-600">
+                                {row.invoice_count}
+                              </td>
+                              <td className="px-4 py-3 text-right font-semibold text-gray-900">
+                                {formatCurrency(row.grand_total)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
 
             {/* Top Selling Items */}
             {dashboardStats?.top_selling_items && dashboardStats.top_selling_items.length > 0 && (
@@ -1260,4 +1499,368 @@ function EmptyState({ message }: { message: string }) {
       <p className="text-gray-500">{message}</p>
     </div>
   );
+}
+
+// ---------------------------------------------------------------
+// Merge report view — two stacked tables, one for order merges and
+// one for table merges. Merge Log and Table Merge Log share the
+// same acting-user + status + timestamp columns so the sub-tables
+// share a common shape.
+// ---------------------------------------------------------------
+
+function MergeReportView({ report }: { report: MergeReportResponse | null }) {
+  if (!report) return <EmptyState message="Loading…" />;
+  const { summary, order_merges, table_merges } = report;
+  const hasAny = order_merges.length > 0 || table_merges.length > 0;
+  if (!hasAny) {
+    return (
+      <EmptyState
+        message={`No merges between ${report.from_date} and ${report.to_date}`}
+      />
+    );
+  }
+
+  return (
+    <div className="max-w-7xl mx-auto space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <StatTile
+          label="Order Merges"
+          value={`${summary.order_merge_count} · ${summary.order_merge_active} active`}
+          tone="blue"
+        />
+        <StatTile
+          label="Table Merges"
+          value={`${summary.table_merge_count} · ${summary.table_merge_active} active`}
+          tone="purple"
+        />
+      </div>
+
+      {order_merges.length > 0 && (
+        <Card>
+          <CardContent className="p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+              Order Merges
+            </h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-y border-gray-200">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Log
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Master
+                    </th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Sources
+                    </th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Sources Total
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Merged by
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Merged at
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Status
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {order_merges.map((row) => (
+                    <tr key={row.name}>
+                      <td className="px-4 py-3 font-mono text-xs text-gray-600">
+                        {row.name}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-gray-900">
+                        {row.master_invoice}
+                      </td>
+                      <td className="px-4 py-3 text-right text-gray-600">
+                        {row.source_count}
+                      </td>
+                      <td className="px-4 py-3 text-right text-gray-600">
+                        {formatCurrency(row.sources_total)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <p className="text-gray-900">
+                          {row.merged_by_full_name}
+                        </p>
+                        {row.status === 'Unmerged' &&
+                          row.unmerged_by_full_name && (
+                            <p className="text-xs text-gray-500">
+                              undone by {row.unmerged_by_full_name}
+                            </p>
+                          )}
+                      </td>
+                      <td className="px-4 py-3 text-gray-600">
+                        {shortDateTime(row.merged_at)}
+                        {row.status === 'Unmerged' && row.unmerged_at && (
+                          <p className="text-xs text-gray-500">
+                            undone {shortDateTime(row.unmerged_at)}
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge
+                          variant={row.status === 'Active' ? 'default' : 'secondary'}
+                          className={`text-xs ${
+                            row.status === 'Active'
+                              ? 'bg-blue-100 text-blue-700'
+                              : 'bg-gray-100 text-gray-600'
+                          }`}
+                        >
+                          {row.status}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {table_merges.length > 0 && (
+        <Card>
+          <CardContent className="p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+              Table Merges
+            </h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-y border-gray-200">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Log
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Master Table
+                    </th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Sources
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">
+                      Orders Merged
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Merged by
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Merged at
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Status
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {table_merges.map((row) => (
+                    <tr key={row.name}>
+                      <td className="px-4 py-3 font-mono text-xs text-gray-600">
+                        {row.name}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-gray-900">
+                        {row.master_table}
+                      </td>
+                      <td className="px-4 py-3 text-right text-gray-600">
+                        {row.source_count}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        {row.merged_orders === 1 ? (
+                          <Badge className="text-xs bg-green-100 text-green-700">
+                            Yes
+                          </Badge>
+                        ) : (
+                          <span className="text-xs text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <p className="text-gray-900">
+                          {row.merged_by_full_name}
+                        </p>
+                        {row.status === 'Unmerged' &&
+                          row.unmerged_by_full_name && (
+                            <p className="text-xs text-gray-500">
+                              undone by {row.unmerged_by_full_name}
+                            </p>
+                          )}
+                      </td>
+                      <td className="px-4 py-3 text-gray-600">
+                        {shortDateTime(row.merged_at)}
+                        {row.status === 'Unmerged' && row.unmerged_at && (
+                          <p className="text-xs text-gray-500">
+                            undone {shortDateTime(row.unmerged_at)}
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge
+                          variant={row.status === 'Active' ? 'default' : 'secondary'}
+                          className={`text-xs ${
+                            row.status === 'Active'
+                              ? 'bg-purple-100 text-purple-700'
+                              : 'bg-gray-100 text-gray-600'
+                          }`}
+                        >
+                          {row.status}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------
+// Transfer report view — every POS Invoice that was transferred to
+// another cashier at shift-close time. Cashiers can't see this
+// (admin-only); captains use it to audit "who dumped what onto
+// whom" during the end-of-day draft-transfer flow.
+// ---------------------------------------------------------------
+
+function TransferReportView({
+  report,
+}: {
+  report: TransferReportResponse | null;
+}) {
+  if (!report) return <EmptyState message="Loading…" />;
+  const { summary, rows } = report;
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        message={`No shift-close transfers between ${report.from_date} and ${report.to_date}`}
+      />
+    );
+  }
+
+  return (
+    <div className="max-w-7xl mx-auto space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <StatTile
+          label="Transfers"
+          value={String(summary.count)}
+          tone="orange"
+        />
+        <StatTile
+          label="Total moved"
+          value={formatCurrency(summary.total_amount)}
+          tone="blue"
+        />
+        <StatTile
+          label="Distinct pairs"
+          value={String(summary.distinct_pairs)}
+          tone="purple"
+        />
+      </div>
+
+      <Card>
+        <CardContent className="p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-1">
+            Shift-Close Transfers
+          </h3>
+          <p className="text-sm text-gray-500 mb-4">
+            Draft orders reassigned when the original cashier closed their
+            shift. The new cashier picked them up on their next Orders page
+            visit.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-y border-gray-200">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Invoice
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    From
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    To
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Shift
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    When
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Now
+                  </th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    Amount
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {rows.map((row) => (
+                  <tr key={row.name}>
+                    <td className="px-4 py-3">
+                      <p className="font-mono text-xs text-gray-900">
+                        {row.name}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {row.customer_name || row.customer}
+                        {row.restaurant_table
+                          ? ` · ${row.restaurant_table}`
+                          : ''}
+                      </p>
+                    </td>
+                    <td className="px-4 py-3 text-gray-700">
+                      {row.from_cashier_full_name || '?'}
+                    </td>
+                    <td className="px-4 py-3 text-gray-900 font-medium">
+                      <ArrowRightLeft className="inline w-3 h-3 mr-1 text-orange-500" />
+                      {row.new_cashier_full_name}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-gray-600">
+                      {row.opening_entry || '—'}
+                    </td>
+                    <td className="px-4 py-3 text-gray-600">
+                      {shortDateTime(row.transfer_time)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <Badge
+                        variant="secondary"
+                        className={`text-xs ${
+                          row.status === 'Paid'
+                            ? 'bg-green-100 text-green-700'
+                            : 'bg-gray-100 text-gray-600'
+                        }`}
+                      >
+                        {row.status}
+                      </Badge>
+                    </td>
+                    <td className="px-4 py-3 text-right font-semibold text-gray-900">
+                      {formatCurrency(row.grand_total)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function shortDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso.replace(' ', 'T'));
+  if (isNaN(d.getTime())) return iso.slice(0, 16);
+  return d.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
 }
