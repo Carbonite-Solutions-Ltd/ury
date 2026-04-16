@@ -216,6 +216,55 @@ export async function getShiftHistory(
 }
 
 // ---------------------------------------------------------------
+// Shift schedule (Mon→Sun roster from URY Shift / HRMS Shift Type)
+// ---------------------------------------------------------------
+
+export interface ShiftScheduleCell {
+  shift_name: string;
+  shift: string;
+  start_time: string; // HH:MM
+  end_time: string;
+  assignment: string | null;
+}
+
+export interface ShiftScheduleRow {
+  user: string;
+  full_name: string;
+  is_me: boolean;
+  assignments: Record<string, ShiftScheduleCell>; // keyed by day name
+}
+
+export interface ShiftScheduleDay {
+  day_name: string;
+  date: string; // yyyy-MM-dd
+}
+
+export interface ShiftScheduleResponse {
+  mode: 'URY Shift' | 'HRMS Shift Type' | 'Disabled';
+  branch: string;
+  pos_profile: string | null;
+  week_start: string;
+  week_end: string;
+  days: ShiftScheduleDay[];
+  rows: ShiftScheduleRow[];
+  current_user: string;
+}
+
+export async function getShiftSchedule(
+  weekStart?: string,
+  terminal?: string | null
+): Promise<ShiftScheduleResponse> {
+  const params: Record<string, unknown> = {};
+  if (weekStart) params.week_start = weekStart;
+  if (terminal) params.terminal = terminal;
+  const res = await call.get<{ message: ShiftScheduleResponse }>(
+    'ury.ury_pos.api.get_shift_schedule',
+    params
+  );
+  return res.message;
+}
+
+// ---------------------------------------------------------------
 // Merge report + Transfer report (admin only)
 // ---------------------------------------------------------------
 

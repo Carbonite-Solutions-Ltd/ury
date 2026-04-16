@@ -32,6 +32,7 @@ import {
   getTopBottomItems,
   getMyShiftSummary,
   getShiftHistory,
+  getShiftSchedule,
   getMergeReport,
   getTransferReport,
   type SalesByCashierResponse,
@@ -39,6 +40,7 @@ import {
   type TopBottomItemsResponse,
   type ShiftSummaryResponse,
   type ShiftHistoryResponse,
+  type ShiftScheduleResponse,
   type MergeReportResponse,
   type TransferReportResponse,
   type DashboardStatsExtended,
@@ -101,12 +103,28 @@ export default function Reports() {
   // New report data slots
   const [shiftSummary, setShiftSummary] =
     useState<ShiftSummaryResponse | null>(null);
-  // My Shift sub-toggle: "current" = live open shift, "all" = history
-  // table for the date range. State lives at this level so date-range
-  // changes refetch the right view.
-  const [shiftView, setShiftView] = useState<'current' | 'all'>('current');
+  // My Shift sub-toggle: "current" = live open shift, "all" = closed
+  // history table for the date range, "schedule" = Mon→Sun roster
+  // from URY Shift / HRMS Shift Type. State lives at this level so
+  // date-range / week changes refetch the right view.
+  const [shiftView, setShiftView] = useState<
+    'current' | 'all' | 'schedule'
+  >('current');
   const [shiftHistory, setShiftHistory] =
     useState<ShiftHistoryResponse | null>(null);
+  const [shiftSchedule, setShiftSchedule] =
+    useState<ShiftScheduleResponse | null>(null);
+  // Schedule view's week cursor — starts at "today's week" Monday.
+  // Set via week-navigator buttons (◀ This Week ▶).
+  const mondayOf = (d: Date) => {
+    const m = new Date(d);
+    const dow = (m.getDay() + 6) % 7; // Sun=0 → Mon=0 layout
+    m.setDate(m.getDate() - dow);
+    return `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, '0')}-${String(m.getDate()).padStart(2, '0')}`;
+  };
+  const [scheduleWeekStart, setScheduleWeekStart] = useState<string>(
+    mondayOf(new Date())
+  );
   const [salesByCashier, setSalesByCashier] =
     useState<SalesByCashierResponse | null>(null);
   const [salesByCategory, setSalesByCategory] =
@@ -140,11 +158,9 @@ export default function Reports() {
     } else if (activeTab === 'daily-sales') {
       fetchDailySales();
     } else if (activeTab === 'my-shift') {
-      if (shiftView === 'current') {
-        fetchShiftSummary();
-      } else {
-        fetchShiftHistory();
-      }
+      if (shiftView === 'current') fetchShiftSummary();
+      else if (shiftView === 'all') fetchShiftHistory();
+      else fetchShiftSchedule();
     } else if (activeTab === 'by-cashier') {
       fetchSalesByCashier();
     } else if (activeTab === 'by-category') {
@@ -157,7 +173,15 @@ export default function Reports() {
       fetchTransferReport();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, selectedDate, fromDate, toDate, terminalName, shiftView]);
+  }, [
+    activeTab,
+    selectedDate,
+    fromDate,
+    toDate,
+    terminalName,
+    shiftView,
+    scheduleWeekStart,
+  ]);
 
   const fetchDashboardStats = async () => {
     setLoading(true);
@@ -216,6 +240,19 @@ export default function Reports() {
       setShiftHistory(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch shift history');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchShiftSchedule = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getShiftSchedule(scheduleWeekStart, terminalName);
+      setShiftSchedule(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch shift schedule');
     } finally {
       setLoading(false);
     }
@@ -312,7 +349,8 @@ export default function Reports() {
     else if (activeTab === 'daily-sales') fetchDailySales();
     else if (activeTab === 'my-shift') {
       if (shiftView === 'current') fetchShiftSummary();
-      else fetchShiftHistory();
+      else if (shiftView === 'all') fetchShiftHistory();
+      else fetchShiftSchedule();
     }
     else if (activeTab === 'by-cashier') fetchSalesByCashier();
     else if (activeTab === 'by-category') fetchSalesByCategory();
@@ -725,6 +763,9 @@ export default function Reports() {
             onViewChange={setShiftView}
             summary={shiftSummary}
             history={shiftHistory}
+            schedule={shiftSchedule}
+            scheduleWeekStart={scheduleWeekStart}
+            onWeekChange={setScheduleWeekStart}
           />
         ) : activeTab === 'by-cashier' ? (
           <SalesByCashierView report={salesByCashier} />
@@ -1123,13 +1164,16 @@ function TabButton({ active, onClick, icon, label }: TabButtonProps) {
   );
 }
 
-// Wrapper: switches between Current Shift and All Shifts views via
-// a pill toggle at the top of the My Shift tab.
+// Wrapper: switches between Current Shift / All Shifts / Schedule
+// via a pill toggle at the top of the My Shift tab.
 interface MyShiftWrapProps {
-  view: 'current' | 'all';
-  onViewChange: (v: 'current' | 'all') => void;
+  view: 'current' | 'all' | 'schedule';
+  onViewChange: (v: 'current' | 'all' | 'schedule') => void;
   summary: ShiftSummaryResponse | null;
   history: ShiftHistoryResponse | null;
+  schedule: ShiftScheduleResponse | null;
+  scheduleWeekStart: string;
+  onWeekChange: (week: string) => void;
 }
 
 function MyShiftWrap({
@@ -1137,10 +1181,13 @@ function MyShiftWrap({
   onViewChange,
   summary,
   history,
+  schedule,
+  scheduleWeekStart,
+  onWeekChange,
 }: MyShiftWrapProps) {
   return (
     <div className="max-w-6xl mx-auto space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1">
           <button
             onClick={() => onViewChange('current')}
@@ -1164,24 +1211,112 @@ function MyShiftWrap({
           >
             All Shifts
           </button>
-        </div>
-        {view === 'all' && history && history.shifts.length > 0 && (
-          <Button
-            variant="default"
-            size="sm"
-            onClick={() => printShiftHistory(history)}
+          <button
+            onClick={() => onViewChange('schedule')}
+            className={cn(
+              'px-3 py-1.5 text-sm font-medium rounded-md transition-colors',
+              view === 'schedule'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            )}
           >
-            <Printer className="w-4 h-4 mr-2" />
-            Print Shift Report
-          </Button>
-        )}
+            Schedule
+          </button>
+        </div>
+        <div className="flex items-center gap-2">
+          {view === 'schedule' && (
+            <ScheduleWeekNav
+              weekStart={scheduleWeekStart}
+              onChange={onWeekChange}
+              schedule={schedule}
+            />
+          )}
+          {view === 'all' && history && history.shifts.length > 0 && (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => printShiftHistory(history)}
+            >
+              <Printer className="w-4 h-4 mr-2" />
+              Print Shift Report
+            </Button>
+          )}
+          {view === 'schedule' && schedule && schedule.rows.length > 0 && (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => printShiftSchedule(schedule)}
+            >
+              <Printer className="w-4 h-4 mr-2" />
+              Print Roster
+            </Button>
+          )}
+        </div>
       </div>
 
       {view === 'current' ? (
         <ShiftSummaryView summary={summary} />
-      ) : (
+      ) : view === 'all' ? (
         <AllShiftsView history={history} />
+      ) : (
+        <ScheduleView schedule={schedule} />
       )}
+    </div>
+  );
+}
+
+// Week navigator: ◀ This Week ▶ — moves the week cursor 7 days
+// at a time. The "This Week" button snaps back to today's week.
+function ScheduleWeekNav({
+  weekStart,
+  onChange,
+  schedule,
+}: {
+  weekStart: string;
+  onChange: (week: string) => void;
+  schedule: ShiftScheduleResponse | null;
+}) {
+  const shift = (delta: number) => {
+    const d = new Date(weekStart + 'T00:00:00');
+    d.setDate(d.getDate() + delta);
+    onChange(
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    );
+  };
+  const todayWeek = () => {
+    const d = new Date();
+    const dow = (d.getDay() + 6) % 7;
+    d.setDate(d.getDate() - dow);
+    onChange(
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    );
+  };
+  const label = schedule
+    ? `${schedule.week_start} → ${schedule.week_end}`
+    : weekStart;
+  return (
+    <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
+      <button
+        onClick={() => shift(-7)}
+        className="px-2 py-1.5 text-sm hover:bg-gray-100 transition-colors"
+        aria-label="Previous week"
+      >
+        ◀
+      </button>
+      <button
+        onClick={todayWeek}
+        className="px-3 py-1.5 text-sm font-medium border-x border-gray-200 hover:bg-gray-100 transition-colors"
+        title={label}
+      >
+        This Week
+      </button>
+      <button
+        onClick={() => shift(7)}
+        className="px-2 py-1.5 text-sm hover:bg-gray-100 transition-colors"
+        aria-label="Next week"
+      >
+        ▶
+      </button>
     </div>
   );
 }
@@ -1591,6 +1726,275 @@ function EmptyState({ message }: { message: string }) {
       <p className="text-gray-500">{message}</p>
     </div>
   );
+}
+
+// ---------------------------------------------------------------
+// Schedule view — Mon→Sun roster grid driven by URY Shift /
+// HRMS Shift Type. Highlights the current user's row.
+// ---------------------------------------------------------------
+
+function ScheduleView({
+  schedule,
+}: {
+  schedule: ShiftScheduleResponse | null;
+}) {
+  if (!schedule) return <EmptyState message="Loading…" />;
+
+  if (schedule.mode === 'Disabled') {
+    return (
+      <div className="max-w-3xl mx-auto text-center py-12">
+        <ClipboardList className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+        <p className="text-gray-700 text-lg font-medium">
+          Shift system is disabled on this POS Profile
+        </p>
+        <p className="text-gray-500 text-sm mt-2">
+          Set <span className="font-mono">custom_shift_system_mode</span> to{' '}
+          <strong>URY Shift</strong> or <strong>HRMS Shift Type</strong> on the
+          POS Profile to start showing the weekly roster here.
+        </p>
+      </div>
+    );
+  }
+
+  if (schedule.rows.length === 0) {
+    return (
+      <div className="max-w-3xl mx-auto text-center py-12">
+        <ClipboardList className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+        <p className="text-gray-700 text-lg font-medium">
+          No active shift assignments this week
+        </p>
+        <p className="text-gray-500 text-sm mt-2">
+          {schedule.mode === 'URY Shift'
+            ? 'Open URY Shift Assignment in the desk and add some rows for this branch.'
+            : 'Open Shift Assignment (HRMS) in the desk and add some rows for this branch.'}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between text-sm text-gray-600">
+        <div className="flex items-center gap-2">
+          <Badge className="bg-blue-100 text-blue-700 text-xs uppercase">
+            {schedule.mode}
+          </Badge>
+          <span>
+            {schedule.branch} · {schedule.week_start} → {schedule.week_end}
+          </span>
+        </div>
+      </div>
+
+      <Card>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+                <tr>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
+                    Cashier
+                  </th>
+                  {schedule.days.map((d) => (
+                    <th
+                      key={d.day_name}
+                      className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase border-l border-gray-100"
+                    >
+                      <div>{d.day_name.slice(0, 3)}</div>
+                      <div className="text-[10px] text-gray-400 font-normal mt-0.5">
+                        {d.date.slice(5)}
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {schedule.rows.map((row) => (
+                  <tr
+                    key={row.user}
+                    className={cn(
+                      'transition-colors',
+                      row.is_me
+                        ? 'bg-blue-50 hover:bg-blue-100'
+                        : 'hover:bg-gray-50'
+                    )}
+                  >
+                    <td className="px-3 py-3 whitespace-nowrap">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={cn(
+                            'font-medium',
+                            row.is_me ? 'text-blue-900' : 'text-gray-900'
+                          )}
+                        >
+                          {row.full_name}
+                        </span>
+                        {row.is_me && (
+                          <Badge className="bg-blue-600 text-white text-[10px] uppercase px-1.5 py-0">
+                            You
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500">{row.user}</p>
+                    </td>
+                    {schedule.days.map((d) => {
+                      const cell = row.assignments[d.day_name];
+                      return (
+                        <td
+                          key={d.day_name}
+                          className="px-3 py-3 text-center border-l border-gray-100"
+                        >
+                          {cell ? (
+                            <div className="inline-flex flex-col items-center">
+                              <span
+                                className={cn(
+                                  'text-xs font-semibold rounded px-2 py-0.5',
+                                  row.is_me
+                                    ? 'bg-blue-200 text-blue-900'
+                                    : 'bg-gray-100 text-gray-800'
+                                )}
+                              >
+                                {cell.shift_name}
+                              </span>
+                              <span className="text-[10px] text-gray-500 mt-0.5">
+                                {cell.start_time} – {cell.end_time}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <p className="text-xs text-gray-500">
+        {schedule.rows.length} cashier{schedule.rows.length === 1 ? '' : 's'}{' '}
+        scheduled this week
+        {schedule.rows.some((r) => r.is_me) && ' · your row is highlighted'}.
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------
+// Notice-board print template for the schedule — same paper-style
+// layout as the shift history print, but the body is the Mon→Sun
+// roster grid.
+// ---------------------------------------------------------------
+
+function printShiftSchedule(schedule: ShiftScheduleResponse) {
+  const win = window.open('', '_blank', 'width=1100,height=700');
+  if (!win) {
+    showToast.error('Please allow pop-ups to print');
+    return;
+  }
+  const printedAt = new Date().toLocaleString('en-US');
+
+  const headerCells = schedule.days
+    .map(
+      (d) => `
+        <th>
+          ${d.day_name.slice(0, 3)}<br>
+          <small>${d.date.slice(5)}</small>
+        </th>`
+    )
+    .join('');
+
+  const rowsHtml = schedule.rows
+    .map((row) => {
+      const cells = schedule.days
+        .map((d) => {
+          const cell = row.assignments[d.day_name];
+          if (!cell) return '<td class="empty">—</td>';
+          return `
+            <td class="${row.is_me ? 'me-cell' : ''}">
+              <strong>${cell.shift_name}</strong><br>
+              <small>${cell.start_time} – ${cell.end_time}</small>
+            </td>`;
+        })
+        .join('');
+      return `
+        <tr class="${row.is_me ? 'me-row' : ''}">
+          <td class="cashier">
+            <strong>${row.full_name}</strong>
+            ${row.is_me ? '<span class="me-badge">YOU</span>' : ''}
+            <br><small>${row.user}</small>
+          </td>
+          ${cells}
+        </tr>`;
+    })
+    .join('');
+
+  const html = `
+    <!doctype html>
+    <html>
+    <head>
+      <title>Shift Roster — ${schedule.branch} — ${schedule.week_start} → ${schedule.week_end}</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Helvetica Neue', Arial, sans-serif; padding: 24px; color: #1f2937; font-size: 12px; }
+        .header { text-align: center; border-bottom: 3px double #1f2937; padding-bottom: 12px; margin-bottom: 16px; }
+        .header h1 { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
+        .header .meta { font-size: 13px; color: #4b5563; margin-top: 4px; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        th, td { padding: 8px; text-align: center; border: 1px solid #d1d5db; vertical-align: middle; }
+        th { background: #f3f4f6; font-weight: 600; font-size: 10px; text-transform: uppercase; color: #4b5563; }
+        td.cashier { text-align: left; background: #f9fafb; min-width: 160px; }
+        td.empty { color: #d1d5db; background: #fafafa; }
+        tr.me-row td { background: #eff6ff !important; }
+        td.me-cell { background: #dbeafe !important; }
+        .me-badge { display: inline-block; background: #2563eb; color: white; font-size: 8px; padding: 1px 4px; border-radius: 2px; vertical-align: top; margin-left: 4px; }
+        small { font-size: 9px; color: #6b7280; }
+        .footer { text-align: center; margin-top: 24px; font-size: 9px; color: #9ca3af; border-top: 1px solid #e5e7eb; padding-top: 8px; }
+        .signatures { display: flex; gap: 40px; margin-top: 36px; }
+        .sig { flex: 1; text-align: center; border-top: 1px solid #1f2937; padding-top: 4px; font-size: 11px; color: #4b5563; text-transform: uppercase; letter-spacing: 1px; }
+        @media print { body { padding: 12px; } .no-print { display: none; } }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <h1>SHIFT ROSTER</h1>
+        <div class="meta">
+          ${schedule.branch} · ${schedule.week_start} → ${schedule.week_end}
+          · ${schedule.mode}
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th style="text-align:left">Cashier</th>
+            ${headerCells}
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+
+      <div class="signatures">
+        <div class="sig">Manager Signature</div>
+        <div class="sig">Date Posted</div>
+      </div>
+
+      <div class="footer">Generated ${printedAt}</div>
+
+      <script>
+        window.onload = function() {
+          window.print();
+          window.onafterprint = function() { window.close(); };
+        };
+      </script>
+    </body>
+    </html>
+  `;
+
+  win.document.write(html);
+  win.document.close();
 }
 
 // ---------------------------------------------------------------

@@ -3199,6 +3199,329 @@ def get_my_shift_summary(terminal=None):
     }
 
 
+DAY_NAMES = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+]
+
+
+def _resolve_pos_profile_for_branch(terminal=None, branch=None):
+    """Resolve the active POS Profile for the current scope. Used by
+    the shift schedule endpoint to read `custom_shift_system_mode`.
+    Prefers the terminal's bound profile if a terminal is in play;
+    falls back to the first non-disabled POS Profile on the branch.
+    """
+    if terminal:
+        prof = frappe.db.get_value("URY POS Terminal", terminal, "pos_profile")
+        if prof:
+            return prof
+    return frappe.db.get_value(
+        "POS Profile", {"branch": branch, "disabled": 0}, "name"
+    )
+
+
+def _build_ury_shift_roster(branch, week_start, week_end):
+    """Return a list of per-user roster rows for the URY Shift mode.
+
+    Each row carries:
+      {user, full_name, assignments: {Monday: {...}, Tuesday: {...}, ...}}
+
+    Days with no assignment for that user are omitted from the
+    `assignments` dict — the frontend renders them as "—".
+
+    URY Shift Assignment carries `effective_from`/`effective_to`
+    +`days_of_week` child table. Empty `days_of_week` means "every
+    day of the week" (per the doctype docstring I wrote earlier).
+    """
+    # Pull every Active assignment that overlaps the week window.
+    assignments = frappe.db.sql(
+        """
+        SELECT
+            sa.name,
+            sa.user,
+            sa.shift,
+            sa.effective_from,
+            sa.effective_to,
+            us.shift_name,
+            us.start_time,
+            us.end_time
+        FROM `tabURY Shift Assignment` AS sa
+        INNER JOIN `tabURY Shift` AS us ON us.name = sa.shift
+        WHERE sa.status = 'Active'
+          AND sa.branch = %s
+          AND sa.effective_from <= %s
+          AND (sa.effective_to IS NULL OR sa.effective_to >= %s)
+        ORDER BY sa.user, us.start_time
+        """,
+        (branch, week_end, week_start),
+        as_dict=True,
+    )
+
+    if not assignments:
+        return []
+
+    # Pull the days_of_week child rows for every assignment in one
+    # bulk query. Empty list for an assignment => every day.
+    assignment_names = [a["name"] for a in assignments]
+    placeholders = ", ".join(["%s"] * len(assignment_names))
+    day_rows = frappe.db.sql(
+        f"""
+        SELECT parent, day
+        FROM `tabURY Shift Day`
+        WHERE parent IN ({placeholders})
+        """,
+        tuple(assignment_names),
+        as_dict=True,
+    )
+    days_by_assignment: dict = {}
+    for r in day_rows:
+        days_by_assignment.setdefault(r["parent"], set()).add(r["day"])
+
+    # Pull full names for every user in one query.
+    user_names = list({a["user"] for a in assignments if a.get("user")})
+    full_name_map: dict = {}
+    if user_names:
+        ph = ", ".join(["%s"] * len(user_names))
+        for r in frappe.db.sql(
+            f"SELECT name, full_name FROM `tabUser` WHERE name IN ({ph})",
+            tuple(user_names),
+            as_dict=True,
+        ):
+            full_name_map[r["name"]] = r["full_name"]
+
+    # Build per-user row keyed by user, then merge per-day cells.
+    rows_by_user: dict = {}
+    for a in assignments:
+        user = a.get("user")
+        if not user:
+            continue
+        days_for_assignment = days_by_assignment.get(a["name"]) or set(
+            DAY_NAMES
+        )
+        cell = {
+            "shift_name": a["shift_name"] or a["shift"],
+            "shift": a["shift"],
+            "start_time": _time_str(a["start_time"]),
+            "end_time": _time_str(a["end_time"]),
+            "assignment": a["name"],
+        }
+        row = rows_by_user.setdefault(
+            user,
+            {
+                "user": user,
+                "full_name": full_name_map.get(user) or user,
+                "assignments": {},
+            },
+        )
+        for day_name in days_for_assignment:
+            # First-write-wins keeps each cell to one shift per day
+            # for the table layout. If a user has two non-overlapping
+            # shifts on the same day (rare), only the earlier-starting
+            # one shows in the cell — the URY Shift Assignment overlap
+            # validator already rejects time-overlapping conflicts so
+            # this corner case is benign.
+            row["assignments"].setdefault(day_name, cell)
+
+    return sorted(
+        rows_by_user.values(),
+        key=lambda r: (r["full_name"] or "").lower(),
+    )
+
+
+def _build_hrms_shift_roster(branch, week_start, week_end):
+    """Return a list of per-user roster rows for the HRMS Shift Type
+    mode. Same shape as the URY builder.
+
+    HRMS Shift Assignment is per-employee per-date-range (no per-day
+    pattern), so we expand each assignment over the days it covers
+    within the week window. Best-effort: if the HRMS app isn't
+    installed (`Shift Assignment` doctype missing) we silently
+    return [] so the report still loads.
+    """
+    if not frappe.db.exists("DocType", "Shift Assignment"):
+        return []
+    if not frappe.db.exists("DocType", "Shift Type"):
+        return []
+
+    # HRMS Shift Assignment is per-employee. Map employees on this
+    # branch back to user_id so we can highlight the current user.
+    employees = frappe.db.sql(
+        """
+        SELECT name, employee_name, user_id, branch
+        FROM `tabEmployee`
+        WHERE branch = %s
+        """,
+        (branch,),
+        as_dict=True,
+    )
+    if not employees:
+        return []
+
+    employee_names = [e["name"] for e in employees]
+    placeholders = ", ".join(["%s"] * len(employee_names))
+    assignments = frappe.db.sql(
+        f"""
+        SELECT
+            sa.employee,
+            sa.shift_type,
+            sa.start_date,
+            sa.end_date,
+            st.start_time,
+            st.end_time
+        FROM `tabShift Assignment` AS sa
+        INNER JOIN `tabShift Type` AS st ON st.name = sa.shift_type
+        WHERE sa.docstatus = 1
+          AND sa.status = 'Active'
+          AND sa.employee IN ({placeholders})
+          AND sa.start_date <= %s
+          AND (sa.end_date IS NULL OR sa.end_date >= %s)
+        """,
+        tuple(employee_names) + (week_end, week_start),
+        as_dict=True,
+    )
+
+    employee_to_user = {
+        e["name"]: e.get("user_id") or e["name"] for e in employees
+    }
+    employee_to_full = {
+        e["name"]: e.get("employee_name") or e["name"] for e in employees
+    }
+
+    rows_by_user: dict = {}
+    from datetime import timedelta as _td
+    for a in assignments:
+        emp = a["employee"]
+        user = employee_to_user.get(emp) or emp
+        full_name = employee_to_full.get(emp) or emp
+
+        cell = {
+            "shift_name": a["shift_type"],
+            "shift": a["shift_type"],
+            "start_time": _time_str(a["start_time"]),
+            "end_time": _time_str(a["end_time"]),
+            "assignment": None,
+        }
+        row = rows_by_user.setdefault(
+            user,
+            {"user": user, "full_name": full_name, "assignments": {}},
+        )
+
+        # Expand the assignment over the days it covers within the
+        # week window.
+        start = max(
+            a["start_date"], frappe.utils.getdate(week_start)
+        )
+        end = (
+            min(a["end_date"], frappe.utils.getdate(week_end))
+            if a["end_date"]
+            else frappe.utils.getdate(week_end)
+        )
+        cur = start
+        while cur <= end:
+            day_name = DAY_NAMES[cur.weekday()]
+            row["assignments"].setdefault(day_name, cell)
+            cur += _td(days=1)
+
+    return sorted(
+        rows_by_user.values(),
+        key=lambda r: (r["full_name"] or "").lower(),
+    )
+
+
+def _time_str(t):
+    """Render a Time field (datetime.time, timedelta, or str) as
+    24-hour HH:MM for the schedule cell."""
+    if t is None:
+        return ""
+    try:
+        # datetime.time
+        return t.strftime("%H:%M")
+    except AttributeError:
+        pass
+    try:
+        # timedelta — happens when MariaDB returns Time as interval
+        total = int(t.total_seconds())
+        h = total // 3600
+        m = (total % 3600) // 60
+        return f"{h:02d}:{m:02d}"
+    except AttributeError:
+        pass
+    s = str(t)
+    return s[:5] if len(s) >= 5 else s
+
+
+@frappe.whitelist()
+def get_shift_schedule(week_start=None, terminal=None):
+    """Mon→Sun shift roster for the user's branch, driven by the
+    POS Profile's ``custom_shift_system_mode``.
+
+    Mode resolution:
+      - "URY Shift" → reads URY Shift + URY Shift Assignment
+      - "HRMS Shift Type" → reads Shift Type + Shift Assignment
+        (returns empty when HRMS isn't installed)
+      - "Disabled" or unset → returns empty
+
+    Visible to every role: the user explicitly asked for "the user
+    has to see everyone on that sheet too". The current session
+    user is flagged via `is_me` so the frontend can highlight their
+    row in the grid.
+
+    See CLAUDE.md "Fixes log" 2026-04-16 — Reports batch 3.
+    """
+    from datetime import timedelta as _td
+
+    branch = getBranch()
+    pos_profile_name = _resolve_pos_profile_for_branch(terminal, branch)
+    mode = "Disabled"
+    if pos_profile_name:
+        mode = (
+            frappe.db.get_value(
+                "POS Profile", pos_profile_name, "custom_shift_system_mode"
+            )
+            or "Disabled"
+        )
+
+    # Compute week window: snap requested date back to its Monday.
+    today = frappe.utils.getdate(week_start) if week_start else frappe.utils.getdate()
+    monday = today - _td(days=today.weekday())
+    sunday = monday + _td(days=6)
+
+    days = [
+        {
+            "day_name": DAY_NAMES[d],
+            "date": str(monday + _td(days=d)),
+        }
+        for d in range(7)
+    ]
+
+    rows: list = []
+    if mode == "URY Shift":
+        rows = _build_ury_shift_roster(branch, str(monday), str(sunday))
+    elif mode == "HRMS Shift Type":
+        rows = _build_hrms_shift_roster(branch, str(monday), str(sunday))
+    # Disabled / unknown modes leave rows = [].
+
+    me = frappe.session.user
+    for r in rows:
+        r["is_me"] = r["user"] == me
+
+    return {
+        "mode": mode,
+        "branch": branch,
+        "pos_profile": pos_profile_name,
+        "week_start": str(monday),
+        "week_end": str(sunday),
+        "days": days,
+        "rows": rows,
+        "current_user": me,
+    }
+
+
 @frappe.whitelist()
 def get_shift_history(from_date=None, to_date=None, terminal=None):
     """Closed POS Closing Entry rows in a date window — the
