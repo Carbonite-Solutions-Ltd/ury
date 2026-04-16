@@ -35,6 +35,7 @@ import {
   getShiftSchedule,
   getMergeReport,
   getTransferReport,
+  getPaymentSplitsReport,
   type SalesByCashierResponse,
   type SalesByCategoryResponse,
   type TopBottomItemsResponse,
@@ -43,6 +44,7 @@ import {
   type ShiftScheduleResponse,
   type MergeReportResponse,
   type TransferReportResponse,
+  type PaymentSplitsResponse,
   type DashboardStatsExtended,
 } from '../lib/reports-api';
 
@@ -80,7 +82,8 @@ type ReportTab =
   | 'by-category'
   | 'top-bottom'
   | 'merges'
-  | 'transfers';
+  | 'transfers'
+  | 'splits';
 
 const todayIso = (): string => new Date().toISOString().split('T')[0];
 const daysAgoIso = (n: number): string => {
@@ -135,6 +138,8 @@ export default function Reports() {
     useState<MergeReportResponse | null>(null);
   const [transferReport, setTransferReport] =
     useState<TransferReportResponse | null>(null);
+  const [paymentSplits, setPaymentSplits] =
+    useState<PaymentSplitsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const printRef = useRef<HTMLDivElement>(null);
 
@@ -148,6 +153,7 @@ export default function Reports() {
     activeTab === 'top-bottom' ||
     activeTab === 'merges' ||
     activeTab === 'transfers' ||
+    activeTab === 'splits' ||
     (activeTab === 'my-shift' && shiftView === 'all');
   const isSingleDateTab =
     activeTab === 'dashboard' || activeTab === 'daily-sales';
@@ -171,6 +177,8 @@ export default function Reports() {
       fetchMergeReport();
     } else if (activeTab === 'transfers') {
       fetchTransferReport();
+    } else if (activeTab === 'splits') {
+      fetchPaymentSplits();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -344,6 +352,23 @@ export default function Reports() {
     }
   };
 
+  const fetchPaymentSplits = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getPaymentSplitsReport({
+        from_date: fromDate,
+        to_date: toDate,
+        terminal: terminalName,
+      });
+      setPaymentSplits(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch payment splits');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleRefresh = () => {
     if (activeTab === 'dashboard') fetchDashboardStats();
     else if (activeTab === 'daily-sales') fetchDailySales();
@@ -357,6 +382,7 @@ export default function Reports() {
     else if (activeTab === 'top-bottom') fetchTopBottom();
     else if (activeTab === 'merges') fetchMergeReport();
     else if (activeTab === 'transfers') fetchTransferReport();
+    else if (activeTab === 'splits') fetchPaymentSplits();
   };
 
   const handlePrint = () => {
@@ -741,6 +767,12 @@ export default function Reports() {
                   icon={<ArrowRightLeft className="w-5 h-5" />}
                   label="Transfers"
                 />
+                <TabButton
+                  active={activeTab === 'splits'}
+                  onClick={() => setActiveTab('splits')}
+                  icon={<CreditCard className="w-5 h-5" />}
+                  label="Payment Splits"
+                />
               </>
             )}
           </div>
@@ -777,6 +809,8 @@ export default function Reports() {
           <MergeReportView report={mergeReport} />
         ) : activeTab === 'transfers' ? (
           <TransferReportView report={transferReport} />
+        ) : activeTab === 'splits' ? (
+          <PaymentSplitsView report={paymentSplits} />
         ) : activeTab === 'dashboard' ? (
           <div className="max-w-7xl mx-auto space-y-6">
             {/* Scope badge — shows whether numbers are branch-wide (admin)
@@ -2622,9 +2656,10 @@ function TransferReportView({
 }: {
   report: TransferReportResponse | null;
 }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   if (!report) return <EmptyState message="Loading…" />;
-  const { summary, rows } = report;
-  if (rows.length === 0) {
+  const { summary, events } = report;
+  if (events.length === 0) {
     return (
       <EmptyState
         message={`No shift-close transfers between ${report.from_date} and ${report.to_date}`}
@@ -2632,18 +2667,35 @@ function TransferReportView({
     );
   }
 
+  const toggle = (key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const eventKey = (e: typeof events[number]) =>
+    `${e.opening_entry || '-'}|${e.from_cashier || '-'}|${e.to_cashier}`;
+
   return (
     <div className="max-w-7xl mx-auto space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <StatTile
-          label="Transfers"
-          value={String(summary.count)}
+          label="Events"
+          value={String(summary.event_count)}
           tone="orange"
+        />
+        <StatTile
+          label="Invoices moved"
+          value={String(summary.count)}
+          tone="blue"
         />
         <StatTile
           label="Total moved"
           value={formatCurrency(summary.total_amount)}
-          tone="blue"
+          tone="green"
         />
         <StatTile
           label="Distinct pairs"
@@ -2658,17 +2710,14 @@ function TransferReportView({
             Shift-Close Transfers
           </h3>
           <p className="text-sm text-gray-500 mb-4">
-            Draft orders reassigned when the original cashier closed their
-            shift. The new cashier picked them up on their next Orders page
-            visit.
+            Grouped by shift close. Click a row to expand the list of
+            invoices reassigned in that event.
           </p>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 border-y border-gray-200">
                 <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                    Invoice
-                  </th>
+                  <th className="px-2 py-3 w-6"></th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
                     From
                   </th>
@@ -2681,8 +2730,232 @@ function TransferReportView({
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
                     When
                   </th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    Invoices
+                  </th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    Total
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {events.map((ev) => {
+                  const key = eventKey(ev);
+                  const isOpen = expanded.has(key);
+                  return (
+                    <React.Fragment key={key}>
+                      <tr
+                        className={cn(
+                          'cursor-pointer hover:bg-gray-50 transition-colors',
+                          isOpen && 'bg-orange-50'
+                        )}
+                        onClick={() => toggle(key)}
+                      >
+                        <td className="px-2 py-3 text-gray-400 text-center">
+                          <span className="inline-block transition-transform">
+                            {isOpen ? '▾' : '▸'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-gray-700">
+                          {ev.from_cashier_full_name || '?'}
+                        </td>
+                        <td className="px-4 py-3 text-gray-900 font-medium">
+                          <ArrowRightLeft className="inline w-3 h-3 mr-1 text-orange-500" />
+                          {ev.to_cashier_full_name}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs text-gray-600">
+                          {ev.opening_entry || '—'}
+                        </td>
+                        <td className="px-4 py-3 text-gray-600">
+                          {shortDateTime(ev.transfer_time)}
+                        </td>
+                        <td className="px-4 py-3 text-right font-semibold">
+                          {ev.count}
+                        </td>
+                        <td className="px-4 py-3 text-right font-semibold text-gray-900">
+                          {formatCurrency(ev.total_amount)}
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr>
+                          <td colSpan={7} className="bg-orange-50/50 p-0">
+                            <div className="px-8 py-3">
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-gray-500 uppercase text-[10px]">
+                                    <th className="text-left py-2 px-2 font-medium">
+                                      Invoice
+                                    </th>
+                                    <th className="text-left py-2 px-2 font-medium">
+                                      Customer
+                                    </th>
+                                    <th className="text-left py-2 px-2 font-medium">
+                                      Table
+                                    </th>
+                                    <th className="text-left py-2 px-2 font-medium">
+                                      Posting Date
+                                    </th>
+                                    <th className="text-left py-2 px-2 font-medium">
+                                      Terminal
+                                    </th>
+                                    <th className="text-left py-2 px-2 font-medium">
+                                      Status
+                                    </th>
+                                    <th className="text-right py-2 px-2 font-medium">
+                                      Amount
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {ev.invoices.map((inv) => (
+                                    <tr
+                                      key={inv.name}
+                                      className="border-t border-orange-200/50"
+                                    >
+                                      <td className="py-2 px-2 font-mono text-gray-900">
+                                        {inv.name}
+                                      </td>
+                                      <td className="py-2 px-2 text-gray-700">
+                                        {inv.customer_name || inv.customer || '—'}
+                                      </td>
+                                      <td className="py-2 px-2 text-gray-700">
+                                        {inv.restaurant_table || '—'}
+                                      </td>
+                                      <td className="py-2 px-2 text-gray-700">
+                                        {inv.posting_date}
+                                      </td>
+                                      <td className="py-2 px-2 text-gray-700">
+                                        {inv.custom_terminal || '—'}
+                                      </td>
+                                      <td className="py-2 px-2">
+                                        <Badge
+                                          variant="secondary"
+                                          className={`text-[10px] ${
+                                            inv.status === 'Paid'
+                                              ? 'bg-green-100 text-green-700'
+                                              : 'bg-gray-100 text-gray-600'
+                                          }`}
+                                        >
+                                          {inv.status}
+                                        </Badge>
+                                      </td>
+                                      <td className="py-2 px-2 text-right font-semibold text-gray-900">
+                                        {formatCurrency(inv.grand_total)}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------
+// Payment Splits view — paid POS Invoices with multi-mode
+// settlement. Row per invoice, per-mode breakdown inline.
+// ---------------------------------------------------------------
+
+function PaymentSplitsView({
+  report,
+}: {
+  report: PaymentSplitsResponse | null;
+}) {
+  if (!report) return <EmptyState message="Loading…" />;
+  const { summary, rows } = report;
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        message={`No split payments between ${report.from_date} and ${report.to_date}`}
+      />
+    );
+  }
+
+  return (
+    <div className="max-w-7xl mx-auto space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <StatTile
+          label="Split Invoices"
+          value={String(summary.count)}
+          tone="blue"
+        />
+        <StatTile
+          label="Total amount"
+          value={formatCurrency(summary.total_amount)}
+          tone="green"
+        />
+      </div>
+
+      {summary.by_mode.length > 0 && (
+        <Card>
+          <CardContent className="p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-3">
+              Mode Breakdown
+            </h3>
+            <p className="text-sm text-gray-500 mb-4">
+              Aggregated per-mode totals across all split invoices in
+              the window.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              {summary.by_mode.map((m) => (
+                <div
+                  key={m.mode_of_payment}
+                  className="bg-gray-50 rounded-lg p-4 border border-gray-200 min-w-[160px]"
+                >
+                  <p className="text-xs text-gray-500">
+                    {m.mode_of_payment}
+                  </p>
+                  <p className="text-lg font-bold text-blue-600 mt-1">
+                    {formatCurrency(m.amount)}
+                  </p>
+                  <p className="text-[11px] text-gray-400">
+                    {m.count} payment{m.count === 1 ? '' : 's'}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <Card>
+        <CardContent className="p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-1">
+            Split-Payment Invoices
+          </h3>
+          <p className="text-sm text-gray-500 mb-4">
+            Invoices settled with two or more payment rows — covers
+            Split Bill flow AND single-payer mixed-mode settlements.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-y border-gray-200">
+                <tr>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                    Now
+                    Invoice
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    When
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Cashier
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Customer
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Split
                   </th>
                   <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
                     Amount
@@ -2696,37 +2969,40 @@ function TransferReportView({
                       <p className="font-mono text-xs text-gray-900">
                         {row.name}
                       </p>
-                      <p className="text-xs text-gray-500">
-                        {row.customer_name || row.customer}
-                        {row.restaurant_table
-                          ? ` · ${row.restaurant_table}`
-                          : ''}
+                      {row.restaurant_table && (
+                        <p className="text-xs text-gray-500">
+                          {row.restaurant_table}
+                        </p>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
+                      {row.posting_date}
+                      <p className="text-xs text-gray-400">
+                        {row.posting_time}
                       </p>
                     </td>
                     <td className="px-4 py-3 text-gray-700">
-                      {row.from_cashier_full_name || '?'}
+                      {row.owner_full_name}
                     </td>
-                    <td className="px-4 py-3 text-gray-900 font-medium">
-                      <ArrowRightLeft className="inline w-3 h-3 mr-1 text-orange-500" />
-                      {row.new_cashier_full_name}
-                    </td>
-                    <td className="px-4 py-3 font-mono text-xs text-gray-600">
-                      {row.opening_entry || '—'}
-                    </td>
-                    <td className="px-4 py-3 text-gray-600">
-                      {shortDateTime(row.transfer_time)}
+                    <td className="px-4 py-3 text-gray-700">
+                      {row.customer_name || row.customer || '—'}
                     </td>
                     <td className="px-4 py-3">
-                      <Badge
-                        variant="secondary"
-                        className={`text-xs ${
-                          row.status === 'Paid'
-                            ? 'bg-green-100 text-green-700'
-                            : 'bg-gray-100 text-gray-600'
-                        }`}
-                      >
-                        {row.status}
-                      </Badge>
+                      <div className="flex flex-wrap gap-1">
+                        {row.payments.map((p, idx) => (
+                          <span
+                            key={idx}
+                            className="inline-flex items-center gap-1 text-xs bg-blue-50 text-blue-700 rounded-full px-2 py-0.5 border border-blue-100"
+                          >
+                            <span className="font-medium">
+                              {p.mode_of_payment}
+                            </span>
+                            <span className="text-blue-500">
+                              {formatCurrency(p.amount)}
+                            </span>
+                          </span>
+                        ))}
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-right font-semibold text-gray-900">
                       {formatCurrency(row.grand_total)}
