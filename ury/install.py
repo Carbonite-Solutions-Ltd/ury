@@ -25,7 +25,24 @@ def after_install():
 def after_migrate():
     """Runs on every `bench migrate`. Idempotent setup that keeps existing
     installs in a URY-compatible state as the app evolves. See CLAUDE.md
-    "Fixes log" 2026-04-08 / 2026-04-09 for context."""
+    "Fixes log" 2026-04-08 / 2026-04-09 for context.
+
+    Calls `setup()` (create_custom_fields) so Custom Fields added in
+    newer URY releases land on pre-existing sites. Without this,
+    dual-source-of-truth fields listed in ury/setup.py never reach
+    older installs — fixtures only run on `bench install-app`, not
+    on `bench migrate`. See the 2026-04-09 fixes log entry about
+    `custom_terminal` silently missing after a feature upgrade.
+    """
+    try:
+        setup()
+    except Exception as e:
+        click.secho(
+            f"[URY] Failed to refresh custom fields: {e}. "
+            f"Run `bench --site <site> execute ury.setup.after_install` "
+            f"manually to retry.",
+            fg="red",
+        )
     ensure_pos_settings_configured()
     _safe_ensure_role_permissions()
     _check_cups_dependency()
