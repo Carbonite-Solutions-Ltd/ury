@@ -1,24 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
-import { Calendar as CalendarIcon, X, ArrowRight } from 'lucide-react';
-import { DayPicker, type DateRange } from 'react-day-picker';
+import { Calendar as CalendarIcon } from 'lucide-react';
+import { DayPicker } from 'react-day-picker';
 import { format, parseISO, isValid } from 'date-fns';
 import { cn } from '../../lib/utils';
 
 import 'react-day-picker/dist/style.css';
 
 /**
- * Branded date pickers that replace the native `<input type="date">`
- * on the Reports page. Built on react-day-picker for the calendar
- * grid + Tailwind for styling.
+ * Branded single-date picker for the Reports page. Built on
+ * react-day-picker for the calendar grid + Tailwind for styling.
  *
- * Two exports:
- *   - <DatePicker>       — single date, pill button + popover calendar
- *   - <DateRangePicker>  — from/to range in a single calendar
- *
- * Both use a local popover (no radix dependency) with click-outside
- * to close + Escape key handler. Dates are exchanged with the
- * parent as ISO "yyyy-MM-dd" strings so the Reports endpoints don't
- * have to change.
+ * Pill trigger button + inline popover calendar (no radix dep) with
+ * click-outside + Escape close. Dates are exchanged with the parent
+ * as ISO "yyyy-MM-dd" strings so the Reports endpoints don't have
+ * to change. For from/to ranges the Reports page uses two of these
+ * side by side (cleaner UX than the unified range picker we tried
+ * first — picking the second date in range mode kept feeling clunky).
  */
 
 // ---------------------------------------------------------------
@@ -207,187 +204,5 @@ export function DatePicker({
         showOutsideDays
       />
     </PopoverWrap>
-  );
-}
-
-// ---------------------------------------------------------------
-// DateRangePicker (from / to)
-// ---------------------------------------------------------------
-
-interface DateRangePickerProps {
-  from: string;
-  to: string;
-  onChange: (from: string, to: string) => void;
-  min?: string;
-  max?: string;
-  disabled?: boolean;
-  className?: string;
-}
-
-export function DateRangePicker({
-  from,
-  to,
-  onChange,
-  min,
-  max,
-  disabled,
-  className,
-}: DateRangePickerProps) {
-  const [open, setOpen] = useState(false);
-
-  const fromDate = parseIsoLoose(from);
-  const toDate = parseIsoLoose(to);
-  const minDate = parseIsoLoose(min);
-  const maxDate = parseIsoLoose(max);
-
-  // Local draft so we can let the user pick the second date before
-  // committing. Sync to props when they change.
-  const [draft, setDraft] = useState<DateRange | undefined>({
-    from: fromDate,
-    to: toDate,
-  });
-
-  useEffect(() => {
-    setDraft({ from: fromDate, to: toDate });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [from, to]);
-
-  const display = () => {
-    if (fromDate && toDate) {
-      if (toIso(fromDate) === toIso(toDate)) {
-        return format(fromDate, 'MMM d, yyyy');
-      }
-      return `${format(fromDate, 'MMM d')} → ${format(toDate, 'MMM d, yyyy')}`;
-    }
-    return 'Pick a range';
-  };
-
-  const handleSelect = (range: DateRange | undefined) => {
-    setDraft(range);
-    if (range?.from && range?.to) {
-      onChange(toIso(range.from), toIso(range.to));
-      // Small delay so the user sees the range highlight before the
-      // popover closes.
-      setTimeout(() => setOpen(false), 120);
-    }
-  };
-
-  const clearRange = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const today = toIso(new Date());
-    const aWeekAgo = new Date();
-    aWeekAgo.setDate(aWeekAgo.getDate() - 6);
-    onChange(toIso(aWeekAgo), today);
-  };
-
-  return (
-    <PopoverWrap
-      open={open}
-      onClose={() => setOpen(false)}
-      trigger={
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => setOpen((v) => !v)}
-          className={cn(
-            'flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2 border border-gray-200 text-sm text-gray-800 cursor-pointer hover:bg-gray-100 hover:border-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
-            open && 'bg-white border-blue-400 ring-2 ring-blue-100',
-            className
-          )}
-        >
-          <CalendarIcon className="w-4 h-4 text-gray-500" />
-          <span>{display()}</span>
-          {fromDate && toDate && (
-            <span
-              role="button"
-              aria-label="Reset range to last 7 days"
-              title="Reset to last 7 days"
-              onClick={clearRange}
-              className="ml-1 p-0.5 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-700 transition-colors"
-            >
-              <X className="w-3.5 h-3.5" />
-            </span>
-          )}
-        </button>
-      }
-      className="min-w-[320px]"
-    >
-      <div className="flex items-center gap-2 px-2 pb-2 text-xs text-gray-500 border-b border-gray-100 mb-2">
-        <span className="font-medium text-gray-700">
-          {draft?.from ? format(draft.from, 'MMM d') : '—'}
-        </span>
-        <ArrowRight className="w-3 h-3" />
-        <span className="font-medium text-gray-700">
-          {draft?.to ? format(draft.to, 'MMM d') : '—'}
-        </span>
-      </div>
-      <DayPicker
-        mode="range"
-        selected={draft}
-        defaultMonth={draft?.from || fromDate}
-        onSelect={handleSelect}
-        disabled={buildDisabledMatcher(minDate, maxDate)}
-        classNames={PICKER_CLASS_NAMES}
-        showOutsideDays
-        numberOfMonths={1}
-      />
-      <div className="flex justify-between gap-2 px-2 pt-2 border-t border-gray-100 mt-2">
-        <RangePreset
-          label="Today"
-          onClick={() => {
-            const t = toIso(new Date());
-            onChange(t, t);
-            setOpen(false);
-          }}
-        />
-        <RangePreset
-          label="7d"
-          onClick={() => {
-            const now = new Date();
-            const earlier = new Date();
-            earlier.setDate(now.getDate() - 6);
-            onChange(toIso(earlier), toIso(now));
-            setOpen(false);
-          }}
-        />
-        <RangePreset
-          label="30d"
-          onClick={() => {
-            const now = new Date();
-            const earlier = new Date();
-            earlier.setDate(now.getDate() - 29);
-            onChange(toIso(earlier), toIso(now));
-            setOpen(false);
-          }}
-        />
-        <RangePreset
-          label="MTD"
-          onClick={() => {
-            const now = new Date();
-            const earlier = new Date(now.getFullYear(), now.getMonth(), 1);
-            onChange(toIso(earlier), toIso(now));
-            setOpen(false);
-          }}
-        />
-      </div>
-    </PopoverWrap>
-  );
-}
-
-function RangePreset({
-  label,
-  onClick,
-}: {
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="text-xs font-medium text-gray-600 hover:text-blue-700 hover:bg-blue-50 px-2 py-1 rounded transition-colors"
-    >
-      {label}
-    </button>
   );
 }

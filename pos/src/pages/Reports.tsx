@@ -19,7 +19,7 @@ import {
 import { Card, CardContent, Badge } from '../components/ui';
 import { Button } from '../components/ui/button';
 import { Spinner } from '../components/ui/spinner';
-import { DatePicker, DateRangePicker } from '../components/ui/date-picker';
+import { DatePicker } from '../components/ui/date-picker';
 import { call } from '../lib/frappe-sdk';
 import { formatCurrency } from '../lib/utils';
 import { showToast } from '../components/ui/toast';
@@ -575,15 +575,20 @@ export default function Reports() {
             )}
 
             {isRangeTab && (
-              <DateRangePicker
-                from={fromDate}
-                to={toDate}
-                onChange={(f, t) => {
-                  setFromDate(f);
-                  setToDate(t);
-                }}
-                max={todayIso()}
-              />
+              <div className="flex items-center gap-2">
+                <DatePicker
+                  value={fromDate}
+                  onChange={setFromDate}
+                  max={toDate || todayIso()}
+                />
+                <span className="text-xs text-gray-500 font-medium">to</span>
+                <DatePicker
+                  value={toDate}
+                  onChange={setToDate}
+                  min={fromDate}
+                  max={todayIso()}
+                />
+              </div>
             )}
 
             <Button
