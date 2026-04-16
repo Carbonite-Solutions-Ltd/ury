@@ -159,6 +159,63 @@ export async function getMyShiftSummary(
 }
 
 // ---------------------------------------------------------------
+// Shift history (closed POS Closing Entry rows in a date window)
+// ---------------------------------------------------------------
+
+export interface ShiftHistoryPayment {
+  mode_of_payment: string;
+  opening_amount: number;
+  expected_amount: number;
+  closing_amount: number;
+  difference: number;
+}
+
+export interface ShiftHistoryRow {
+  name: string;
+  user: string;
+  full_name: string;
+  pos_opening_entry: string;
+  pos_profile: string;
+  period_start_date: string;
+  period_end_date: string;
+  posting_date: string;
+  grand_total: number;
+  net_total: number;
+  total_quantity: number;
+  invoice_count: number;
+  payments: ShiftHistoryPayment[];
+}
+
+export interface ShiftHistoryResponse {
+  from_date: string;
+  to_date: string;
+  branch: string;
+  terminal: string | null;
+  scope: 'user' | 'branch';
+  shifts: ShiftHistoryRow[];
+  summary: {
+    shift_count: number;
+    grand_total: number;
+    net_total: number;
+    by_mode: ShiftHistoryPayment[];
+  };
+}
+
+export async function getShiftHistory(
+  range: ReportDateRange = {}
+): Promise<ShiftHistoryResponse> {
+  const params: Record<string, unknown> = {};
+  if (range.from_date) params.from_date = range.from_date;
+  if (range.to_date) params.to_date = range.to_date;
+  if (range.terminal) params.terminal = range.terminal;
+  const res = await call.get<{ message: ShiftHistoryResponse }>(
+    'ury.ury_pos.api.get_shift_history',
+    params
+  );
+  return res.message;
+}
+
+// ---------------------------------------------------------------
 // Merge report + Transfer report (admin only)
 // ---------------------------------------------------------------
 

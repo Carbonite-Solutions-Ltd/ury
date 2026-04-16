@@ -3200,6 +3200,195 @@ def get_my_shift_summary(terminal=None):
 
 
 @frappe.whitelist()
+def get_shift_history(from_date=None, to_date=None, terminal=None):
+    """Closed POS Closing Entry rows in a date window — the
+    notice-board-style report the user wanted to print at end of
+    day. Scope:
+      - Cashier: own closed shifts only (`pce.user = session.user`).
+      - Admin / Captain / Manager: every closed shift on the branch.
+
+    Each row carries the cashier identity, opening + closing
+    timestamps, total invoice count + grand totals, and the per-MoP
+    payment reconciliation rows from the POS Closing Entry Detail
+    child table. The frontend renders them as one table per shift
+    with an aggregated payment summary below for the print view.
+
+    Date window applies to ``period_end_date`` (when the shift was
+    closed), not posting_date — admins typically think "show me the
+    shifts that closed in this window".
+    """
+    from_date, to_date = _reports_date_range(from_date, to_date)
+    branch = getBranch()
+    is_admin = _user_can_see_admin_reports()
+
+    where_parts = [
+        "pce.docstatus = 1",
+        "pp.branch = %s",
+        "DATE(pce.period_end_date) BETWEEN %s AND %s",
+    ]
+    params = [branch, from_date, to_date]
+    if not is_admin:
+        # Cashier scope: only their own shifts.
+        where_parts.append("pce.user = %s")
+        params.append(frappe.session.user)
+    if terminal:
+        # POS Closing Entry doesn't carry custom_terminal directly;
+        # filter by the linked opening entry's terminal instead.
+        where_parts.append(
+            "pce.pos_opening_entry IN ("
+            "  SELECT name FROM `tabPOS Opening Entry` "
+            "  WHERE custom_terminal = %s OR custom_terminal IS NULL OR custom_terminal = ''"
+            ")"
+        )
+        params.append(terminal)
+
+    closing_rows = frappe.db.sql(
+        f"""
+        SELECT
+            pce.name,
+            pce.user,
+            COALESCE(u.full_name, pce.user) AS full_name,
+            pce.pos_opening_entry,
+            pce.pos_profile,
+            pce.period_start_date,
+            pce.period_end_date,
+            pce.grand_total,
+            pce.net_total,
+            pce.total_quantity,
+            pce.posting_date
+        FROM `tabPOS Closing Entry` AS pce
+        INNER JOIN `tabPOS Profile` AS pp ON pp.name = pce.pos_profile
+        LEFT JOIN `tabUser` AS u ON u.name = pce.user
+        WHERE {" AND ".join(where_parts)}
+        ORDER BY pce.period_end_date DESC
+        """,
+        tuple(params),
+        as_dict=True,
+    )
+
+    if not closing_rows:
+        return {
+            "from_date": from_date,
+            "to_date": to_date,
+            "branch": branch,
+            "terminal": terminal or None,
+            "scope": "branch" if is_admin else "user",
+            "shifts": [],
+            "summary": {
+                "shift_count": 0,
+                "grand_total": 0,
+                "net_total": 0,
+                "by_mode": [],
+            },
+        }
+
+    # Pull every payment reconciliation row in one query, group by
+    # parent (closing entry name). Avoids N+1 across the shifts.
+    closing_names = [r["name"] for r in closing_rows]
+    placeholders = ", ".join(["%s"] * len(closing_names))
+    payment_rows = frappe.db.sql(
+        f"""
+        SELECT
+            parent,
+            mode_of_payment,
+            opening_amount,
+            expected_amount,
+            closing_amount,
+            difference
+        FROM `tabPOS Closing Entry Detail`
+        WHERE parent IN ({placeholders})
+        ORDER BY idx
+        """,
+        tuple(closing_names),
+        as_dict=True,
+    )
+
+    # Also pull invoice counts per closing entry. POS Invoice
+    # Reference is the standard ERPNext child table on POS Closing
+    # Entry that lists which invoices are in the close.
+    invoice_count_rows = frappe.db.sql(
+        f"""
+        SELECT parent, COUNT(name) AS cnt
+        FROM `tabPOS Invoice Reference`
+        WHERE parent IN ({placeholders})
+        GROUP BY parent
+        """,
+        tuple(closing_names),
+        as_dict=True,
+    )
+    invoice_count_map = {r["parent"]: int(r["cnt"]) for r in invoice_count_rows}
+
+    payments_by_close: dict = {}
+    for p in payment_rows:
+        payments_by_close.setdefault(p["parent"], []).append(
+            {
+                "mode_of_payment": p["mode_of_payment"],
+                "opening_amount": float(p.get("opening_amount") or 0),
+                "expected_amount": float(p.get("expected_amount") or 0),
+                "closing_amount": float(p.get("closing_amount") or 0),
+                "difference": float(p.get("difference") or 0),
+            }
+        )
+
+    shifts = []
+    for r in closing_rows:
+        shifts.append(
+            {
+                "name": r["name"],
+                "user": r["user"],
+                "full_name": r["full_name"],
+                "pos_opening_entry": r["pos_opening_entry"],
+                "pos_profile": r["pos_profile"],
+                "period_start_date": str(r["period_start_date"] or ""),
+                "period_end_date": str(r["period_end_date"] or ""),
+                "posting_date": str(r["posting_date"] or ""),
+                "grand_total": float(r.get("grand_total") or 0),
+                "net_total": float(r.get("net_total") or 0),
+                "total_quantity": float(r.get("total_quantity") or 0),
+                "invoice_count": invoice_count_map.get(r["name"], 0),
+                "payments": payments_by_close.get(r["name"], []),
+            }
+        )
+
+    # Cross-shift summary: for the print view's "Payment
+    # Reconciliation Summary" section. Aggregates every shift in
+    # the window's expected_amount per MoP — what the cashiers
+    # collectively SHOULD have collected — plus the variance.
+    by_mode: dict = {}
+    for s in shifts:
+        for p in s["payments"]:
+            agg = by_mode.setdefault(
+                p["mode_of_payment"],
+                {
+                    "mode_of_payment": p["mode_of_payment"],
+                    "opening_amount": 0.0,
+                    "expected_amount": 0.0,
+                    "closing_amount": 0.0,
+                    "difference": 0.0,
+                },
+            )
+            agg["opening_amount"] += p["opening_amount"]
+            agg["expected_amount"] += p["expected_amount"]
+            agg["closing_amount"] += p["closing_amount"]
+            agg["difference"] += p["difference"]
+
+    return {
+        "from_date": from_date,
+        "to_date": to_date,
+        "branch": branch,
+        "terminal": terminal or None,
+        "scope": "branch" if is_admin else "user",
+        "shifts": shifts,
+        "summary": {
+            "shift_count": len(shifts),
+            "grand_total": sum(s["grand_total"] for s in shifts),
+            "net_total": sum(s["net_total"] for s in shifts),
+            "by_mode": sorted(by_mode.values(), key=lambda x: x["mode_of_payment"]),
+        },
+    }
+
+
+@frappe.whitelist()
 def get_merge_report(from_date=None, to_date=None, terminal=None):
     """Return every order-merge and table-merge log in the date range
     so admin can audit what got merged, by whom, and whether it's
