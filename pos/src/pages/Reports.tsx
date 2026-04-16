@@ -21,7 +21,7 @@ import { Button } from '../components/ui/button';
 import { Spinner } from '../components/ui/spinner';
 import { DatePicker } from '../components/ui/date-picker';
 import { call } from '../lib/frappe-sdk';
-import { formatCurrency } from '../lib/utils';
+import { formatCurrency, cn } from '../lib/utils';
 import { showToast } from '../components/ui/toast';
 import { usePOSStore } from '../store/pos-store';
 import { useRootStore } from '../store/root-store';
@@ -31,12 +31,16 @@ import {
   getSalesByCategory,
   getTopBottomItems,
   getMyShiftSummary,
+  getShiftHistory,
+  getShiftSchedule,
   getMergeReport,
   getTransferReport,
   type SalesByCashierResponse,
   type SalesByCategoryResponse,
   type TopBottomItemsResponse,
   type ShiftSummaryResponse,
+  type ShiftHistoryResponse,
+  type ShiftScheduleResponse,
   type MergeReportResponse,
   type TransferReportResponse,
   type DashboardStatsExtended,
@@ -99,6 +103,28 @@ export default function Reports() {
   // New report data slots
   const [shiftSummary, setShiftSummary] =
     useState<ShiftSummaryResponse | null>(null);
+  // My Shift sub-toggle: "current" = live open shift, "all" = closed
+  // history table for the date range, "schedule" = Mon→Sun roster
+  // from URY Shift / HRMS Shift Type. State lives at this level so
+  // date-range / week changes refetch the right view.
+  const [shiftView, setShiftView] = useState<
+    'current' | 'all' | 'schedule'
+  >('current');
+  const [shiftHistory, setShiftHistory] =
+    useState<ShiftHistoryResponse | null>(null);
+  const [shiftSchedule, setShiftSchedule] =
+    useState<ShiftScheduleResponse | null>(null);
+  // Schedule view's week cursor — starts at "today's week" Monday.
+  // Set via week-navigator buttons (◀ This Week ▶).
+  const mondayOf = (d: Date) => {
+    const m = new Date(d);
+    const dow = (m.getDay() + 6) % 7; // Sun=0 → Mon=0 layout
+    m.setDate(m.getDate() - dow);
+    return `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, '0')}-${String(m.getDate()).padStart(2, '0')}`;
+  };
+  const [scheduleWeekStart, setScheduleWeekStart] = useState<string>(
+    mondayOf(new Date())
+  );
   const [salesByCashier, setSalesByCashier] =
     useState<SalesByCashierResponse | null>(null);
   const [salesByCategory, setSalesByCategory] =
@@ -121,7 +147,8 @@ export default function Reports() {
     activeTab === 'by-category' ||
     activeTab === 'top-bottom' ||
     activeTab === 'merges' ||
-    activeTab === 'transfers';
+    activeTab === 'transfers' ||
+    (activeTab === 'my-shift' && shiftView === 'all');
   const isSingleDateTab =
     activeTab === 'dashboard' || activeTab === 'daily-sales';
 
@@ -131,7 +158,9 @@ export default function Reports() {
     } else if (activeTab === 'daily-sales') {
       fetchDailySales();
     } else if (activeTab === 'my-shift') {
-      fetchShiftSummary();
+      if (shiftView === 'current') fetchShiftSummary();
+      else if (shiftView === 'all') fetchShiftHistory();
+      else fetchShiftSchedule();
     } else if (activeTab === 'by-cashier') {
       fetchSalesByCashier();
     } else if (activeTab === 'by-category') {
@@ -144,7 +173,15 @@ export default function Reports() {
       fetchTransferReport();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, selectedDate, fromDate, toDate, terminalName]);
+  }, [
+    activeTab,
+    selectedDate,
+    fromDate,
+    toDate,
+    terminalName,
+    shiftView,
+    scheduleWeekStart,
+  ]);
 
   const fetchDashboardStats = async () => {
     setLoading(true);
@@ -186,6 +223,36 @@ export default function Reports() {
       setShiftSummary(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch shift summary');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchShiftHistory = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getShiftHistory({
+        from_date: fromDate,
+        to_date: toDate,
+        terminal: terminalName,
+      });
+      setShiftHistory(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch shift history');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchShiftSchedule = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getShiftSchedule(scheduleWeekStart, terminalName);
+      setShiftSchedule(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch shift schedule');
     } finally {
       setLoading(false);
     }
@@ -280,7 +347,11 @@ export default function Reports() {
   const handleRefresh = () => {
     if (activeTab === 'dashboard') fetchDashboardStats();
     else if (activeTab === 'daily-sales') fetchDailySales();
-    else if (activeTab === 'my-shift') fetchShiftSummary();
+    else if (activeTab === 'my-shift') {
+      if (shiftView === 'current') fetchShiftSummary();
+      else if (shiftView === 'all') fetchShiftHistory();
+      else fetchShiftSchedule();
+    }
     else if (activeTab === 'by-cashier') fetchSalesByCashier();
     else if (activeTab === 'by-category') fetchSalesByCategory();
     else if (activeTab === 'top-bottom') fetchTopBottom();
@@ -687,7 +758,15 @@ export default function Reports() {
             <p className="text-red-600 font-medium">{error}</p>
           </div>
         ) : activeTab === 'my-shift' ? (
-          <ShiftSummaryView summary={shiftSummary} />
+          <MyShiftWrap
+            view={shiftView}
+            onViewChange={setShiftView}
+            summary={shiftSummary}
+            history={shiftHistory}
+            schedule={shiftSchedule}
+            scheduleWeekStart={scheduleWeekStart}
+            onWeekChange={setScheduleWeekStart}
+          />
         ) : activeTab === 'by-cashier' ? (
           <SalesByCashierView report={salesByCashier} />
         ) : activeTab === 'by-category' ? (
@@ -1082,6 +1161,163 @@ function TabButton({ active, onClick, icon, label }: TabButtonProps) {
         <span>{label}</span>
       </div>
     </button>
+  );
+}
+
+// Wrapper: switches between Current Shift / All Shifts / Schedule
+// via a pill toggle at the top of the My Shift tab.
+interface MyShiftWrapProps {
+  view: 'current' | 'all' | 'schedule';
+  onViewChange: (v: 'current' | 'all' | 'schedule') => void;
+  summary: ShiftSummaryResponse | null;
+  history: ShiftHistoryResponse | null;
+  schedule: ShiftScheduleResponse | null;
+  scheduleWeekStart: string;
+  onWeekChange: (week: string) => void;
+}
+
+function MyShiftWrap({
+  view,
+  onViewChange,
+  summary,
+  history,
+  schedule,
+  scheduleWeekStart,
+  onWeekChange,
+}: MyShiftWrapProps) {
+  return (
+    <div className="max-w-6xl mx-auto space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1">
+          <button
+            onClick={() => onViewChange('current')}
+            className={cn(
+              'px-3 py-1.5 text-sm font-medium rounded-md transition-colors',
+              view === 'current'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            )}
+          >
+            Current Shift
+          </button>
+          <button
+            onClick={() => onViewChange('all')}
+            className={cn(
+              'px-3 py-1.5 text-sm font-medium rounded-md transition-colors',
+              view === 'all'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            )}
+          >
+            All Shifts
+          </button>
+          <button
+            onClick={() => onViewChange('schedule')}
+            className={cn(
+              'px-3 py-1.5 text-sm font-medium rounded-md transition-colors',
+              view === 'schedule'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            )}
+          >
+            Schedule
+          </button>
+        </div>
+        <div className="flex items-center gap-2">
+          {view === 'schedule' && (
+            <ScheduleWeekNav
+              weekStart={scheduleWeekStart}
+              onChange={onWeekChange}
+              schedule={schedule}
+            />
+          )}
+          {view === 'all' && history && history.shifts.length > 0 && (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => printShiftHistory(history)}
+            >
+              <Printer className="w-4 h-4 mr-2" />
+              Print Shift Report
+            </Button>
+          )}
+          {view === 'schedule' && schedule && schedule.rows.length > 0 && (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => printShiftSchedule(schedule)}
+            >
+              <Printer className="w-4 h-4 mr-2" />
+              Print Roster
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {view === 'current' ? (
+        <ShiftSummaryView summary={summary} />
+      ) : view === 'all' ? (
+        <AllShiftsView history={history} />
+      ) : (
+        <ScheduleView schedule={schedule} />
+      )}
+    </div>
+  );
+}
+
+// Week navigator: ◀ This Week ▶ — moves the week cursor 7 days
+// at a time. The "This Week" button snaps back to today's week.
+function ScheduleWeekNav({
+  weekStart,
+  onChange,
+  schedule,
+}: {
+  weekStart: string;
+  onChange: (week: string) => void;
+  schedule: ShiftScheduleResponse | null;
+}) {
+  const shift = (delta: number) => {
+    const d = new Date(weekStart + 'T00:00:00');
+    d.setDate(d.getDate() + delta);
+    onChange(
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    );
+  };
+  const todayWeek = () => {
+    const d = new Date();
+    const dow = (d.getDay() + 6) % 7;
+    d.setDate(d.getDate() - dow);
+    onChange(
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    );
+  };
+  const label = schedule
+    ? `${schedule.week_start} → ${schedule.week_end}`
+    : weekStart;
+  return (
+    <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
+      <button
+        onClick={() => shift(-7)}
+        className="px-2 py-1.5 text-sm hover:bg-gray-100 transition-colors"
+        aria-label="Previous week"
+      >
+        ◀
+      </button>
+      <button
+        onClick={todayWeek}
+        className="px-3 py-1.5 text-sm font-medium border-x border-gray-200 hover:bg-gray-100 transition-colors"
+        title={label}
+      >
+        This Week
+      </button>
+      <button
+        onClick={() => shift(7)}
+        className="px-2 py-1.5 text-sm hover:bg-gray-100 transition-colors"
+        aria-label="Next week"
+      >
+        ▶
+      </button>
+    </div>
   );
 }
 
@@ -1490,6 +1726,669 @@ function EmptyState({ message }: { message: string }) {
       <p className="text-gray-500">{message}</p>
     </div>
   );
+}
+
+// ---------------------------------------------------------------
+// Schedule view — Mon→Sun roster grid driven by URY Shift /
+// HRMS Shift Type. Highlights the current user's row.
+// ---------------------------------------------------------------
+
+function ScheduleView({
+  schedule,
+}: {
+  schedule: ShiftScheduleResponse | null;
+}) {
+  if (!schedule) return <EmptyState message="Loading…" />;
+
+  if (schedule.mode === 'Disabled') {
+    return (
+      <div className="max-w-3xl mx-auto text-center py-12">
+        <ClipboardList className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+        <p className="text-gray-700 text-lg font-medium">
+          Shift system is disabled on this POS Profile
+        </p>
+        <p className="text-gray-500 text-sm mt-2">
+          Set <span className="font-mono">custom_shift_system_mode</span> to{' '}
+          <strong>URY Shift</strong> or <strong>HRMS Shift Type</strong> on the
+          POS Profile to start showing the weekly roster here.
+        </p>
+      </div>
+    );
+  }
+
+  if (schedule.rows.length === 0) {
+    return (
+      <div className="max-w-3xl mx-auto text-center py-12">
+        <ClipboardList className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+        <p className="text-gray-700 text-lg font-medium">
+          No active shift assignments this week
+        </p>
+        <p className="text-gray-500 text-sm mt-2">
+          {schedule.mode === 'URY Shift'
+            ? 'Open URY Shift Assignment in the desk and add some rows for this branch.'
+            : 'Open Shift Assignment (HRMS) in the desk and add some rows for this branch.'}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between text-sm text-gray-600">
+        <div className="flex items-center gap-2">
+          <Badge className="bg-blue-100 text-blue-700 text-xs uppercase">
+            {schedule.mode}
+          </Badge>
+          <span>
+            {schedule.branch} · {schedule.week_start} → {schedule.week_end}
+          </span>
+        </div>
+      </div>
+
+      <Card>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+                <tr>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
+                    Cashier
+                  </th>
+                  {schedule.days.map((d) => (
+                    <th
+                      key={d.day_name}
+                      className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase border-l border-gray-100"
+                    >
+                      <div>{d.day_name.slice(0, 3)}</div>
+                      <div className="text-[10px] text-gray-400 font-normal mt-0.5">
+                        {d.date.slice(5)}
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {schedule.rows.map((row) => (
+                  <tr
+                    key={row.user}
+                    className={cn(
+                      'transition-colors',
+                      row.is_me
+                        ? 'bg-blue-50 hover:bg-blue-100'
+                        : 'hover:bg-gray-50'
+                    )}
+                  >
+                    <td className="px-3 py-3 whitespace-nowrap">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={cn(
+                            'font-medium',
+                            row.is_me ? 'text-blue-900' : 'text-gray-900'
+                          )}
+                        >
+                          {row.full_name}
+                        </span>
+                        {row.is_me && (
+                          <Badge className="bg-blue-600 text-white text-[10px] uppercase px-1.5 py-0">
+                            You
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500">{row.user}</p>
+                    </td>
+                    {schedule.days.map((d) => {
+                      const cell = row.assignments[d.day_name];
+                      return (
+                        <td
+                          key={d.day_name}
+                          className="px-3 py-3 text-center border-l border-gray-100"
+                        >
+                          {cell ? (
+                            <div className="inline-flex flex-col items-center">
+                              <span
+                                className={cn(
+                                  'text-xs font-semibold rounded px-2 py-0.5',
+                                  row.is_me
+                                    ? 'bg-blue-200 text-blue-900'
+                                    : 'bg-gray-100 text-gray-800'
+                                )}
+                              >
+                                {cell.shift_name}
+                              </span>
+                              <span className="text-[10px] text-gray-500 mt-0.5">
+                                {cell.start_time} – {cell.end_time}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <p className="text-xs text-gray-500">
+        {schedule.rows.length} cashier{schedule.rows.length === 1 ? '' : 's'}{' '}
+        scheduled this week
+        {schedule.rows.some((r) => r.is_me) && ' · your row is highlighted'}.
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------
+// Notice-board print template for the schedule — same paper-style
+// layout as the shift history print, but the body is the Mon→Sun
+// roster grid.
+// ---------------------------------------------------------------
+
+function printShiftSchedule(schedule: ShiftScheduleResponse) {
+  const win = window.open('', '_blank', 'width=1100,height=700');
+  if (!win) {
+    showToast.error('Please allow pop-ups to print');
+    return;
+  }
+  const printedAt = new Date().toLocaleString('en-US');
+
+  const headerCells = schedule.days
+    .map(
+      (d) => `
+        <th>
+          ${d.day_name.slice(0, 3)}<br>
+          <small>${d.date.slice(5)}</small>
+        </th>`
+    )
+    .join('');
+
+  const rowsHtml = schedule.rows
+    .map((row) => {
+      const cells = schedule.days
+        .map((d) => {
+          const cell = row.assignments[d.day_name];
+          if (!cell) return '<td class="empty">—</td>';
+          return `
+            <td class="${row.is_me ? 'me-cell' : ''}">
+              <strong>${cell.shift_name}</strong><br>
+              <small>${cell.start_time} – ${cell.end_time}</small>
+            </td>`;
+        })
+        .join('');
+      return `
+        <tr class="${row.is_me ? 'me-row' : ''}">
+          <td class="cashier">
+            <strong>${row.full_name}</strong>
+            ${row.is_me ? '<span class="me-badge">YOU</span>' : ''}
+            <br><small>${row.user}</small>
+          </td>
+          ${cells}
+        </tr>`;
+    })
+    .join('');
+
+  const html = `
+    <!doctype html>
+    <html>
+    <head>
+      <title>Shift Roster — ${schedule.branch} — ${schedule.week_start} → ${schedule.week_end}</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Helvetica Neue', Arial, sans-serif; padding: 24px; color: #1f2937; font-size: 12px; }
+        .header { text-align: center; border-bottom: 3px double #1f2937; padding-bottom: 12px; margin-bottom: 16px; }
+        .header h1 { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
+        .header .meta { font-size: 13px; color: #4b5563; margin-top: 4px; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        th, td { padding: 8px; text-align: center; border: 1px solid #d1d5db; vertical-align: middle; }
+        th { background: #f3f4f6; font-weight: 600; font-size: 10px; text-transform: uppercase; color: #4b5563; }
+        td.cashier { text-align: left; background: #f9fafb; min-width: 160px; }
+        td.empty { color: #d1d5db; background: #fafafa; }
+        tr.me-row td { background: #eff6ff !important; }
+        td.me-cell { background: #dbeafe !important; }
+        .me-badge { display: inline-block; background: #2563eb; color: white; font-size: 8px; padding: 1px 4px; border-radius: 2px; vertical-align: top; margin-left: 4px; }
+        small { font-size: 9px; color: #6b7280; }
+        .footer { text-align: center; margin-top: 24px; font-size: 9px; color: #9ca3af; border-top: 1px solid #e5e7eb; padding-top: 8px; }
+        .signatures { display: flex; gap: 40px; margin-top: 36px; }
+        .sig { flex: 1; text-align: center; border-top: 1px solid #1f2937; padding-top: 4px; font-size: 11px; color: #4b5563; text-transform: uppercase; letter-spacing: 1px; }
+        @media print { body { padding: 12px; } .no-print { display: none; } }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <h1>SHIFT ROSTER</h1>
+        <div class="meta">
+          ${schedule.branch} · ${schedule.week_start} → ${schedule.week_end}
+          · ${schedule.mode}
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th style="text-align:left">Cashier</th>
+            ${headerCells}
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+
+      <div class="signatures">
+        <div class="sig">Manager Signature</div>
+        <div class="sig">Date Posted</div>
+      </div>
+
+      <div class="footer">Generated ${printedAt}</div>
+
+      <script>
+        window.onload = function() {
+          window.print();
+          window.onafterprint = function() { window.close(); };
+        };
+      </script>
+    </body>
+    </html>
+  `;
+
+  win.document.write(html);
+  win.document.close();
+}
+
+// ---------------------------------------------------------------
+// All Shifts view — closed shift history table for the date window
+// + cross-shift payment reconciliation summary. Notice-board style
+// so admins can hit Print and pin it up.
+// ---------------------------------------------------------------
+
+function AllShiftsView({ history }: { history: ShiftHistoryResponse | null }) {
+  if (!history) return <EmptyState message="Loading…" />;
+  if (history.shifts.length === 0) {
+    return (
+      <EmptyState
+        message={`No closed shifts between ${history.from_date} and ${history.to_date}`}
+      />
+    );
+  }
+
+  const { shifts, summary, scope, from_date, to_date, branch } = history;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <StatTile
+          label="Shifts Closed"
+          value={String(summary.shift_count)}
+          tone="blue"
+        />
+        <StatTile
+          label="Grand Total"
+          value={formatCurrency(summary.grand_total)}
+          tone="green"
+        />
+        <StatTile
+          label="Net Total"
+          value={formatCurrency(summary.net_total)}
+          tone="purple"
+        />
+      </div>
+
+      <Card>
+        <CardContent className="p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">
+                Shift History
+              </h3>
+              <p className="text-sm text-gray-500">
+                {from_date} → {to_date} · {branch}
+                {scope === 'user' && ' · my shifts only'}
+              </p>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-y border-gray-200">
+                <tr>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Closed
+                  </th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Cashier
+                  </th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Profile
+                  </th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Open → Close
+                  </th>
+                  <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    Invoices
+                  </th>
+                  <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    Net
+                  </th>
+                  <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    Grand
+                  </th>
+                  <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    Variance
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {shifts.map((s) => {
+                  const variance = s.payments.reduce(
+                    (sum, p) => sum + (p.difference || 0),
+                    0
+                  );
+                  return (
+                    <tr key={s.name}>
+                      <td className="px-3 py-3 text-xs text-gray-600 whitespace-nowrap">
+                        {s.posting_date}
+                        <p className="font-mono text-[10px] text-gray-400">
+                          {s.name}
+                        </p>
+                      </td>
+                      <td className="px-3 py-3">
+                        <p className="font-medium text-gray-900">
+                          {s.full_name}
+                        </p>
+                        <p className="text-xs text-gray-500">{s.user}</p>
+                      </td>
+                      <td className="px-3 py-3 text-gray-600">
+                        {s.pos_profile}
+                      </td>
+                      <td className="px-3 py-3 text-xs text-gray-600 whitespace-nowrap">
+                        {shortDateTime(s.period_start_date)}
+                        <br />→ {shortDateTime(s.period_end_date)}
+                      </td>
+                      <td className="px-3 py-3 text-right text-gray-600">
+                        {s.invoice_count}
+                      </td>
+                      <td className="px-3 py-3 text-right text-gray-600">
+                        {formatCurrency(s.net_total)}
+                      </td>
+                      <td className="px-3 py-3 text-right font-semibold text-gray-900">
+                        {formatCurrency(s.grand_total)}
+                      </td>
+                      <td
+                        className={cn(
+                          'px-3 py-3 text-right font-medium whitespace-nowrap',
+                          variance > 0
+                            ? 'text-green-600'
+                            : variance < 0
+                            ? 'text-red-600'
+                            : 'text-gray-400'
+                        )}
+                      >
+                        {variance === 0
+                          ? '—'
+                          : `${variance > 0 ? '+' : ''}${formatCurrency(
+                              variance
+                            )}`}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {summary.by_mode.length > 0 && (
+        <Card>
+          <CardContent className="p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-3">
+              Payment Reconciliation Summary
+            </h3>
+            <p className="text-sm text-gray-500 mb-4">
+              Aggregated across all {summary.shift_count} shift
+              {summary.shift_count === 1 ? '' : 's'} in the window.
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-y border-gray-200">
+                  <tr>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Mode
+                    </th>
+                    <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Opening
+                    </th>
+                    <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Expected
+                    </th>
+                    <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Counted
+                    </th>
+                    <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Variance
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {summary.by_mode.map((m) => (
+                    <tr key={m.mode_of_payment}>
+                      <td className="px-3 py-3 font-medium text-gray-900">
+                        {m.mode_of_payment}
+                      </td>
+                      <td className="px-3 py-3 text-right text-gray-600">
+                        {formatCurrency(m.opening_amount)}
+                      </td>
+                      <td className="px-3 py-3 text-right text-gray-600">
+                        {formatCurrency(m.expected_amount)}
+                      </td>
+                      <td className="px-3 py-3 text-right text-gray-600">
+                        {formatCurrency(m.closing_amount)}
+                      </td>
+                      <td
+                        className={cn(
+                          'px-3 py-3 text-right font-medium',
+                          m.difference > 0
+                            ? 'text-green-600'
+                            : m.difference < 0
+                            ? 'text-red-600'
+                            : 'text-gray-400'
+                        )}
+                      >
+                        {m.difference === 0
+                          ? '—'
+                          : `${m.difference > 0 ? '+' : ''}${formatCurrency(
+                              m.difference
+                            )}`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------
+// Notice-board print template — opens a print window with a clean
+// tabular layout (branch + date range header, shift table, payment
+// reconciliation summary, signature lines). The window auto-fires
+// the browser Print dialog on load and closes itself after.
+// ---------------------------------------------------------------
+
+function printShiftHistory(history: ShiftHistoryResponse) {
+  const win = window.open('', '_blank', 'width=900,height=700');
+  if (!win) {
+    showToast.error('Please allow pop-ups to print');
+    return;
+  }
+  const fmt = (n: number) =>
+    n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const sign = (n: number) => (n > 0 ? `+${fmt(n)}` : fmt(n));
+  const printedAt = new Date().toLocaleString('en-US');
+
+  const shiftRows = history.shifts
+    .map((s) => {
+      const variance = s.payments.reduce(
+        (sum, p) => sum + (p.difference || 0),
+        0
+      );
+      const open = new Date(s.period_start_date.replace(' ', 'T'));
+      const close = new Date(s.period_end_date.replace(' ', 'T'));
+      const fmtTime = (d: Date) =>
+        isNaN(d.getTime())
+          ? '—'
+          : d.toLocaleString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              hour: 'numeric',
+              minute: '2-digit',
+              hour12: true,
+            });
+      return `
+        <tr>
+          <td>${s.posting_date}</td>
+          <td>${s.full_name}<br><small>${s.user}</small></td>
+          <td>${s.pos_profile}</td>
+          <td>${fmtTime(open)}<br>→ ${fmtTime(close)}</td>
+          <td class="text-right">${s.invoice_count}</td>
+          <td class="text-right">${fmt(s.net_total)}</td>
+          <td class="text-right strong">${fmt(s.grand_total)}</td>
+          <td class="text-right ${
+            variance > 0 ? 'pos' : variance < 0 ? 'neg' : ''
+          }">${variance === 0 ? '—' : sign(variance)}</td>
+        </tr>
+      `;
+    })
+    .join('');
+
+  const reconRows = history.summary.by_mode
+    .map(
+      (m) => `
+      <tr>
+        <td>${m.mode_of_payment}</td>
+        <td class="text-right">${fmt(m.opening_amount)}</td>
+        <td class="text-right">${fmt(m.expected_amount)}</td>
+        <td class="text-right">${fmt(m.closing_amount)}</td>
+        <td class="text-right ${
+          m.difference > 0 ? 'pos' : m.difference < 0 ? 'neg' : ''
+        }">${m.difference === 0 ? '—' : sign(m.difference)}</td>
+      </tr>
+    `
+    )
+    .join('');
+
+  const html = `
+    <!doctype html>
+    <html>
+    <head>
+      <title>Shift Report — ${history.branch} — ${history.from_date} → ${history.to_date}</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Helvetica Neue', Arial, sans-serif; padding: 24px; color: #1f2937; font-size: 12px; }
+        .header { text-align: center; border-bottom: 3px double #1f2937; padding-bottom: 12px; margin-bottom: 16px; }
+        .header h1 { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
+        .header .meta { font-size: 13px; color: #4b5563; margin-top: 4px; }
+        .summary { display: flex; justify-content: space-around; gap: 12px; margin: 12px 0 18px; padding: 10px 8px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; }
+        .summary div { text-align: center; }
+        .summary label { font-size: 10px; text-transform: uppercase; color: #6b7280; letter-spacing: 0.5px; display: block; }
+        .summary .v { font-size: 16px; font-weight: 700; margin-top: 2px; }
+        h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: #1f2937; margin: 16px 0 8px; border-bottom: 1px solid #d1d5db; padding-bottom: 4px; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        th { background: #f3f4f6; padding: 8px 6px; text-align: left; font-weight: 600; font-size: 10px; text-transform: uppercase; color: #4b5563; border-bottom: 2px solid #d1d5db; }
+        td { padding: 8px 6px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+        .text-right { text-align: right; }
+        .strong { font-weight: 700; color: #111827; }
+        .pos { color: #059669; font-weight: 600; }
+        .neg { color: #dc2626; font-weight: 600; }
+        small { font-size: 9px; color: #9ca3af; }
+        .signatures { display: flex; gap: 40px; margin-top: 36px; }
+        .sig { flex: 1; text-align: center; border-top: 1px solid #1f2937; padding-top: 4px; font-size: 11px; color: #4b5563; text-transform: uppercase; letter-spacing: 1px; }
+        .footer { text-align: center; margin-top: 24px; font-size: 9px; color: #9ca3af; border-top: 1px solid #e5e7eb; padding-top: 8px; }
+        @media print { body { padding: 12px; } .no-print { display: none; } }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <h1>SHIFT REPORT</h1>
+        <div class="meta">${history.branch} · ${history.from_date} → ${history.to_date}</div>
+      </div>
+
+      <div class="summary">
+        <div>
+          <label>Shifts Closed</label>
+          <div class="v">${history.summary.shift_count}</div>
+        </div>
+        <div>
+          <label>Grand Total</label>
+          <div class="v">${fmt(history.summary.grand_total)}</div>
+        </div>
+        <div>
+          <label>Net Total</label>
+          <div class="v">${fmt(history.summary.net_total)}</div>
+        </div>
+      </div>
+
+      <h2>Shifts</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Closed</th>
+            <th>Cashier</th>
+            <th>Profile</th>
+            <th>Open → Close</th>
+            <th class="text-right">Inv</th>
+            <th class="text-right">Net</th>
+            <th class="text-right">Grand</th>
+            <th class="text-right">Var</th>
+          </tr>
+        </thead>
+        <tbody>${shiftRows}</tbody>
+      </table>
+
+      ${
+        reconRows
+          ? `
+        <h2>Payment Reconciliation</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Mode</th>
+              <th class="text-right">Opening</th>
+              <th class="text-right">Expected</th>
+              <th class="text-right">Counted</th>
+              <th class="text-right">Variance</th>
+            </tr>
+          </thead>
+          <tbody>${reconRows}</tbody>
+        </table>
+      `
+          : ''
+      }
+
+      <div class="signatures">
+        <div class="sig">Cashier Signature</div>
+        <div class="sig">Supervisor Signature</div>
+      </div>
+
+      <div class="footer">Generated ${printedAt}</div>
+
+      <script>
+        window.onload = function() {
+          window.print();
+          window.onafterprint = function() { window.close(); };
+        };
+      </script>
+    </body>
+    </html>
+  `;
+
+  win.document.write(html);
+  win.document.close();
 }
 
 // ---------------------------------------------------------------
