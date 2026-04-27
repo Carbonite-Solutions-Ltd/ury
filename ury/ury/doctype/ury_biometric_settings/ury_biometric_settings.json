@@ -1,0 +1,186 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-04-24 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "general_section",
+  "match_threshold",
+  "min_template_bytes",
+  "max_template_bytes",
+  "column_break_general",
+  "template_lookup_rate_limit_seconds",
+  "template_lookup_max_attempts",
+  "pin_section",
+  "pin_max_attempts",
+  "pin_lockout_minutes",
+  "column_break_pin",
+  "biometric_login_rate_limit_seconds",
+  "biometric_login_max_attempts",
+  "terminal_section",
+  "issonline_ws_url",
+  "issonline_ws_description"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "description": "Site-wide master switch. When off, biometric + PIN login paths are hidden everywhere and only password login is available.",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Biometric Authentication Enabled"
+  },
+  {
+   "collapsible": 0,
+   "fieldname": "general_section",
+   "fieldtype": "Section Break",
+   "label": "Matching",
+   "depends_on": "eval:doc.enabled"
+  },
+  {
+   "default": "80",
+   "description": "Minimum ZKFinger match score to accept a login. Typical range 70-100. Lower = more lenient (more false accepts). Higher = stricter (more false rejects).",
+   "fieldname": "match_threshold",
+   "fieldtype": "Int",
+   "label": "Match Threshold",
+   "non_negative": 1
+  },
+  {
+   "default": "300",
+   "description": "Minimum accepted fingerprint template size in bytes. Sanity guard; reject obviously corrupt uploads.",
+   "fieldname": "min_template_bytes",
+   "fieldtype": "Int",
+   "label": "Min Template Bytes",
+   "non_negative": 1
+  },
+  {
+   "default": "3500",
+   "description": "Maximum accepted fingerprint template size in bytes. ZKFinger templates are typically 1-2 KB; upper cap prevents abuse.",
+   "fieldname": "max_template_bytes",
+   "fieldtype": "Int",
+   "label": "Max Template Bytes",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "column_break_general",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "60",
+   "description": "Time window (seconds) for counting template-lookup attempts per user per IP.",
+   "fieldname": "template_lookup_rate_limit_seconds",
+   "fieldtype": "Int",
+   "label": "Template Lookup Rate-Limit Window (s)",
+   "non_negative": 1
+  },
+  {
+   "default": "5",
+   "description": "Max template lookups allowed per rate-limit window before the client is throttled.",
+   "fieldname": "template_lookup_max_attempts",
+   "fieldtype": "Int",
+   "label": "Template Lookup Max Attempts",
+   "non_negative": 1
+  },
+  {
+   "collapsible": 0,
+   "fieldname": "pin_section",
+   "fieldtype": "Section Break",
+   "label": "PIN & Rate Limits",
+   "depends_on": "eval:doc.enabled"
+  },
+  {
+   "default": "5",
+   "description": "Number of consecutive failed PIN attempts allowed before the user's account is locked for PIN login.",
+   "fieldname": "pin_max_attempts",
+   "fieldtype": "Int",
+   "label": "PIN Max Failed Attempts",
+   "non_negative": 1
+  },
+  {
+   "default": "15",
+   "description": "Lock-out duration (minutes) after the max attempts threshold is hit. Cashier must wait or ask captain to reset.",
+   "fieldname": "pin_lockout_minutes",
+   "fieldtype": "Int",
+   "label": "PIN Lockout Duration (min)",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "column_break_pin",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "60",
+   "description": "Time window (seconds) for counting biometric login attempts per user per IP.",
+   "fieldname": "biometric_login_rate_limit_seconds",
+   "fieldtype": "Int",
+   "label": "Biometric Login Rate-Limit Window (s)",
+   "non_negative": 1
+  },
+  {
+   "default": "10",
+   "description": "Max biometric login attempts allowed per rate-limit window before the client is throttled.",
+   "fieldname": "biometric_login_max_attempts",
+   "fieldtype": "Int",
+   "label": "Biometric Login Max Attempts",
+   "non_negative": 1
+  },
+  {
+   "collapsible": 0,
+   "fieldname": "terminal_section",
+   "fieldtype": "Section Break",
+   "label": "Terminal Integration",
+   "depends_on": "eval:doc.enabled"
+  },
+  {
+   "default": "http://127.0.0.1:9994",
+   "description": "URL where the URY Finger Agent listens on each cashier PC. Change only if you've reconfigured the agent's port.",
+   "fieldname": "issonline_ws_url",
+   "fieldtype": "Data",
+   "label": "URY Finger Agent URL"
+  },
+  {
+   "fieldname": "issonline_ws_description",
+   "fieldtype": "HTML",
+   "options": "<div style=\"background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:14px;color:#78350f;font-size:12px;line-height:1.6;\"><strong style=\"font-size:13px;\">🔐 Cashier PC Setup (one-time per Windows terminal)</strong><ol style=\"margin:8px 0 8px 22px;padding:0;\"><li><strong>Install the ISSOnline driver</strong> — provides the USB driver and the native fingerprint capture libraries the agent needs.</li><li><strong>Install the URY Finger Agent</strong> — a small local HTTP service that wraps the ZK SDK so your browser can capture fingerprints. Reuses the Java runtime that ships with QZ Tray, so no separate Java install is needed if you already have QZ Tray for printing.</li><li><strong>Plug in your ZK reader</strong> (ZK9500 / ZK7500 / Digital Persona U.are.U). Confirm it appears in Windows Device Manager → Biometric Devices.</li><li>Double-click <code>start.bat</code> in the agent folder. A console window opens saying <em>listening on http://127.0.0.1:9994</em> — leave it running. Add a shortcut to <code>shell:startup</code> for auto-start on login.</li></ol><div style=\"display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;\"><a href=\"/assets/ury/drivers/ury-finger-agent.zip\" download style=\"display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#15803d;color:#fff;text-decoration:none;border-radius:6px;font-weight:600;font-size:12px;\">⬇ Download URY Finger Agent (zip)</a><a href=\"/assets/ury/drivers/issonline-fingerprint-reader-driver-2.0.66.0.exe\" download style=\"display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#b45309;color:#fff;text-decoration:none;border-radius:6px;font-weight:600;font-size:12px;\">⬇ Download ISSOnline Driver (28 MB)</a><a href=\"/assets/ury/drivers/fingerprint-reader-driver-5.3.0.30.exe\" download style=\"display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#fff;color:#78350f;text-decoration:none;border:1px solid #fde68a;border-radius:6px;font-weight:600;font-size:12px;\">⬇ Standalone USB Driver (11 MB)</a></div><div style=\"margin-top:10px;font-size:11px;color:#92400e;\"><strong>Test the agent</strong> — once running, open <a href=\"http://127.0.0.1:9994/\" target=\"_blank\" style=\"color:#1e3a8a;\">http://127.0.0.1:9994/</a> in the browser. You should see JSON with the agent name + version. If it doesn't load, the agent isn't running.</div><div style=\"margin-top:8px;padding-top:8px;border-top:1px solid #fde68a;font-size:11px;color:#92400e;\">🔌 When the agent is missing or the reader is unplugged, the login page automatically falls back to PIN + password.</div></div>"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-04-24 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "URY",
+ "name": "URY Biometric Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "URY Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "URY Captain"
+  },
+  {
+   "read": 1,
+   "role": "URY Cashier"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

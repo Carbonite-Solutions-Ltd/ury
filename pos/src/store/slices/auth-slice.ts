@@ -36,8 +36,10 @@ export const createAuthSlice: StateCreator<AuthSlice> = (set, get) => ({
       const response = await getLoggedUser();
       
       if (!response) {
-        // If no user is logged in, redirect to login
-        window.location.href = '/login?redirect-to=%2Fpos';
+        // No active session — bounce to /pos so App.tsx's guest check
+        // renders the URY BiometricLogin page (instead of Frappe's
+        // stock /login).
+        window.location.href = '/pos';
         return;
       }
 
@@ -58,8 +60,9 @@ export const createAuthSlice: StateCreator<AuthSlice> = (set, get) => ({
         isLoading: false,
         user: null,
       });
-      // Redirect to login on error
-      window.location.href = '/login?redirect-to=%2Fapp';
+      // Auth check failed — bounce to /pos so App.tsx's guest check
+      // renders the URY BiometricLogin page.
+      window.location.href = '/pos';
     }
   },
 

@@ -19,3 +19,14 @@ build
 
 *.lock
 ury/public/pos/assets/ury/files/cert.pem
+
+# Local-only Claude Code IDE config + the bundled ZKFinger SDK
+# download (332 MB, third-party redistributable — only the JAR + a
+# few DLLs are extracted from it and committed via ury-finger-agent/lib
+# and ury/public/drivers/).
+.claude/
+ZKFingerSDK+5.3_ZK10.0/
+
+# URY Finger Agent build output (compiled .class files, repackaged
+# zip already lives in ury/public/drivers/).
+ury-finger-agent/build/

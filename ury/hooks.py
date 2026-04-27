@@ -12,6 +12,17 @@ required_apps = ["erpnext"]
 # Includes in <head>
 # ------------------
 
+
+add_to_apps_screen = [
+	{
+		"name": "ury",
+		"logo": "/assets/ury/Images/ury-logo.jpg",
+		"title": "ExPOS",
+		"route": "check/pos",
+		# "has_permission": "ihotel.api.permission.has_app_permission"
+	}
+]
+
 # include js, css files in header of desk.html
 # app_include_css = "/assets/ury/css/ury.css"
 app_include_js = [
@@ -39,6 +50,7 @@ page_js = {"point-of-sale": ["public/js/pos_extend.js"]}
 # include js in doctype views
 doctype_js = {
     "POS Profile": "public/js/pos_profile_geofence.js",
+    "User": "public/js/user_biometric_enrollment.js",
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
