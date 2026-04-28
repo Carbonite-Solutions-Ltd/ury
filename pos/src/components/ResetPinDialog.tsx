@@ -76,8 +76,9 @@ function PinDigits({
               refs.current[i] = el;
             }}
             autoFocus={autoFocus && i === 0}
-            type="tel"
+            type="password"
             inputMode="numeric"
+            autoComplete="one-time-code"
             maxLength={1}
             value={d}
             onChange={(e) => onCellChange(i, e.target.value)}
