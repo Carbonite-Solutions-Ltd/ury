@@ -71,6 +71,14 @@ READ_ONLY_DOCTYPES = [
     # print calls can look up the printer doc server-side. Captains
     # and Managers get write via captain extras below.
     "URY Printer",
+    # Biometric system (added 2026-04-24). Cashiers need read so the
+    # self-service PIN reset dialog can read their own row. Captains +
+    # Managers get write via captain extras below so they can enrol
+    # cashiers and reset lockouts. Settings singleton is readable by
+    # all URY roles so the POS login page can fetch the feature flag +
+    # ISSOnline URL.
+    "URY Biometric Settings",
+    "URY Biometric Enrollment",
 ]
 
 # Doctypes the POS creates / updates / submits. Each entry includes the
@@ -169,6 +177,13 @@ CAPTAIN_EXTRA_WRITE_DOCTYPES: list[tuple[str, dict]] = [
     (
         "URY Printer",
         {"read": 1, "write": 1, "create": 1, "select": 1, "report": 1},
+    ),
+    # Biometric: captains + managers enrol cashiers and reset lockouts.
+    # Cashier stays read-only on the enrollment doctype (they can read
+    # their own row for the self-service PIN reset dialog).
+    (
+        "URY Biometric Enrollment",
+        {"read": 1, "write": 1, "create": 1, "delete": 1, "select": 1, "report": 1},
     ),
 ]
 

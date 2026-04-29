@@ -231,8 +231,10 @@ const POSOpeningProvider = ({ children }: POSOpeningProviderProps) => {
                   /* ignore */
                 }
                 // Use location.replace so the gate error screen
-                // doesn't sit in browser history.
-                window.location.replace('/login');
+                // doesn't sit in browser history. Land on /pos —
+                // App.tsx will render the URY BiometricLogin page
+                // because the session is now Guest.
+                window.location.replace('/pos');
               }}
               className="flex-1"
             >

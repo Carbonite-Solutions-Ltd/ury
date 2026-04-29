@@ -9,7 +9,10 @@ import {
   RefreshCw,
   MapPin,
   DoorClosed,
+  Fingerprint,
+  KeyRound,
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { Button, Input } from './ui';
 import { useRootStore } from '../store/root-store';
 import { usePOSStore } from '../store/pos-store';
@@ -21,6 +24,7 @@ import { canAccessDeskAndTerminalSwitch } from '../lib/role-utils';
 import { getCurrentPosOpenEntry } from '../lib/pos-opening-api';
 import POSClosingDialog from './POSClosingDialog';
 import { extractFrappeServerError } from '../lib/utils';
+import ResetPinDialog from './ResetPinDialog';
 
 const Header = () => {
   const [showUserMenu, setShowUserMenu] = useState(false);
@@ -29,9 +33,11 @@ const Header = () => {
   const [showClosingDialog, setShowClosingDialog] = useState(false);
   const [closingEntryName, setClosingEntryName] = useState<string | null>(null);
   const [endShiftLoading, setEndShiftLoading] = useState(false);
+  const [showResetPin, setShowResetPin] = useState(false);
   const canSeeAdminActions = canAccessDeskAndTerminalSwitch(user);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const location = useLocation();
+  const navigate = useNavigate();
   const {
     searchQuery,
     setSearchQuery,
@@ -106,7 +112,8 @@ const Header = () => {
   const handleLogout = async () => {
     try {
       await logout();
-      window.location.href = '/login?redirect-to=%2Fpos';
+      // Land on /pos as guest → App.tsx renders the new BiometricLogin
+      window.location.href = '/pos';
     } catch (error) {
       showToast.error('Failed to logout. Please try again.');
     }
@@ -287,6 +294,17 @@ const Header = () => {
                         <Monitor className="w-4 h-4 mr-3" />
                         Switch To Desk
                       </Button>
+                      <Button
+                        variant="ghost"
+                        className="flex justify-start items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
+                        onClick={() => {
+                          setShowUserMenu(false);
+                          navigate('/biometric-enrollment');
+                        }}
+                      >
+                        <Fingerprint className="w-4 h-4 mr-3" />
+                        Enroll Biometrics
+                      </Button>
                     </>
                   )}
                   {/* End Shift is visible to EVERYONE — cashiers need
@@ -302,6 +320,19 @@ const Header = () => {
                   >
                     <DoorClosed className="w-4 h-4 mr-3" />
                     {endShiftLoading ? 'Loading…' : 'End Shift'}
+                  </Button>
+                  {/* Reset PIN — visible to every signed-in user; backend
+                      friendly-rejects if they don't have an enrollment. */}
+                  <Button
+                    variant="ghost"
+                    className="flex justify-start items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
+                    onClick={() => {
+                      setShowUserMenu(false);
+                      setShowResetPin(true);
+                    }}
+                  >
+                    <KeyRound className="w-4 h-4 mr-3" />
+                    Reset PIN
                   </Button>
                   <Button
                     variant="ghost"
@@ -342,6 +373,7 @@ const Header = () => {
           }}
         />
       )}
+      <ResetPinDialog open={showResetPin} onClose={() => setShowResetPin(false)} />
     </header>
   );
 };

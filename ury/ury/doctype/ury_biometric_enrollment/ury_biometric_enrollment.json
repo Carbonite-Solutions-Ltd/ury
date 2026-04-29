@@ -1,0 +1,248 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:user",
+ "creation": "2026-04-24 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "user",
+  "full_name",
+  "column_break_identity",
+  "email",
+  "disabled",
+  "fingerprint_section",
+  "fingerprint_template",
+  "fingerprint_template_length",
+  "primary_finger",
+  "column_break_fp",
+  "fingerprint_enrolled_at",
+  "fingerprint_enrolled_by",
+  "pin_section",
+  "pin_hash",
+  "pin_set_at",
+  "column_break_pin",
+  "pin_changed_at",
+  "failed_pin_attempts",
+  "pin_locked_until",
+  "tracking_section",
+  "last_login_method",
+  "last_login_at",
+  "column_break_tracking",
+  "last_login_ip",
+  "last_login_terminal"
+ ],
+ "fields": [
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "User",
+   "options": "User",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fetch_from": "user.full_name",
+   "fieldname": "full_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Full Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_identity",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fetch_from": "user.email",
+   "fieldname": "email",
+   "fieldtype": "Data",
+   "label": "Email",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Disable biometric + PIN login for this user without deleting the enrollment data (audit trail preserved).",
+   "fieldname": "disabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Disabled"
+  },
+  {
+   "collapsible": 0,
+   "fieldname": "fingerprint_section",
+   "fieldtype": "Section Break",
+   "label": "Fingerprint"
+  },
+  {
+   "description": "Base64-encoded ZKFinger master template (merged from 3 captures at enrollment time). Never exposed in the desk UI beyond admins; never returned by public login endpoints.",
+   "fieldname": "fingerprint_template",
+   "fieldtype": "Long Text",
+   "label": "Fingerprint Template",
+   "no_copy": 1,
+   "print_hide": 1,
+   "read_only": 1,
+   "report_hide": 1
+  },
+  {
+   "description": "Length in bytes of the decoded template. Used for sanity validation at login time.",
+   "fieldname": "fingerprint_template_length",
+   "fieldtype": "Int",
+   "label": "Template Length (bytes)",
+   "read_only": 1
+  },
+  {
+   "default": "Right Index",
+   "description": "Which finger was enrolled. Cosmetic — helps re-enrollment conversations with the cashier.",
+   "fieldname": "primary_finger",
+   "fieldtype": "Select",
+   "label": "Primary Finger",
+   "options": "Right Thumb\nRight Index\nRight Middle\nRight Ring\nRight Little\nLeft Thumb\nLeft Index\nLeft Middle\nLeft Ring\nLeft Little"
+  },
+  {
+   "fieldname": "column_break_fp",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "fingerprint_enrolled_at",
+   "fieldtype": "Datetime",
+   "label": "Enrolled At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "fingerprint_enrolled_by",
+   "fieldtype": "Link",
+   "label": "Enrolled By (Captain/Admin)",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "collapsible": 0,
+   "fieldname": "pin_section",
+   "fieldtype": "Section Break",
+   "label": "PIN"
+  },
+  {
+   "description": "pbkdf2_sha256 hash of the 6-digit PIN. Never exposed in desk UI; never returned by any API. Format: the opaque string returned by frappe.utils.password.hash_password().",
+   "fieldname": "pin_hash",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "PIN Hash",
+   "no_copy": 1,
+   "print_hide": 1,
+   "read_only": 1,
+   "report_hide": 1
+  },
+  {
+   "fieldname": "pin_set_at",
+   "fieldtype": "Datetime",
+   "label": "PIN Set At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_pin",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "pin_changed_at",
+   "fieldtype": "Datetime",
+   "label": "PIN Last Changed At",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Counter of consecutive failed PIN attempts. Resets to 0 on any successful login. Triggers pin_locked_until when it crosses URY Biometric Settings.pin_max_attempts.",
+   "fieldname": "failed_pin_attempts",
+   "fieldtype": "Int",
+   "label": "Failed PIN Attempts",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "description": "When set to a future datetime, PIN login is rejected until that moment passes. Captain can reset via Admin Reset Enrollment.",
+   "fieldname": "pin_locked_until",
+   "fieldtype": "Datetime",
+   "label": "PIN Locked Until",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "tracking_section",
+   "fieldtype": "Section Break",
+   "label": "Last Login Tracking"
+  },
+  {
+   "description": "Drives the default tab on the login page for this user next time they sign in.",
+   "fieldname": "last_login_method",
+   "fieldtype": "Select",
+   "label": "Last Login Method",
+   "options": "\nBiometric\nPIN\nPassword",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_login_at",
+   "fieldtype": "Datetime",
+   "label": "Last Login At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_tracking",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "last_login_ip",
+   "fieldtype": "Data",
+   "label": "Last Login IP",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_login_terminal",
+   "fieldtype": "Link",
+   "label": "Last Login Terminal",
+   "options": "URY POS Terminal",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-04-24 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "URY",
+ "name": "URY Biometric Enrollment",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "URY Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "URY Captain",
+   "write": 1
+  }
+ ],
+ "search_fields": "user,full_name,email",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "full_name",
+ "track_changes": 1
+}

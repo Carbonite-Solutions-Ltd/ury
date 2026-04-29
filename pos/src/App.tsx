@@ -6,6 +6,8 @@ import POS from './pages/POS';
 import Table from './pages/Table';
 import Reports from './pages/Reports';
 import Notifications from './pages/Notifications';
+import BiometricEnrollment from './pages/BiometricEnrollment';
+import BiometricLogin from './pages/BiometricLogin';
 import AuthGuard from './components/AuthGuard';
 import POSOpeningProvider from './components/POSOpeningProvider';
 import ShiftHoursBanner from './components/ShiftHoursBanner';
@@ -185,7 +187,7 @@ function App() {
   }
 
   if (isGuest) {
-    return <UnauthenticatedLanding />;
+    return <BiometricLogin terminalName={terminal?.terminal ?? null} />;
   }
 
   if (terminalLoading) {
@@ -257,7 +259,8 @@ function App() {
                 try {
                   await logout();
                 } finally {
-                  window.location.href = '/login?redirect-to=%2Fpos';
+                  // Land on /pos as guest → App.tsx renders BiometricLogin
+                  window.location.href = '/pos';
                 }
               }}
               className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-semibold rounded-lg transition-colors"
@@ -293,6 +296,7 @@ function App() {
                     <Route path="/table" element={<Table />} />
                     <Route path="/reports" element={<Reports />} />
                     <Route path="/notifications" element={<Notifications />} />
+                    <Route path="/biometric-enrollment" element={<BiometricEnrollment />} />
                   </Routes>
                 </div>
                 <Footer />
@@ -492,41 +496,8 @@ function TerminalSetupScreen({ onSelect }: { onSelect: (terminal: string) => voi
   );
 }
 
-/**
- * Landing screen shown when an unauthenticated user hits /pos. Replaces
- * the raw "Function ury.ury_pos.api.get_terminals is not whitelisted"
- * error that used to surface. The Sign In button deep-links to Frappe's
- * login page with a `redirect-to=/pos` query param so the user lands
- * back on the POS after authenticating.
- */
-function UnauthenticatedLanding() {
-  const handleSignIn = () => {
-    window.location.href = '/login?redirect-to=%2Fpos';
-  };
-  return (
-    <div className="flex items-center justify-center min-h-screen bg-gray-50">
-      <div className="max-w-md w-full mx-4 bg-white rounded-2xl shadow-lg p-8 text-center">
-        <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-50 mb-4">
-          <LogIn className="w-8 h-8 text-blue-600" />
-        </div>
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">
-          Sign in to continue
-        </h2>
-        <p className="text-gray-600 mb-6">
-          You need to log in to your ExPOS account before you can open the
-          POS. Click the button below to go to the login page — you'll
-          come right back here once you've signed in.
-        </p>
-        <button
-          onClick={handleSignIn}
-          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center gap-2"
-        >
-          <LogIn className="w-5 h-5" />
-          Go to Login
-        </button>
-      </div>
-    </div>
-  );
-}
+/* UnauthenticatedLanding was the old "Sign in to continue" card that
+ * deep-linked to Frappe's /login. Replaced by `<BiometricLogin>` in
+ * the isGuest branch above (Phase 3 of the biometric rollout). */
 
 export default App;
