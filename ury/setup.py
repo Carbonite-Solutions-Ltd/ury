@@ -671,6 +671,15 @@ def get_custom_fields():
 				"depends_on": "eval:doc.custom_print_mode != 'Disabled'",
 				"description": "Controls how URYMosaic groups KOTs into screens. Menu Course (default): one KOT per order, split by item course department; KDS URL is /URYMosaic/Food|Drinks|Other|All. URY Production Unit: legacy multi-KOT-per-order flow split by Production Unit; KDS URL is /URYMosaic/<production-name>.",
 			},
+			{
+				"fieldname": "custom_service_policy_time",
+				"fieldtype": "Int",
+				"insert_after": "custom_kds_routing_mode",
+				"label": "Average Service Policy Time (minutes)",
+				"default": "15",
+				"non_negative": 1,
+				"description": "The average time (in minutes) taken to serve a customer. Orders that pass this time are flagged as late: the KDS card turns red and the order shows up in the cashier's Late Orders notifications.",
+			},
 		],
 		"URY Menu Course": [
 			{

@@ -15,6 +15,7 @@ urypos/yarn.lock
 URYMosaic/yarn.lock
 ury/www/urypos.html
 ury/www/URYMosaic.html
+ury/www/Mosaic.html
 build
 
 *.lock

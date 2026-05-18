@@ -61,7 +61,7 @@ website_context = {"splash_image": "/assets/ury/Images/ury-logo.jpg"}
 
 website_route_rules = [
     {"from_route": "/pos/<path:app_path>", "to_route": "pos"},
-    {"from_route": "/URYMosaic/<path:app_path>", "to_route": "URYMosaic"},
+    {"from_route": "/Mosaic/<path:app_path>", "to_route": "Mosaic"},
 ]
 
 # Legacy Vue POS (urypos/) was sunset by print-revamp Round 3 on
@@ -392,6 +392,7 @@ fixtures = [
                     "POS Profile-custom_kot_alert",
                     "POS Profile-custom_kot_alert_sound",
                     "POS Profile-custom_kot_warning_time",
+                    "POS Profile-custom_service_policy_time",
                     "POS Profile-custom_cl",
                     "POS Profile-custom_notify_kot_delay",
                     "POS Profile-custom_recipients",
