@@ -37,7 +37,22 @@
     </div>
     <!-- Alert Modal div end-->
 
+    <!-- Target-not-found banner -->
     <div
+      v-if="targetError"
+      class="mx-auto max-w-2xl mt-24 rounded-2xl border border-red-200 bg-red-50 p-8 text-center shadow"
+    >
+      <p class="text-2xl font-semibold text-red-700 mb-2">
+        Kitchen display not available
+      </p>
+      <p class="text-base text-red-600">{{ targetError }}</p>
+      <p class="text-sm text-gray-500 mt-4">
+        Tried to open <code class="bg-white px-1 rounded">/Mosaic/{{ production }}</code>.
+      </p>
+    </div>
+
+    <div
+      v-else
       class="grid grid-cols-1 gap-10 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
     >
       <div v-for="kot in this.kot" :key="kot.name">
@@ -174,7 +189,31 @@
                   </div>
                 </div>
               </div>
-            
+
+              <!-- Visible Serve / Confirm button (always at the bottom of the card) -->
+              <div class="mt-3 pt-3 border-t border-black/10">
+                <button
+                  type="button"
+                  @click.stop="
+                    kot.type === 'Cancelled' || kot.type === 'Partially cancelled'
+                      ? confirmOrder(kot)
+                      : serveOrder(kot)
+                  "
+                  :class="[
+                    'w-full py-2 rounded-md text-white font-semibold transition',
+                    kot.isLate
+                      ? 'bg-red-700 hover:bg-red-800'
+                      : 'bg-blue-600 hover:bg-blue-700',
+                  ]"
+                >
+                  {{
+                    kot.type === 'Cancelled' || kot.type === 'Partially cancelled'
+                      ? 'Confirm'
+                      : 'Serve'
+                  }}
+                </button>
+              </div>
+
           </div>
           <!-- You can add more item/quantity pairs here as needed -->
         </div>
@@ -280,7 +319,10 @@ export default {
       audio_alert: 0,
       isOnline: navigator.onLine,
       statusMessage: "",
-      daily_order_number:0
+      daily_order_number:0,
+      targetError: "",
+      service_policy_time: 0,
+      _tickHandle: null,
     };
   },
   methods: {
@@ -319,15 +361,22 @@ export default {
               target: this.production,
             })
             .then((result) => {
-              console.log(result, "..............result");
-              this.branch = result.message.Branch;
-              this.kot_alert_time = result.message.kot_alert_time;
-              this.audio_alert = result.message.audio_alert;
-              this.daily_order_number = result.message.daily_order_number;
-              this.kds_routing_mode =
-                result.message.kds_routing_mode || "Menu Course";
+              const msg = result.message || {};
+              if (msg.error) {
+                this.targetError = msg.error;
+                this.kot = [];
+                resolve();
+                return;
+              }
+              this.targetError = "";
+              this.branch = msg.Branch;
+              this.kot_alert_time = msg.kot_alert_time;
+              this.service_policy_time = parseInt(msg.service_policy_time) || 0;
+              this.audio_alert = msg.audio_alert;
+              this.daily_order_number = msg.daily_order_number;
+              this.kds_routing_mode = msg.kds_routing_mode || "Menu Course";
               this.kot_channel = `kot_update_${this.branch}_${this.production}`;
-              this.kot = result.message.KOT;
+              this.kot = msg.KOT || [];
               this.updateQtyColorTable();
               this.updateTimeRemaining();
               this.masonryLoading();
@@ -418,16 +467,22 @@ export default {
           kot.tableortakeaway = restaurant_table;
         }
       }
+      kot.baseColor = this._baseColorFor(type, restaurant_table, table_takeaway);
+      kot.color = kot.isLate
+        ? "bg-red-100 border-2 border-red-500"
+        : kot.baseColor;
+    },
+    _baseColorFor(type, restaurant_table, table_takeaway) {
       if (type == "Order Modified") {
-        kot.color = "bg-[#FFD493] border border-[#FFC700]";
-      } else if (type == "Partially cancelled" || type == "Cancelled") {
-        kot.color = "bg-[#FFD2D2] border border-[#FAA7A7]";
-      } else if (restaurant_table === undefined || table_takeaway == 1) {
-        kot.color = "bg-blue-100 border border-blue-200";
-      } else {
-        kot.color = "bg-white";
+        return "bg-[#FFD493] border border-[#FFC700]";
       }
-      console.log(type,".............type")
+      if (type == "Partially cancelled" || type == "Cancelled") {
+        return "bg-[#FFD2D2] border border-[#FAA7A7]";
+      }
+      if (restaurant_table === undefined || table_takeaway == 1) {
+        return "bg-blue-100 border border-blue-200";
+      }
+      return "bg-white";
     },
     updateQtyColorTable() {
       this.kot.forEach((kot) => {
@@ -473,45 +528,53 @@ export default {
     },
 
     updateTimeRemaining() {
-      // console.log("update time", this.kot_channel);
       this.kot.forEach((kot) => {
-        kot.timeRemaining = this.calculateTimeRemaining(kot.time);
+        const elapsedSec = this._elapsedSeconds(kot);
+        kot.timeRemaining = this._formatElapsed(elapsedSec);
+        const elapsedMin = Math.floor(elapsedSec / 60);
 
-        const timeRemaining = kot.timeRemaining.split(":");
-        const minutes =
-          parseInt(timeRemaining[0]) * 60 + parseInt(timeRemaining[1]);
+        const alert = parseInt(this.kot_alert_time);
+        const policy = parseInt(this.service_policy_time);
+        const live = kot.type !== "Cancelled" && kot.type !== "Partially cancelled";
 
-        if (
-          minutes === this.kot_alert_time &&
-          kot.type !== "Cancelled" &&
-          kot.type !== "Partially cancelled"
-        ) {
+        if (alert && live && elapsedMin >= alert && !kot._notifiedAt) {
           this.orderDelayNotify(kot);
+          kot._notifiedAt = elapsedMin;
         }
-        if (minutes >= this.kot_alert_time) {
-          kot.timecolor = "text-[#DC0000]";
-        } else {
-          kot.timecolor = "text-black";
+
+        const wasLate = !!kot.isLate;
+        kot.isLate = !!(policy && live && elapsedMin >= policy);
+
+        if (kot.isLate !== wasLate || !kot.color) {
+          kot.color = kot.isLate
+            ? "bg-red-100 border-2 border-red-500"
+            : kot.baseColor || this._baseColorFor(kot.type, kot.restaurant_table, kot.table_takeaway);
         }
+
+        kot.timecolor = kot.isLate
+          ? "text-[#DC0000] font-bold"
+          : alert && elapsedMin >= alert
+          ? "text-[#DC0000]"
+          : "text-black";
       });
     },
-    calculateTimeRemaining(targetTime) {
-      const currentTime = new Date();
-      const [targetHours, targetMinutes, targetSeconds] = targetTime.split(":");
-      const targetDate = new Date(
-        currentTime.getFullYear(),
-        currentTime.getMonth(),
-        currentTime.getDate(),
-        targetHours,
-        targetMinutes,
-        targetSeconds
-      );
-
-      const timeDifference = currentTime - targetDate;
-      const hoursRemaining = Math.floor(timeDifference / 3600000);
-      const minutesRemaining = Math.floor((timeDifference % 3600000) / 60000);
-
-      return `${hoursRemaining} : ${minutesRemaining}`;
+    _elapsedSeconds(kot) {
+      // Prefer the full creation timestamp; fall back to date+time. Both
+      // come from Frappe in site-local time ("YYYY-MM-DD HH:MM:SS[.ffffff]").
+      const raw = kot.creation || `${kot.date || ""} ${kot.time || ""}`.trim();
+      if (!raw) return 0;
+      const iso = raw.replace(" ", "T").split(".")[0];
+      const target = new Date(iso);
+      const diff = Date.now() - target.getTime();
+      if (isNaN(diff) || diff < 0) return 0;
+      return Math.floor(diff / 1000);
+    },
+    _formatElapsed(totalSec) {
+      const pad = (n) => String(n).padStart(2, "0");
+      const h = Math.floor(totalSec / 3600);
+      const m = Math.floor((totalSec % 3600) / 60);
+      const s = totalSec % 60;
+      return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
     },
     fetchkotwithmasonry() {
       return this.fetchKOT().then(() => {
@@ -521,7 +584,7 @@ export default {
     redirectToLogin() {
       var currentDomain = window.location.origin;
       window.location.href =
-        currentDomain + "/login?redirect-to=URYMosaic/" + this.production;
+        currentDomain + "/login?redirect-to=Mosaic/" + this.production;
     },
     masonryLoading() {
       this.$nextTick(() => {
@@ -614,12 +677,13 @@ export default {
         console.error("Authentication error:", error);
         this.showModal = true;
       });
-    setInterval(this.updateTimeRemaining, 60000);
+    this._tickHandle = setInterval(this.updateTimeRemaining, 1000);
   },
-  beforeDestroy() {
+  beforeUnmount() {
     window.removeEventListener("online", this.handleOnline);
     window.removeEventListener("offline", this.handleOffline);
     document.removeEventListener("click", this.hideAudioAlertMessage);
+    if (this._tickHandle) clearInterval(this._tickHandle);
   },
   computed: {
     sortedKotItems() {

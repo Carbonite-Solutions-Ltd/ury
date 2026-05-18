@@ -85,44 +85,45 @@ def confirm_cancel_kot(name, user):
 def get_site_name():
     return {"site_name": frappe.local.site}
 
+MENU_COURSE_TARGETS = {"Food", "Drinks", "Other", "All"}
+
+
 @frappe.whitelist()
 def kot_list(target=None):
-    """Return the KOT list the URYMosaic KDS should render.
+    """Return the KOT list the Mosaic KDS should render.
 
-    ``target`` is the URL path segment (``/URYMosaic/<target>``). Its
+    ``target`` is the URL path segment (``/Mosaic/<target>``). Its
     meaning depends on the POS Profile's ``custom_kds_routing_mode``:
 
-      - **URY Production Unit** mode (legacy): ``target`` is a
-        Production Unit name. The backend returns EVERY branch KOT
-        and the frontend filters client-side via
-        ``v-if="kot.production === production"``. Behavior unchanged
-        from before the 2026-04-16 revamp.
+      - **URY Production Unit** mode: ``target`` must be a real
+        URY Production Unit name (or ``All``). The backend returns
+        every branch KOT and the frontend filters client-side via
+        ``v-if="kot.production === production"``.
 
-      - **Menu Course** mode (default after the revamp): ``target``
-        is a department — ``Food``, ``Drinks``, ``Other``, or ``All``.
-        In this mode orders produce a SINGLE KOT per order (see
-        ``process_items_for_kot``), so we filter the KOT's
-        ``kot_items`` child rows by their course's
-        ``custom_department`` and only return KOTs that still carry
-        at least one matching item after filtering. ``All`` means no
-        filter — useful for single-screen setups. We also stamp
-        ``kot.production = target`` on each returned KOT so the Vue
-        client's existing ``production`` filter still works unmodified.
+      - **Menu Course** mode: ``target`` must be ``Food``, ``Drinks``,
+        ``Other``, or ``All``. The backend filters each KOT's
+        ``kot_items`` rows by their course's ``custom_department`` and
+        only returns KOTs that still carry at least one matching item.
 
-    See CLAUDE.md "Fixes log" 2026-04-16 (print revamp Round 1 /
-    Phase C KDS routing mode).
+    If the target is not valid for the active mode, returns
+    ``{"error": "...", "KOT": []}`` so the frontend can render a
+    clear "not found" message instead of a blank board.
     """
     today = frappe.utils.now()
     branch = getBranch()
+    pos_profile_name = frappe.db.get_value("POS Profile", {"branch": branch}, "name")
     kot_alert_time = frappe.db.get_value(
-        "POS Profile", {"branch": branch}, "custom_kot_warning_time"
+        "POS Profile", pos_profile_name, "custom_kot_warning_time"
+    )
+    service_policy_time = frappe.db.get_value(
+        "POS Profile", pos_profile_name, "custom_service_policy_time"
     )
     daily_order_number = frappe.db.get_value(
-        "POS Profile", {"branch": branch}, "custom_reset_order_number_daily"
+        "POS Profile", pos_profile_name, "custom_reset_order_number_daily"
     )
     three_hours_ago = frappe.utils.add_to_date(today, hours=-3)
     audio_alert = frappe.db.get_value(
-        "POS Profile", {"branch": branch}, "custom_kot_alert"
+        "POS Profile", pos_profile_name, "custom_kot_alert"
     )
 
     kds_mode = (
@@ -131,6 +132,37 @@ def kot_list(target=None):
         )
         or "Menu Course"
     )
+
+    # Validate target against the active mode. Empty target is allowed
+    # (legacy /Mosaic/ root) — treated like "All".
+    if target:
+        if kds_mode == "Menu Course":
+            if target not in MENU_COURSE_TARGETS:
+                return {
+                    "error": (
+                        f"'{target}' is not a valid Menu Course screen. "
+                        f"Use one of: {', '.join(sorted(MENU_COURSE_TARGETS))}. "
+                        "(Or switch your POS Profile to 'ExPos Production Unit' "
+                        "routing mode to route by Production Unit name.)"
+                    ),
+                    "KOT": [],
+                    "Branch": branch,
+                    "kds_routing_mode": kds_mode,
+                }
+        else:  # URY Production Unit mode
+            if target != "All" and not frappe.db.exists(
+                "URY Production Unit", target
+            ):
+                return {
+                    "error": (
+                        f"Production Unit '{target}' does not exist. "
+                        "Create it under ExPos → ExPos Production Unit, or use "
+                        "'All' to show every production unit on one screen."
+                    ),
+                    "KOT": [],
+                    "Branch": branch,
+                    "kds_routing_mode": kds_mode,
+                }
 
     kotList = frappe.get_list(
         "URY KOT",
@@ -192,10 +224,96 @@ def kot_list(target=None):
         "KOT": KOT,
         "Branch": branch,
         "kot_alert_time": kot_alert_time,
+        "service_policy_time": service_policy_time,
         "audio_alert": audio_alert,
         "daily_order_number": daily_order_number,
         "kds_routing_mode": kds_mode,
     }
+
+
+@frappe.whitelist()
+def get_late_orders():
+    """Return KOTs whose elapsed time exceeds the POS Profile's
+    Average Service Policy Time and that are still pending.
+
+    Shape mirrors ``get_kitchen_notifications`` so the React POS
+    Notifications panel can render it with the same card layout.
+    """
+    branch = getBranch()
+    policy_minutes = (
+        frappe.db.get_value(
+            "POS Profile", {"branch": branch}, "custom_service_policy_time"
+        )
+        or 0
+    )
+    if not policy_minutes:
+        return {"policy_minutes": 0, "orders": []}
+
+    cutoff = frappe.utils.add_to_date(
+        frappe.utils.now_datetime(), minutes=-int(policy_minutes)
+    )
+    three_hours_ago = frappe.utils.add_to_date(
+        frappe.utils.now_datetime(), hours=-3
+    )
+
+    rows = frappe.db.sql(
+        """
+        SELECT
+            k.name                              AS kot_name,
+            k.invoice                           AS invoice,
+            k.restaurant_table                  AS restaurant_table,
+            k.order_no                          AS order_no,
+            k.production                        AS production,
+            k.creation                          AS kot_creation,
+            k.user                              AS waiter,
+            k.type                              AS kot_type,
+            pi.customer_name                    AS customer_name,
+            pi.grand_total                      AS grand_total,
+            pi.posting_date                     AS posting_date,
+            pi.posting_time                     AS posting_time,
+            pi.owner                            AS owner,
+            GROUP_CONCAT(
+                CONCAT(ki.item_name, ' x', CAST(ki.quantity AS CHAR))
+                ORDER BY ki.idx SEPARATOR ', '
+            )                                   AS items_list,
+            COUNT(DISTINCT ki.name)             AS items_count
+        FROM `tabURY KOT` k
+        LEFT JOIN `tabPOS Invoice` pi ON pi.name = k.invoice
+        LEFT JOIN `tabURY KOT Items` ki ON ki.parent = k.name
+        WHERE k.branch = %(branch)s
+          AND k.docstatus = 1
+          AND k.order_status = 'Ready For Prepare'
+          AND k.verified = 0
+          AND k.type IN (
+              'New Order', 'Order Modified',
+              'Duplicate', 'Cancelled', 'Partially cancelled'
+          )
+          AND k.creation <= %(cutoff)s
+          AND k.creation >= %(three_hours_ago)s
+        GROUP BY k.name
+        ORDER BY k.creation ASC
+        LIMIT 100
+        """,
+        {
+            "branch": branch,
+            "cutoff": cutoff,
+            "three_hours_ago": three_hours_ago,
+        },
+        as_dict=True,
+    )
+
+    now_ts = frappe.utils.now_datetime()
+    for row in rows:
+        creation = frappe.utils.get_datetime(row["kot_creation"])
+        elapsed_min = (now_ts - creation).total_seconds() / 60.0
+        row["elapsed_minutes"] = int(elapsed_min)
+        row["over_by_minutes"] = max(0, int(elapsed_min - policy_minutes))
+
+    return {
+        "policy_minutes": int(policy_minutes),
+        "orders": rows,
+    }
+
 
 @frappe.whitelist()
 def served_kot_list():

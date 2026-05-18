@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Bell, ChefHat, CheckCircle, Clock, X } from 'lucide-react';
+import { AlertTriangle, Bell, ChefHat, CheckCircle, Clock, X } from 'lucide-react';
 import { Card, CardContent, Badge } from '../components/ui';
 import { Spinner } from '../components/ui/spinner';
 import { call } from '../lib/frappe-sdk';
@@ -24,15 +24,41 @@ interface KitchenNotification {
   items_list: string;
 }
 
+interface LateOrder {
+  kot_name: string;
+  invoice: string;
+  restaurant_table: string | null;
+  order_no: string | null;
+  production: string | null;
+  kot_creation: string;
+  waiter: string | null;
+  kot_type: string;
+  customer_name: string | null;
+  grand_total: number;
+  posting_date: string;
+  posting_time: string;
+  owner: string;
+  items_list: string;
+  items_count: number;
+  elapsed_minutes: number;
+  over_by_minutes: number;
+}
+
+type TabKey = 'kitchen' | 'late' | 'system';
+
 export default function Notifications() {
-  const [activeTab, setActiveTab] = useState<'kitchen' | 'system'>('kitchen');
+  const [activeTab, setActiveTab] = useState<TabKey>('kitchen');
   const [loading, setLoading] = useState(false);
   const [kitchenNotifications, setKitchenNotifications] = useState<KitchenNotification[]>([]);
+  const [lateOrders, setLateOrders] = useState<LateOrder[]>([]);
+  const [policyMinutes, setPolicyMinutes] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (activeTab === 'kitchen') {
       fetchKitchenNotifications();
+    } else if (activeTab === 'late') {
+      fetchLateOrders();
     }
 
     // Listen for realtime updates
@@ -40,16 +66,23 @@ export default function Notifications() {
       socket.on('order_served_notification', handleRealtimeNotification);
     }
 
+    // Keep "Late" tab fresh — orders cross the threshold passively.
+    let interval: ReturnType<typeof setInterval> | null = null;
+    if (activeTab === 'late') {
+      interval = setInterval(fetchLateOrders, 30000);
+    }
+
     return () => {
       if (socket) {
         socket.off('order_served_notification', handleRealtimeNotification);
       }
+      if (interval) clearInterval(interval);
     };
   }, [activeTab]);
 
   const handleRealtimeNotification = (data: any) => {
     console.log('🔔 Realtime notification received:', data);
-    
+
     // Refresh notifications when new order is served
     if (activeTab === 'kitchen') {
       fetchKitchenNotifications();
@@ -64,6 +97,21 @@ export default function Notifications() {
       setKitchenNotifications(response.message || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch notifications');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchLateOrders = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await call.get('ury.ury.api.ury_kot_display.get_late_orders');
+      const msg = response.message || {};
+      setLateOrders(msg.orders || []);
+      setPolicyMinutes(msg.policy_minutes || 0);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch late orders');
     } finally {
       setLoading(false);
     }
@@ -127,7 +175,9 @@ export default function Notifications() {
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold text-gray-900">Notifications</h1>
           <button
-            onClick={fetchKitchenNotifications}
+            onClick={() =>
+              activeTab === 'late' ? fetchLateOrders() : fetchKitchenNotifications()
+            }
             className="px-4 py-2 text-sm font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-md transition-colors"
           >
             Refresh
@@ -158,6 +208,24 @@ export default function Notifications() {
               </div>
             </button>
             <button
+              onClick={() => setActiveTab('late')}
+              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                activeTab === 'late'
+                  ? 'border-red-500 text-red-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5" />
+                <span>Late Orders</span>
+                {lateOrders.length > 0 && (
+                  <Badge variant="default" className="ml-2 bg-red-600">
+                    {lateOrders.length}
+                  </Badge>
+                )}
+              </div>
+            </button>
+            <button
               onClick={() => setActiveTab('system')}
               className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
                 activeTab === 'system'
@@ -176,7 +244,124 @@ export default function Notifications() {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
-        {activeTab === 'kitchen' ? (
+        {activeTab === 'late' ? (
+          loading ? (
+            <div className="flex items-center justify-center h-64">
+              <Spinner />
+            </div>
+          ) : error ? (
+            <div className="text-center py-12">
+              <X className="w-12 h-12 text-red-500 mx-auto mb-4" />
+              <p className="text-red-600 font-medium">{error}</p>
+            </div>
+          ) : policyMinutes === 0 ? (
+            <div className="text-center py-12">
+              <AlertTriangle className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+              <p className="text-gray-500 text-lg">No service policy configured</p>
+              <p className="text-gray-400 text-sm mt-2 max-w-md mx-auto">
+                Set <span className="font-medium">Average Service Policy Time</span> on
+                your POS Profile to track late orders.
+              </p>
+            </div>
+          ) : lateOrders.length === 0 ? (
+            <div className="text-center py-12">
+              <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4" />
+              <p className="text-gray-700 text-lg font-medium">All orders on time</p>
+              <p className="text-gray-400 text-sm mt-2">
+                Policy: {policyMinutes} min. Late orders will show up here.
+              </p>
+            </div>
+          ) : (
+            <div className="max-w-4xl mx-auto space-y-3">
+              <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-4 py-2 mb-2">
+                <span className="font-semibold">{lateOrders.length}</span> order
+                {lateOrders.length === 1 ? '' : 's'} past the{' '}
+                <span className="font-semibold">{policyMinutes}-minute</span>{' '}
+                service policy.
+              </div>
+              {lateOrders.map((order) => (
+                <Card
+                  key={order.kot_name}
+                  className="hover:shadow-md transition-shadow relative border-l-4 border-l-red-500"
+                >
+                  <CardContent className="p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="flex-shrink-0 w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+                        <AlertTriangle className="w-5 h-5 text-red-600" />
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <h3 className="text-base font-semibold text-gray-900">
+                            {order.invoice}
+                          </h3>
+                          {order.order_no && (
+                            <span className="text-xs text-gray-500">
+                              #{order.order_no}
+                            </span>
+                          )}
+                          <Badge className="bg-red-600 text-white text-xs">
+                            {order.over_by_minutes > 0
+                              ? `${order.over_by_minutes} min over`
+                              : 'Late'}
+                          </Badge>
+                          {order.production && (
+                            <Badge className="bg-gray-100 text-gray-700 text-xs border border-gray-300">
+                              {order.production}
+                            </Badge>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-4 text-sm text-gray-600 mb-2 flex-wrap">
+                          {order.customer_name && (
+                            <>
+                              <span>{order.customer_name}</span>
+                              <span className="text-gray-400">•</span>
+                            </>
+                          )}
+                          {order.restaurant_table ? (
+                            <span>Table {order.restaurant_table}</span>
+                          ) : (
+                            <span>Takeaway</span>
+                          )}
+                          <span className="text-gray-400">•</span>
+                          <span>{order.items_count} item(s)</span>
+                          {order.waiter && (
+                            <>
+                              <span className="text-gray-400">•</span>
+                              <span>Waiter: {order.waiter}</span>
+                            </>
+                          )}
+                        </div>
+
+                        {order.items_list && (
+                          <div className="bg-gray-50 rounded-md p-2 mb-2">
+                            <p className="text-xs font-medium text-gray-700 mb-1">
+                              Items:
+                            </p>
+                            <p className="text-xs text-gray-600 line-clamp-2">
+                              {order.items_list}
+                            </p>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-red-600 flex items-center gap-1 font-medium">
+                            <Clock className="w-3 h-3" />
+                            {order.elapsed_minutes} min since order
+                          </span>
+                          <span className="font-bold text-gray-900 text-sm">
+                            {formatCurrency(order.grand_total)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )
+        ) : activeTab === 'kitchen' ? (
           loading ? (
             <div className="flex items-center justify-center h-64">
               <Spinner />
