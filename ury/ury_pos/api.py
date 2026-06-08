@@ -401,6 +401,331 @@ def get_cashier_users_for_terminal(terminal):
     return _get_cashier_users_on_branch(terminal_branch)
 
 
+# ───────────────────────────────────────────────────────────────────
+# Invoice transfer workflow (2026-06-05)
+#
+# Captains offer unpaid drafts to another cashier at shift close; the
+# receiving cashier approves/rejects from the Orders page "Incoming
+# Transfers" filter. The URY Invoice Transfer doctype is the source of
+# truth + audit chain; the POS Invoice carries a denormalized
+# custom_transfer_status flag for the Orders page. See CLAUDE.md
+# "Fixes log" 2026-06-05.
+# ───────────────────────────────────────────────────────────────────
+
+
+def _user_is_captain(user=None):
+    user = user or frappe.session.user
+    roles = set(frappe.get_roles(user))
+    captain_roles = {"Administrator", "System Manager", "URY Manager", "URY Captain"}
+    return user == "Administrator" or bool(roles & captain_roles)
+
+
+def _excluded_from_blocking(transfer_rows, current_user):
+    """Pure decision: given transfer rows [{invoice, status, to_user}],
+    return the set of invoices that should NOT block `current_user`'s
+    shift close.
+
+    A draft is 'in the transfer pipeline' (excluded) when it has:
+      - a Pending transfer (offered, awaiting the receiver — also the
+        idempotency guard against double-transfer on a repeated close), or
+      - an Approved transfer to a user OTHER than `current_user` (already
+        handed off).
+    An Approved transfer whose to_user IS `current_user` is NOT excluded:
+    they accepted it, it's their draft now and still blocks them.
+    """
+    excluded = set()
+    for row in transfer_rows:
+        status = row.get("status")
+        invoice = row.get("invoice")
+        if status == "Pending":
+            excluded.add(invoice)
+        elif status == "Approved" and row.get("to_user") != current_user:
+            excluded.add(invoice)
+    return excluded
+
+
+def _drafts_with_active_transfer(invoice_names, current_user):
+    """Return the subset of `invoice_names` that already have an active
+    transfer for `current_user`'s close. Thin DB wrapper around the pure
+    `_excluded_from_blocking` decision."""
+    if not invoice_names:
+        return set()
+    rows = frappe.db.sql(
+        """
+        SELECT invoice, status, to_user
+        FROM `tabURY Invoice Transfer`
+        WHERE invoice IN %(names)s
+          AND status IN ('Pending', 'Approved')
+        """,
+        {"names": tuple(invoice_names)},
+        as_dict=True,
+    )
+    return _excluded_from_blocking([dict(r) for r in rows], current_user)
+
+
+def _get_captain_users_on_branch(branch_name):
+    """Like _get_cashier_users_on_branch but only URY Captain / URY
+    Manager — used to pick a 'captain queue' owner when a transfer is
+    rejected."""
+    rows = frappe.db.sql(
+        """
+        SELECT DISTINCT u.name AS user, u.full_name AS full_name
+        FROM `tabURY User` AS uu
+        INNER JOIN `tabBranch` AS b ON uu.parent = b.name
+        INNER JOIN `tabUser` AS u ON u.name = uu.user
+        INNER JOIN `tabHas Role` AS hr ON hr.parent = u.name
+        WHERE b.branch = %s
+        AND hr.role IN ('URY Captain', 'URY Manager')
+        AND u.enabled = 1
+        ORDER BY u.full_name, u.name
+        """,
+        (branch_name,),
+        as_dict=True,
+    )
+    return [{"user": r.user, "full_name": r.full_name or r.user} for r in rows]
+
+
+def _transfer_hop_count(invoice):
+    """How many APPROVED (landed) transfers this invoice has had so far.
+    A rejected transfer doesn't consume a hop."""
+    return frappe.db.count(
+        "URY Invoice Transfer", {"invoice": invoice, "status": "Approved"}
+    )
+
+
+@frappe.whitelist()
+def get_incoming_transfers(terminal=None, posting_date=None):
+    """Pending invoice transfers addressed to the current user, for the
+    Orders page 'Incoming Transfers' filter.
+
+    Branch-scoped (a cashier only sees transfers on their branch). NOT
+    terminal/date scoped — the receiver may be on any terminal and the
+    transfer is theirs to resolve regardless. The `terminal`/
+    `posting_date` params are accepted (the Orders page passes them
+    uniformly) but ignored. Transfers whose invoice is no longer a Draft
+    (paid / cancelled elsewhere) are hidden so the receiver never acts
+    on a dead one. Rows are shaped like getPosInvoice plus a
+    `transfer_meta` block.
+    """
+    me = frappe.session.user
+    branch = getBranch()
+    rows = frappe.db.sql(
+        """
+        SELECT
+            pi.name, pi.invoice_printed, pi.grand_total, pi.restaurant_table,
+            pi.cashier, pi.waiter, pi.net_total, pi.posting_time,
+            pi.total_taxes_and_charges, pi.customer, pi.customer_name,
+            pi.status, pi.mobile_number, pi.posting_date, pi.rounded_total,
+            pi.order_type, pi.custom_order_status, pi.custom_terminal,
+            pi.owner, pi.is_return, pi.return_against,
+            pi.custom_charge_to_room, pi.custom_hotel_room,
+            pi.custom_ihotel_profile, pi.custom_transfer_status,
+            t.name AS transfer_name, t.from_user AS transfer_from_user,
+            t.requested_at AS transfer_requested_at,
+            t.hop_number AS transfer_hop_number,
+            fu.full_name AS transfer_from_full_name
+        FROM `tabURY Invoice Transfer` AS t
+        INNER JOIN `tabPOS Invoice` AS pi ON pi.name = t.invoice
+        LEFT JOIN `tabUser` AS fu ON fu.name = t.from_user
+        WHERE t.status = 'Pending'
+          AND t.to_user = %(me)s
+          AND t.branch = %(branch)s
+          AND pi.docstatus = 0
+          AND pi.status = 'Draft'
+        ORDER BY t.requested_at DESC
+        """,
+        {"me": me, "branch": branch},
+        as_dict=True,
+    )
+    for r in rows:
+        r["transfer_meta"] = {
+            "transfer": r.pop("transfer_name", None),
+            "from_user": r.pop("transfer_from_user", None),
+            "from_full_name": r.pop("transfer_from_full_name", None)
+            or r.get("owner"),
+            "requested_at": str(r.pop("transfer_requested_at", "") or ""),
+            "hop_number": r.pop("transfer_hop_number", None),
+        }
+    return {"data": rows, "next": False}
+
+
+@frappe.whitelist()
+def get_incoming_transfer_count():
+    """Count of Pending transfers addressed to the current user, for the
+    Orders sidebar badge. Only counts ones whose invoice is still a
+    live Draft."""
+    me = frappe.session.user
+    branch = getBranch()
+    rows = frappe.db.sql(
+        """
+        SELECT COUNT(t.name) AS c
+        FROM `tabURY Invoice Transfer` AS t
+        INNER JOIN `tabPOS Invoice` AS pi ON pi.name = t.invoice
+        WHERE t.status = 'Pending'
+          AND t.to_user = %(me)s
+          AND t.branch = %(branch)s
+          AND pi.docstatus = 0
+          AND pi.status = 'Draft'
+        """,
+        {"me": me, "branch": branch},
+        as_dict=True,
+    )
+    return {"count": int(rows[0].c if rows else 0)}
+
+
+@frappe.whitelist()
+def approve_transfer(transfer):
+    """Receiving cashier accepts a Pending transfer. Re-homes the draft
+    to them (owner + cashier), clears the terminal so it surfaces on
+    their Orders page, stamps the denormalized status, and marks the
+    transfer Approved."""
+    if not frappe.db.exists("URY Invoice Transfer", transfer):
+        frappe.throw(
+            _("Transfer '{0}' not found.").format(transfer),
+            frappe.DoesNotExistError,
+        )
+    doc = frappe.get_doc("URY Invoice Transfer", transfer)
+    if doc.status != "Pending":
+        frappe.throw(
+            _("This transfer has already been {0}.").format(doc.status.lower()),
+            title=_("Already Resolved"),
+        )
+    me = frappe.session.user
+    if me != doc.to_user and not _user_is_captain(me):
+        frappe.throw(
+            _(
+                "Only the cashier this order was offered to (or a captain) "
+                "can approve it."
+            ),
+            frappe.PermissionError,
+            title=_("Not Allowed"),
+        )
+    inv = frappe.db.get_value(
+        "POS Invoice", doc.invoice, ["status", "docstatus"], as_dict=True
+    )
+    if not inv or inv.docstatus != 0 or inv.status != "Draft":
+        frappe.throw(
+            _(
+                "Order {0} is no longer an open draft and can't be transferred."
+            ).format(doc.invoice),
+            title=_("Order No Longer Transferable"),
+        )
+
+    target_full_name = (
+        frappe.db.get_value("User", doc.to_user, "full_name") or doc.to_user
+    )
+    now_dt = frappe.utils.now_datetime()
+    frappe.db.set_value(
+        "POS Invoice",
+        doc.invoice,
+        {
+            "owner": doc.to_user,
+            "cashier": target_full_name,
+            "custom_terminal": None,
+            "posting_date": now_dt.date(),
+            "posting_time": now_dt.time(),
+            "custom_transfer_status": "Approved",
+            "remarks": f"Transfer accepted by {doc.to_user} "
+            f"(offered by {doc.from_user})",
+        },
+        update_modified=True,
+    )
+    frappe.db.set_value(
+        "URY Invoice Transfer",
+        doc.name,
+        {"status": "Approved", "resolved_by": me, "resolved_at": now_dt},
+        update_modified=True,
+    )
+    frappe.db.commit()
+    return {"transfer": doc.name, "invoice": doc.invoice, "status": "Approved"}
+
+
+@frappe.whitelist()
+def reject_transfer(transfer, reason=None):
+    """Receiving cashier declines a Pending transfer. The draft is
+    re-homed to a branch captain (the 'captain queue') so the original
+    sender — who may already have closed their shift — isn't stuck
+    holding it."""
+    if not frappe.db.exists("URY Invoice Transfer", transfer):
+        frappe.throw(
+            _("Transfer '{0}' not found.").format(transfer),
+            frappe.DoesNotExistError,
+        )
+    doc = frappe.get_doc("URY Invoice Transfer", transfer)
+    if doc.status != "Pending":
+        frappe.throw(
+            _("This transfer has already been {0}.").format(doc.status.lower()),
+            title=_("Already Resolved"),
+        )
+    me = frappe.session.user
+    if me != doc.to_user and not _user_is_captain(me):
+        frappe.throw(
+            _(
+                "Only the cashier this order was offered to (or a captain) "
+                "can reject it."
+            ),
+            frappe.PermissionError,
+            title=_("Not Allowed"),
+        )
+
+    # Pick a captain for the queue: prefer the original sender if they're
+    # a captain, else the first captain on the branch.
+    captains = _get_captain_users_on_branch(doc.branch)
+    captain_users = {c["user"] for c in captains}
+    if doc.from_user in captain_users:
+        queue_user = doc.from_user
+    elif captains:
+        queue_user = captains[0]["user"]
+    else:
+        frappe.throw(
+            _(
+                "No captain is configured on branch {0} to hold rejected "
+                "orders. Add a URY Captain to the branch first."
+            ).format(doc.branch),
+            title=_("No Captain Available"),
+        )
+
+    queue_full_name = (
+        frappe.db.get_value("User", queue_user, "full_name") or queue_user
+    )
+    now_dt = frappe.utils.now_datetime()
+    note = f"Transfer rejected by {me}"
+    if reason:
+        note = f"{note}: {reason}"
+    frappe.db.set_value(
+        "POS Invoice",
+        doc.invoice,
+        {
+            "owner": queue_user,
+            "cashier": queue_full_name,
+            "custom_terminal": None,
+            "custom_transfer_status": "Rejected",
+            "remarks": note,
+        },
+        update_modified=True,
+    )
+    transfer_note = (doc.transfer_note or "")
+    transfer_note = f"{transfer_note}\n{note}".strip()
+    frappe.db.set_value(
+        "URY Invoice Transfer",
+        doc.name,
+        {
+            "status": "Rejected",
+            "resolved_by": me,
+            "resolved_at": now_dt,
+            "transfer_note": transfer_note,
+        },
+        update_modified=True,
+    )
+    frappe.db.commit()
+    return {
+        "transfer": doc.name,
+        "invoice": doc.invoice,
+        "status": "Rejected",
+        "queued_to": queue_user,
+    }
+
+
 @frappe.whitelist()
 def getPosInvoice(
     status,
@@ -873,6 +1198,16 @@ def getPosProfile(terminal=None):
         restrict_returns_to_captain = (
             1 if raw_restrict_returns is None else int(raw_restrict_returns or 0)
         )
+        # Returns master switch (2026-06-05). Default OFF (field default
+        # = 0) so a fresh / freshly-migrated profile keeps returns hidden
+        # everywhere until an admin turns the feature on.
+        enable_returns = int(pos_profiles.get("custom_enable_returns") or 0)
+        # Per-invoice transfer hop cap (2026-06-05). Default 2 when the
+        # field isn't set. 0 disables transfers entirely at shift close.
+        raw_max_transfers = pos_profiles.get("custom_max_invoice_transfers")
+        max_invoice_transfers = (
+            2 if raw_max_transfers is None else int(raw_max_transfers or 0)
+        )
         ihotel_enabled = int(pos_profiles.get("custom_ihotel_enabled") or 0)
         ihotel_charge_type = pos_profiles.get("custom_ihotel_charge_type") or None
         shift_system_mode = pos_profiles.get("custom_shift_system_mode") or "Disabled"
@@ -943,6 +1278,8 @@ def getPosProfile(terminal=None):
         "custom_block_orders_after_shift_end": block_orders_after_shift,
         "custom_restrict_merge_to_captain": restrict_merge_to_captain,
         "custom_restrict_returns_to_captain": restrict_returns_to_captain,
+        "custom_enable_returns": enable_returns,
+        "custom_max_invoice_transfers": max_invoice_transfers,
         "custom_ihotel_enabled": ihotel_enabled,
         "custom_ihotel_charge_type": ihotel_charge_type,
         "custom_shift_system_mode": shift_system_mode,
@@ -1317,7 +1654,17 @@ def preview_pos_closing_entry(opening_entry):
             }
         )
 
-    # Draft list for the transfer-before-close UI.
+    # Only drafts WITHOUT an active transfer actually block the close.
+    # A draft is "in the transfer pipeline" (and so not blocking) when it
+    # has a Pending transfer, or an Approved transfer to someone other
+    # than the current user. An Approved transfer whose to_user is the
+    # current user still blocks them — they accepted it, it's their draft
+    # now. See submit_pos_closing_entry for the same logic + the
+    # idempotency reasoning. CLAUDE.md "Fixes log" 2026-06-05.
+    me = frappe.session.user
+    excluded_drafts = _drafts_with_active_transfer([r["name"] for r in draft], me)
+    blocking_draft = [r for r in draft if r["name"] not in excluded_drafts]
+
     draft_list = [
         {
             "name": row["name"],
@@ -1327,19 +1674,30 @@ def preview_pos_closing_entry(opening_entry):
             "restaurant_table": row.get("restaurant_table"),
             "invoice_printed": int(row.get("invoice_printed") or 0),
         }
-        for row in draft
+        for row in blocking_draft
     ]
     draft_grand_total = sum(r["grand_total"] for r in draft_list)
 
     # Transfer-target candidates: other cashiers on the same branch who
     # have URY Cashier or URY Captain role. We exclude the current user
-    # (you can't transfer to yourself) and System Manager / Admin
-    # because those aren't regular cashiers in the URY sense.
+    # (you can't transfer to yourself).
     transfer_candidates = _get_cashier_users_on_branch(opening_doc.branch)
-    me = frappe.session.user
     transfer_candidates = [
         c for c in transfer_candidates if c["user"] != me
     ]
+
+    # Captain-only transfer gate (2026-06-05). The frontend uses these to
+    # decide whether to offer the transfer dropdown (captain) or a
+    # "pay or cancel" block (non-captain).
+    roles = set(frappe.get_roles(me))
+    captain_roles = {"Administrator", "System Manager", "URY Manager", "URY Captain"}
+    is_captain = me == "Administrator" or bool(roles & captain_roles)
+    max_transfers = int(
+        frappe.db.get_value(
+            "POS Profile", opening_doc.pos_profile, "custom_max_invoice_transfers"
+        )
+        or 0
+    )
 
     return {
         "opening_entry": opening_doc.name,
@@ -1360,6 +1718,10 @@ def preview_pos_closing_entry(opening_entry):
         "draft_grand_total": draft_grand_total,
         "draft_invoices": draft_list,
         "transfer_candidates": transfer_candidates,
+        # Captain-only transfer flags.
+        "is_captain": int(is_captain),
+        "can_transfer": int(is_captain and max_transfers > 0),
+        "max_invoice_transfers": max_transfers,
     }
 
 
@@ -1413,32 +1775,60 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
 
     paid, draft = _get_shift_invoice_breakdown(opening_doc)
 
-    # --- Transfer-before-close guard ----------------------------------
-    if draft:
-        if not transfer_to:
-            draft_names = ", ".join(row["name"] for row in draft[:5])
-            more = (
-                f" (+{len(draft) - 5} more)" if len(draft) > 5 else ""
+    # --- Transfer-before-close guard (reworked 2026-06-05) ------------
+    # Captain-only transfers + receiver approval. A regular cashier
+    # closing with unpaid drafts must pay or cancel them — they can't
+    # transfer. A captain instead creates a Pending URY Invoice Transfer
+    # per draft that the receiving cashier approves from the Orders page
+    # "Incoming Transfers" filter. The invoice owner does NOT change
+    # here — it changes on approval (see approve_transfer).
+    #
+    # A draft only BLOCKS the close when it has no active transfer:
+    #   - a Pending transfer (already offered, awaiting the receiver), or
+    #   - an Approved transfer to someone ELSE (already handed off).
+    # An Approved transfer to the current user still blocks them — they
+    # accepted it, it's their draft now. This is also the IDEMPOTENCY
+    # guard: ending the shift twice never re-transfers, because the
+    # second pass sees the existing Pending transfer and skips it.
+    me = frappe.session.user
+    roles = set(frappe.get_roles(me))
+    captain_roles = {"Administrator", "System Manager", "URY Manager", "URY Captain"}
+    is_captain = me == "Administrator" or bool(roles & captain_roles)
+
+    excluded_drafts = _drafts_with_active_transfer([r["name"] for r in draft], me)
+    blocking = [r for r in draft if r["name"] not in excluded_drafts]
+    transfers_created = 0
+
+    if blocking:
+        if not is_captain:
+            names_str = ", ".join(r["name"] for r in blocking[:5])
+            more = f" (+{len(blocking) - 5} more)" if len(blocking) > 5 else ""
+            frappe.throw(
+                _(
+                    "You have {0} unpaid order(s) on this shift: {1}{2}. "
+                    "Pay or cancel them before closing — only a captain can "
+                    "transfer orders to another cashier."
+                ).format(len(blocking), names_str, more),
+                title=_("Pay or Cancel Required"),
             )
+
+        if not transfer_to:
+            names_str = ", ".join(r["name"] for r in blocking[:5])
+            more = f" (+{len(blocking) - 5} more)" if len(blocking) > 5 else ""
             frappe.throw(
                 _(
                     "You have {0} unpaid order(s) on this shift: {1}{2}. "
                     "Select a cashier to transfer them to before closing."
-                ).format(len(draft), draft_names, more),
+                ).format(len(blocking), names_str, more),
                 title=_("Transfer Required"),
             )
-
-        # Validate the target user: must be a URY Cashier / URY Captain
-        # on the same branch, and not the current user themselves.
-        me = frappe.session.user
         if transfer_to == me:
             frappe.throw(
                 _("You can't transfer orders to yourself."),
                 title=_("Invalid Transfer Target"),
             )
         candidates = {
-            c["user"]
-            for c in _get_cashier_users_on_branch(opening_doc.branch)
+            c["user"] for c in _get_cashier_users_on_branch(opening_doc.branch)
         }
         if transfer_to not in candidates:
             frappe.throw(
@@ -1449,50 +1839,68 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
                 title=_("Invalid Transfer Target"),
             )
 
-        # Re-home the drafts. Changing `owner` reassigns ERPNext's
-        # creator back-ref, which is what our `_resolve_orders_scope`
-        # filter in the Orders page reads for the "mine" / "all" /
-        # specific-user filter. We also stamp the `cashier` custom
-        # field (used in some URY print paths) and set a transfer
-        # audit note via the `remarks` field.
-        #
-        # Discoverability fix (2026-04-16): clear `custom_terminal`
-        # AND reset `posting_date`/`posting_time` to now. Without
-        # this the receiving cashier's default Orders page filter
-        # (their current terminal + today's date) hides the
-        # transfers silently — we've seen it in the wild. Clearing
-        # the terminal lets the defensive null fallback in
-        # `getPosInvoice` ("terminal IS NULL OR terminal = '' OR
-        # terminal = ?") surface them on whichever terminal the
-        # receiver is on within the branch. Updating posting_date
-        # is a semantic call: the draft now belongs to today's
-        # business flow under the new cashier, not yesterday's
-        # under the original; the `remarks` field preserves the
-        # audit trail. If the receiver wants to dig, the original
-        # opening entry is in the remarks line.
-        target_full_name = (
-            frappe.db.get_value("User", transfer_to, "full_name") or transfer_to
+        # Per-invoice hop cap. 0 disables transfers entirely.
+        cap = int(
+            frappe.db.get_value(
+                "POS Profile",
+                opening_doc.pos_profile,
+                "custom_max_invoice_transfers",
+            )
+            or 0
         )
-        transfer_note = (
-            f"Transferred from {me} on shift close ({opening_doc.name})"
-        )
-        now_datetime = frappe.utils.now_datetime()
-        now_date = now_datetime.date()
-        now_time = now_datetime.time()
-        for row in draft:
+        if cap <= 0:
+            frappe.throw(
+                _(
+                    "Invoice transfers are disabled for this POS Profile "
+                    "(Max Invoice Transfers is 0). Pay or cancel the unpaid "
+                    "orders before closing."
+                ),
+                title=_("Transfers Disabled"),
+            )
+
+        transfer_note = f"Offered by {me} on shift close ({opening_doc.name})"
+        for row in blocking:
+            inv = row["name"]
+            # Idempotency: never create a second Pending transfer.
+            if frappe.db.exists(
+                "URY Invoice Transfer", {"invoice": inv, "status": "Pending"}
+            ):
+                continue
+            hops = _transfer_hop_count(inv)
+            if hops >= cap:
+                frappe.throw(
+                    _(
+                        "Order {0} has already been transferred {1} time(s), "
+                        "the maximum allowed for this profile. Pay or cancel "
+                        "it instead."
+                    ).format(inv, hops),
+                    title=_("Transfer Limit Reached"),
+                )
+            transfer_doc = frappe.get_doc(
+                {
+                    "doctype": "URY Invoice Transfer",
+                    "invoice": inv,
+                    "status": "Pending",
+                    "from_user": frappe.db.get_value("POS Invoice", inv, "owner"),
+                    "to_user": transfer_to,
+                    "branch": opening_doc.branch,
+                    "opening_entry": opening_doc.name,
+                    "requested_by": me,
+                    "requested_at": frappe.utils.now_datetime(),
+                    "hop_number": hops + 1,
+                    "transfer_note": transfer_note,
+                }
+            )
+            transfer_doc.insert(ignore_permissions=True)
+            # Denormalized flag for the Orders page (audit + badge). The
+            # invoice owner is NOT changed until the receiver approves.
             frappe.db.set_value(
                 "POS Invoice",
-                row["name"],
-                {
-                    "owner": transfer_to,
-                    "cashier": target_full_name,
-                    "remarks": transfer_note,
-                    "custom_terminal": None,
-                    "posting_date": now_date,
-                    "posting_time": now_time,
-                },
+                inv,
+                {"custom_transfer_status": "Pending Incoming"},
                 update_modified=True,
             )
+            transfers_created += 1
         frappe.db.commit()
 
     # --- Normalize paid invoice ownership -----------------------------
@@ -1549,6 +1957,15 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
     # that's misconfigured. See CLAUDE.md "Fixes log" 2026-04-11.
     _validate_close_preflight(paid, opening_doc.company)
 
+    # Data repair: a corrupt `order_type` on a paid invoice (e.g. a phone
+    # number that leaked into the field) makes ERPNext's consolidation
+    # reject the merged Sales Invoice (order_type is a Select) and roll
+    # the WHOLE close back — with a masked "Could not find Reference Name"
+    # error on top. Normalize any out-of-range value to blank before the
+    # consolidation reads it so the close goes through. See CLAUDE.md
+    # "Fixes log" 2026-06-05.
+    _repair_invalid_order_types(paid)
+
     closing_doc = frappe.new_doc("POS Closing Entry")
     closing_doc.pos_opening_entry = opening_doc.name
     closing_doc.period_start_date = opening_doc.period_start_date
@@ -1604,6 +2021,21 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
     # trust the internal bookkeeping downstream". The caller of this
     # method already passed the whitelist check and the upstream
     # draft-transfer guard, so this is safe.
+    # Don't let a missing default outgoing Email Account block the close.
+    # ERPNext's consolidation / notification path tries to send email on
+    # submit; with no outgoing account configured Frappe raises
+    # OutgoingEmailError ("Please setup default outgoing Email Account…")
+    # mid-submit, which rolls the WHOLE close back. The cashier doesn't
+    # care about the email — they just need to close the shift. When the
+    # site has no usable outgoing account we mute emails for the duration
+    # of the submit so the close goes through. Sites that DO have an
+    # account keep emailing exactly as before (the mail just queues).
+    # Catching the error after submit() can't help — the transaction is
+    # already rolled back — so we have to PREVENT the send. See CLAUDE.md
+    # "Fixes log" 2026-06-05.
+    prev_mute_emails = frappe.flags.mute_emails
+    if not _has_outgoing_email_account():
+        frappe.flags.mute_emails = True
     try:
         closing_doc.insert(ignore_permissions=True)
         closing_doc.submit()
@@ -1615,12 +2047,112 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
         # prepends a hint so cashiers don't have to dig through the
         # traceback to know what to check.
         raise _wrap_close_error(err, opening_doc.company)
+    finally:
+        frappe.flags.mute_emails = prev_mute_emails
 
     return {
         "name": closing_doc.name,
-        "transferred": len(draft),
-        "transfer_to": transfer_to if draft else None,
+        "transfers_created": transfers_created,
+        "transfer_to": transfer_to if transfers_created else None,
     }
+
+
+def _has_outgoing_email_account():
+    """True when the site has a usable default outgoing Email Account (or
+    site-config SMTP). Used to decide whether to mute emails during the
+    shift close so a missing account doesn't roll the whole close back.
+
+    Defensive — any lookup failure is treated as "no account" so the
+    caller mutes and the close still goes through.
+    """
+    try:
+        if frappe.db.exists(
+            "Email Account",
+            {"default_outgoing": 1, "enable_outgoing": 1},
+        ):
+            return True
+        conf = frappe.conf or {}
+        return bool(conf.get("mail_server") or conf.get("smtp_server"))
+    except Exception:
+        return False
+
+
+# Valid POS Invoice / Sales Invoice order_type Select options (URY's set).
+# Blank is allowed. Anything else (a phone number that leaked into the
+# field, a stale value, etc.) makes ERPNext's consolidation reject the
+# merged Sales Invoice and roll the shift close back.
+_VALID_ORDER_TYPES = (
+    "",
+    "Dine In",
+    "Take Away",
+    "Delivery",
+    "Phone In",
+    "Aggregators",
+)
+
+
+def _repair_invalid_order_types(paid_invoices):
+    """Normalize any out-of-range `order_type` on the shift's paid
+    invoices to blank before consolidation runs. Returns the list of
+    ``(invoice, bad_value)`` tuples repaired (for audit).
+
+    The set_value happens in the SAME transaction as the close, so when
+    ``closing_doc.submit()`` later triggers consolidation it reads the
+    corrected value. Blank is a valid Select option, so it passes the
+    Sales Invoice validation that the corrupt value failed.
+    """
+    if not paid_invoices:
+        return []
+    names = [row["name"] for row in paid_invoices]
+    rows = frappe.db.sql(
+        """SELECT name, order_type FROM `tabPOS Invoice` WHERE name IN %(names)s""",
+        {"names": tuple(names)},
+        as_dict=True,
+    )
+    repaired = []
+    for r in rows:
+        if (r.order_type or "") not in _VALID_ORDER_TYPES:
+            frappe.db.set_value(
+                "POS Invoice", r.name, "order_type", "", update_modified=False
+            )
+            # CRITICAL: ERPNext's consolidation loads each POS Invoice via
+            # `frappe.get_cached_doc("POS Invoice", …)` (pos_invoice_merge_log
+            # on_submit) and copies its order_type onto the Sales Invoice via
+            # map_doc. A raw `db.set_value` updates the DB row but leaves any
+            # already-cached doc stale, so get_cached_doc would hand back the
+            # OLD (corrupt) order_type and the close still fails. Invalidate
+            # the cache so the consolidation re-reads the repaired value.
+            frappe.clear_document_cache("POS Invoice", r.name)
+            repaired.append((r.name, r.order_type))
+    if repaired:
+        # Audit trail — the original corrupt values, for later root-cause
+        # work. Best-effort: never let logging block the close.
+        try:
+            frappe.log_error(
+                message="Normalized invalid order_type to blank on shift "
+                "close:\n"
+                + "\n".join(f"{n}: {v!r}" for n, v in repaired),
+                title="URY: repaired invalid POS Invoice order_type",
+            )
+        except Exception:
+            pass
+    return repaired
+
+
+def _root_cause_message(err):
+    """Walk an exception's __cause__/__context__ chain to the deepest
+    cause and return its str(). ERPNext sometimes masks the genuine
+    consolidation error behind a secondary failure (e.g. a Failed-status
+    comment on a rolled-back closing entry raising LinkValidationError);
+    the real cause sits at the bottom of the chain."""
+    seen = set()
+    cur = err
+    root = err
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        root = cur
+        cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+    return str(root)
 
 
 def _validate_close_preflight(paid_invoices, company):
@@ -1703,9 +2235,23 @@ def _wrap_close_error(err, company):
     corruption, etc.) and the cashier still needs a breadcrumb.
     """
     msg = str(err)
+    # Unmask: when the top-level error is ERPNext's "Failed-status
+    # comment on a rolled-back closing entry" cascade, the genuine cause
+    # is deeper in the chain. Prefer it so the cashier sees the real
+    # problem instead of "Could not find Reference Name: POS-CLO-…".
+    root = _root_cause_message(err)
+    if root and root != msg and "could not find reference name" in msg.lower():
+        msg = root
     lower = msg.lower()
 
-    if "customer is required against receivable account" in lower:
+    if "order type cannot be" in lower or "should be one of" in lower:
+        hint = _(
+            "Hint: a paid invoice in this shift has an invalid Order Type "
+            "(a corrupt value got into the field). This is normally "
+            "auto-repaired on close — if you still see it, open the Error "
+            "Log in the desk to find the invoice and reset its Order Type."
+        )
+    elif "customer is required against receivable account" in lower:
         hint = _(
             "Hint: this usually means a Mode of Payment's Default Account "
             "is pointing at a Receivable account instead of a Bank / Cash "
@@ -4729,18 +5275,38 @@ def _get_returned_qty_per_row(source_invoice_name):
 def _user_can_return_orders(pos_profile_name):
     """Return (can_return, is_captain).
 
-    Captains/Managers/Admin can always return. Cashiers can return
-    only when the profile's `custom_restrict_returns_to_captain` is 0.
-    Default is 1 (captain-only) — returns are sensitive (refunds +
-    stock reversal), so the gate is conservative out of the box.
+    Two gates, evaluated in order:
+      1. Master switch `custom_enable_returns` on the POS Profile
+         (default 0 = OFF). When off, NOBODY can return — not even a
+         captain. The Return feature is hidden everywhere and the
+         backend rejects every return request until an admin turns it
+         on. See CLAUDE.md "Fixes log" 2026-06-05 (returns master
+         toggle).
+      2. When returns are enabled, `custom_restrict_returns_to_captain`
+         (default 1) decides whether cashiers can return their own
+         orders or only captains/managers/admins can. Returns are
+         sensitive (refunds + stock reversal), so this stays
+         conservative out of the box.
     """
     user = frappe.session.user
     roles = set(frappe.get_roles(user))
     captain_roles = {"Administrator", "System Manager", "URY Manager", "URY Captain"}
     is_captain = user == "Administrator" or bool(roles & captain_roles)
 
-    # Default ON when the field isn't set (fresh install hasn't migrated
-    # yet). The conservative default matches the field's default.
+    # Gate 1: master switch. Default OFF when the field isn't set yet
+    # (fresh install hasn't migrated). Returns stay hidden until enabled.
+    enabled = 0
+    if pos_profile_name:
+        enabled = int(
+            frappe.db.get_value(
+                "POS Profile", pos_profile_name, "custom_enable_returns"
+            )
+            or 0
+        )
+    if not enabled:
+        return False, is_captain
+
+    # Gate 2: captain restriction. Default ON when the field isn't set.
     restrict = 1
     if pos_profile_name:
         raw = frappe.db.get_value(

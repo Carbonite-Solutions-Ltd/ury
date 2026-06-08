@@ -7,6 +7,7 @@ import { usePOSStore } from '../store/pos-store';
 import { useRootStore } from '../store/root-store';
 import { canSeeAllTerminalOrders } from '../lib/role-utils';
 import { getPendingKotCount } from '../lib/invoice-api';
+import { getIncomingTransferCount } from '../lib/transfer-api';
 
 interface OrderStatusSidebarProps {
   disabled?: boolean;
@@ -50,7 +51,8 @@ const OrderStatusSidebar = ({
   const statusTypes = getOrderStatusTypes(
     posProfile?.view_all_status,
     posProfile?.paid_limit,
-    posProfile?.custom_ihotel_enabled
+    posProfile?.custom_ihotel_enabled,
+    posProfile?.custom_max_invoice_transfers
   );
 
   const showCashierFilter = useMemo(
@@ -59,21 +61,36 @@ const OrderStatusSidebar = ({
   );
 
   const [pendingKotCount, setPendingKotCount] = useState<number>(0);
+  const [incomingCount, setIncomingCount] = useState<number>(0);
 
   const refreshPendingCount = useCallback(async () => {
     const count = await getPendingKotCount(terminalName, selectedDate);
     setPendingKotCount(count);
   }, [terminalName, selectedDate]);
 
-  // Poll the pending-KOT count on mount, when the date or terminal
-  // changes, when the parent tells us to refresh, and on a 15s timer
-  // as a safety net. 15s is a reasonable tradeoff between "fresh
-  // enough for the cashier to trust" and "not hammering the DB".
+  const transfersEnabled = (posProfile?.custom_max_invoice_transfers ?? 0) > 0;
+  const refreshIncomingCount = useCallback(async () => {
+    if (!transfersEnabled) {
+      setIncomingCount(0);
+      return;
+    }
+    const count = await getIncomingTransferCount();
+    setIncomingCount(count);
+  }, [transfersEnabled]);
+
+  // Poll the pending-KOT + incoming-transfer counts on mount, when the
+  // date/terminal changes, when the parent tells us to refresh, and on a
+  // 15s timer as a safety net. 15s balances "fresh enough to trust"
+  // against "not hammering the DB".
   useEffect(() => {
     refreshPendingCount();
-    const interval = setInterval(refreshPendingCount, 15000);
+    refreshIncomingCount();
+    const interval = setInterval(() => {
+      refreshPendingCount();
+      refreshIncomingCount();
+    }, 15000);
     return () => clearInterval(interval);
-  }, [refreshPendingCount, refreshVersion]);
+  }, [refreshPendingCount, refreshIncomingCount, refreshVersion]);
 
   // Lazy-load the cashier list once when the captain mounts the page.
   useEffect(() => {
@@ -102,7 +119,13 @@ const OrderStatusSidebar = ({
           <div className="space-y-1">
             {statusTypes.map((status) => {
               const isPendingKots = status.value === 'Pending KOTs';
-              const badgeCount = isPendingKots ? pendingKotCount : 0;
+              const isIncoming = status.value === 'Incoming Transfers';
+              const badgeCount = isPendingKots
+                ? pendingKotCount
+                : isIncoming
+                ? incomingCount
+                : 0;
+              const hasBadge = (isPendingKots || isIncoming) && badgeCount > 0;
               return (
                 <Button
                   key={status.value}
@@ -123,19 +146,30 @@ const OrderStatusSidebar = ({
                     <FileText
                       className={cn(
                         'w-4 h-4',
-                        isPendingKots && badgeCount > 0
-                          ? 'text-orange-500'
+                        hasBadge
+                          ? isIncoming
+                            ? 'text-indigo-500'
+                            : 'text-orange-500'
                           : 'text-gray-500'
                       )}
                     />
                     <span>{status.label}</span>
                   </div>
-                  {isPendingKots && badgeCount > 0 && (
+                  {hasBadge && (
                     <span
-                      className="min-w-[1.5rem] px-1.5 py-0.5 text-xs font-bold rounded-full bg-orange-500 text-white"
-                      title={`${badgeCount} order${
-                        badgeCount === 1 ? '' : 's'
-                      } with un-printed KOT`}
+                      className={cn(
+                        'min-w-[1.5rem] px-1.5 py-0.5 text-xs font-bold rounded-full text-white',
+                        isIncoming ? 'bg-indigo-500' : 'bg-orange-500'
+                      )}
+                      title={
+                        isIncoming
+                          ? `${badgeCount} order${
+                              badgeCount === 1 ? '' : 's'
+                            } offered to you`
+                          : `${badgeCount} order${
+                              badgeCount === 1 ? '' : 's'
+                            } with un-printed KOT`
+                      }
                     >
                       {badgeCount}
                     </span>

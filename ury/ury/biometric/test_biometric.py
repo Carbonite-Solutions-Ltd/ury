@@ -357,6 +357,57 @@ class PinLoginFailurePathTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# PIN expiry (2026-06-05) — pure date math, no DB needed
+# ---------------------------------------------------------------------------
+
+class PinExpiryTests(unittest.TestCase):
+	def _enrollment(self, **kw):
+		return frappe._dict(kw)
+
+	def _ago(self, **kw):
+		from frappe.utils import add_to_date, now_datetime
+		return add_to_date(now_datetime(), **kw)
+
+	def test_zero_days_never_expires(self):
+		enr = self._enrollment(pin_changed_at=self._ago(days=-365))
+		self.assertFalse(biometric_api._pin_is_expired(enr, {"pin_expiry_days": 0}))
+
+	def test_expired_pin(self):
+		enr = self._enrollment(pin_changed_at=self._ago(days=-60))
+		self.assertTrue(biometric_api._pin_is_expired(enr, {"pin_expiry_days": 30}))
+
+	def test_not_expired_pin(self):
+		enr = self._enrollment(pin_changed_at=self._ago(days=-10))
+		self.assertFalse(biometric_api._pin_is_expired(enr, {"pin_expiry_days": 30}))
+
+	def test_boundary_at_expiry_is_expired(self):
+		# Exactly 30 days + a few seconds ago → age_days == 30 >= 30.
+		enr = self._enrollment(pin_changed_at=self._ago(days=-30, seconds=-5))
+		self.assertTrue(biometric_api._pin_is_expired(enr, {"pin_expiry_days": 30}))
+
+	def test_fallback_to_pin_set_at(self):
+		enr = self._enrollment(pin_changed_at=None, pin_set_at=self._ago(days=-45))
+		self.assertTrue(biometric_api._pin_is_expired(enr, {"pin_expiry_days": 30}))
+
+	def test_fallback_to_creation(self):
+		enr = self._enrollment(
+			pin_changed_at=None, pin_set_at=None, creation=self._ago(days=-45)
+		)
+		self.assertTrue(biometric_api._pin_is_expired(enr, {"pin_expiry_days": 30}))
+
+	def test_all_null_timestamps_not_expired(self):
+		enr = self._enrollment(pin_changed_at=None, pin_set_at=None, creation=None)
+		self.assertFalse(biometric_api._pin_is_expired(enr, {"pin_expiry_days": 30}))
+
+	def test_recent_change_overrides_old_set(self):
+		# pin_changed_at wins over pin_set_at when both present.
+		enr = self._enrollment(
+			pin_changed_at=self._ago(days=-5), pin_set_at=self._ago(days=-365)
+		)
+		self.assertFalse(biometric_api._pin_is_expired(enr, {"pin_expiry_days": 30}))
+
+
+# ---------------------------------------------------------------------------
 # Direct-runner entry point (bypasses bench run-tests)
 # ---------------------------------------------------------------------------
 
@@ -377,6 +428,7 @@ def run_biometric_tests(*, verbosity: int = 2) -> str:
 		SettingsDefaultsTests,
 		EnrollmentRoundTripTests,
 		PinLoginFailurePathTests,
+		PinExpiryTests,
 	):
 		suite.addTests(loader.loadTestsFromTestCase(cls))
 	runner = unittest.TextTestRunner(verbosity=verbosity, stream=None)

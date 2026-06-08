@@ -17,6 +17,7 @@ def after_install():
 
     # Run these OUTSIDE the blanket try/except above — if any of these
     # fail we want it loud, not silent. Each function is idempotent.
+    _fix_sales_invoice_order_type_fetch()
     ensure_pos_settings_configured()
     _safe_ensure_role_permissions()
     _check_cups_dependency()
@@ -35,9 +36,56 @@ def after_migrate():
     `custom_terminal` silently missing after a feature upgrade.
     """
     _safe_refresh_custom_fields()
+    _fix_sales_invoice_order_type_fetch()
     ensure_pos_settings_configured()
     _safe_ensure_role_permissions()
     _check_cups_dependency()
+
+
+def _fix_sales_invoice_order_type_fetch():
+    """Clear a misconfigured `fetch_from` on the Sales Invoice order_type
+    Custom Field.
+
+    An old URY release shipped `Sales Invoice-order_type` with
+    `fetch_from = "customer.mobile_number"` (copy-pasted from the
+    mobile_number field). With that fetch_from, every Sales Invoice save
+    pulls the customer's PHONE NUMBER into order_type — a Select field —
+    failing validation. The blast radius is brutal: ERPNext's POS Closing
+    Entry consolidation creates a Sales Invoice per customer, so a single
+    customer with a phone number rolls the WHOLE shift close back with a
+    masked "Could not find Reference Name: POS-CLO-…" error.
+
+    setup.py now ships `fetch_from=""`, but `create_custom_fields` doesn't
+    reliably CLEAR an existing value (it only sets keys present in the
+    spec, and an existing site already has the bad value), so we correct
+    it explicitly here. Runs on after_install + after_migrate. Idempotent
+    — a no-op once the field is clean. See CLAUDE.md "Fixes log"
+    2026-06-05.
+    """
+    try:
+        name = "Sales Invoice-order_type"
+        if not frappe.db.exists("Custom Field", name):
+            return
+        current = frappe.db.get_value("Custom Field", name, "fetch_from")
+        if current:
+            frappe.db.set_value("Custom Field", name, "fetch_from", "")
+            # Invalidate the Sales Invoice meta cache so subsequent saves
+            # stop applying the (now-removed) fetch_from.
+            frappe.clear_cache(doctype="Sales Invoice")
+            frappe.db.commit()
+            click.secho(
+                f"[URY] Cleared bad fetch_from ('{current}') on "
+                f"Sales Invoice.order_type. Phone numbers will no longer "
+                f"leak into order_type and block shift close.",
+                fg="yellow",
+            )
+    except Exception as e:
+        click.secho(
+            f"[URY] Failed to fix Sales Invoice.order_type fetch_from: {e}. "
+            f"Open the Custom Field 'Sales Invoice-order_type' in the desk "
+            f"and clear its 'Fetch From' value manually.",
+            fg="red",
+        )
 
 
 def _safe_refresh_custom_fields():

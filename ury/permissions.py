@@ -148,6 +148,14 @@ WRITE_DOCTYPES = [
         "URY Table Merge Log",
         {"read": 1, "write": 1, "create": 1, "select": 1, "report": 1},
     ),
+    # Invoice-transfer workflow (2026-06-05). Captains create Pending
+    # transfers at shift close; the receiving cashier approves/rejects
+    # from the Orders page. All three roles need read + write + create
+    # so the React POS can run those transitions under the session user.
+    (
+        "URY Invoice Transfer",
+        {"read": 1, "write": 1, "create": 1, "select": 1, "report": 1},
+    ),
 ]
 
 # Captain-extras: things a captain may legitimately need to do that a

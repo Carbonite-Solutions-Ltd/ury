@@ -126,7 +126,7 @@ const POSOpeningProvider = ({ children }: POSOpeningProviderProps) => {
         }
       }
 
-      // Universal stale-date check. ERPNext's validate_pos_opening_entry
+      // Universal stale-date check. ERPXpand's validate_pos_opening_entry
       // (sales_invoice.py) rejects any invoice whose POS Opening Entry's
       // period_start_date isn't today — regardless of profile settings
       // or shift_hours. If the cashier opens the POS on 2026-04-10 with
@@ -263,7 +263,7 @@ const POSOpeningProvider = ({ children }: POSOpeningProviderProps) => {
   }
 
   // Outdated POS Opening Entry — the entry was opened on a previous
-  // day and ERPNext's sales_invoice validator will reject every Payment
+  // day and ERPXpand's sales_invoice validator will reject every Payment
   // until it's closed. Surface the closing dialog directly with a red
   // banner explaining why. Cancel reloads the page; since the entry is
   // still outdated, the check re-fires and the cashier sees this again —
@@ -283,7 +283,7 @@ const POSOpeningProvider = ({ children }: POSOpeningProviderProps) => {
             <div>
               The current shift was opened on{' '}
               <span className="font-mono">{outdatedEntry.startDate}</span>.
-              ERPNext blocks all new invoices until this entry is closed.
+              ERPXpand blocks all new invoices until this entry is closed.
               Please close the shift below to start a new one.
             </div>
           </div>

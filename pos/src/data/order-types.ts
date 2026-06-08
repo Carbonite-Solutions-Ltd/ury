@@ -40,7 +40,7 @@ export const DINE_IN="Dine In"
 export const DEFAULT_ORDER_TYPE="Take Away"
 export const DEFAULT_PAYMENT_MODE="Cash"
 
-export type OrderStatusType = "Draft" | "Unbilled" | "Recently Paid" | "Paid" | "Consolidated" | "Return" | "Room Charges" | "Pending KOTs";
+export type OrderStatusType = "Draft" | "Unbilled" | "Recently Paid" | "Paid" | "Consolidated" | "Return" | "Room Charges" | "Pending KOTs" | "Incoming Transfers";
 
 // Base status types that are always available.
 // "Paid" was moved out of EXTENDED_ORDER_STATUS_TYPES on 2026-04-09
@@ -90,6 +90,16 @@ export const ROOM_CHARGES_STATUS_TYPE = [
     }
 ];
 
+// Incoming Transfers: drafts a captain has offered to this user at shift
+// close, awaiting their approval. Shown when transfers are enabled on the
+// POS Profile (custom_max_invoice_transfers > 0). 2026-06-05.
+export const INCOMING_TRANSFERS_STATUS_TYPE = [
+    {
+        label: "Incoming Transfers",
+        value: "Incoming Transfers"
+    }
+];
+
 // Extended status types that are only available when view_all_status is enabled
 export const EXTENDED_ORDER_STATUS_TYPES = [
     {
@@ -106,7 +116,8 @@ export const EXTENDED_ORDER_STATUS_TYPES = [
 export const getOrderStatusTypes = (
     viewAllStatus?: number,
     paidLimit?: number,
-    ihotelEnabled?: number
+    ihotelEnabled?: number,
+    maxTransfers?: number
 ) => {
     let statusTypes = [...BASE_ORDER_STATUS_TYPES];
 
@@ -118,6 +129,11 @@ export const getOrderStatusTypes = (
     // Add Room Charges when iHotel is enabled on this POS Profile.
     if (ihotelEnabled === 1) {
         statusTypes.push(...ROOM_CHARGES_STATUS_TYPE);
+    }
+
+    // Add Incoming Transfers when transfers are enabled on this profile.
+    if (maxTransfers && maxTransfers > 0) {
+        statusTypes.push(...INCOMING_TRANSFERS_STATUS_TYPE);
     }
 
     // Add extended statuses if view_all_status is enabled

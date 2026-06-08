@@ -52,11 +52,18 @@ export interface POSClosingPreview {
   draft_invoices: POSClosingDraftInvoice[];
   /** Other cashiers on this branch who can inherit the unpaid drafts. */
   transfer_candidates: POSClosingTransferCandidate[];
+  /** 1 when the current user is a captain (can transfer drafts). */
+  is_captain?: number;
+  /** 1 when transfers are possible (captain AND max_invoice_transfers > 0). */
+  can_transfer?: number;
+  /** Per-invoice transfer hop cap from the POS Profile. */
+  max_invoice_transfers?: number;
 }
 
 export interface POSClosingSubmitResult {
   name: string;
-  transferred: number;
+  /** Number of Pending transfer requests created at close. */
+  transfers_created: number;
   transfer_to: string | null;
 }
 

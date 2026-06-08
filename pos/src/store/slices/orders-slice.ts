@@ -1,6 +1,7 @@
 import { StateCreator } from 'zustand';
-import { OrderType } from '../../data/order-types';
+import { OrderType, OrderStatusType } from '../../data/order-types';
 import { call } from '../../lib/frappe-sdk';
+import { getIncomingTransfers } from '../../lib/transfer-api';
 import {
   getPOSInvoices,
   getPOSInvoiceItems,
@@ -56,6 +57,16 @@ export interface POSInvoice {
   custom_charge_to_room?: number;
   custom_hotel_room?: string | null;
   custom_ihotel_profile?: string | null;
+  /** Transfer workflow: denormalized state ('Pending Incoming' etc). */
+  custom_transfer_status?: string | null;
+  /** Present on rows from the Incoming Transfers filter. */
+  transfer_meta?: {
+    transfer: string;
+    from_user: string;
+    from_full_name: string;
+    requested_at: string;
+    hop_number: number;
+  };
 }
 
 export type OrdersViewMode = 'card' | 'list';
@@ -95,7 +106,7 @@ export interface OrdersState {
     hasNextPage: boolean;
     itemsPerPage: number;
   };
-  selectedStatus: 'Draft' | 'Unbilled' | 'Recently Paid' | 'Paid' | 'Consolidated' | 'Return';
+  selectedStatus: OrderStatusType;
   selectedOrder: POSInvoice | null;
   selectedOrderItems: POSInvoiceItem[];
   selectedOrderTaxes: POSInvoiceTax[];
@@ -130,7 +141,7 @@ export interface OrdersActions {
   updateOrderStatus: (orderId: string, status: POSInvoice['status']) => Promise<void>;
   goToNextPage: () => Promise<void>;
   goToPreviousPage: () => Promise<void>;
-  setSelectedStatus: (status: POSInvoice['status']) => Promise<void>;
+  setSelectedStatus: (status: OrderStatusType) => Promise<void>;
   selectOrder: (order: POSInvoice) => Promise<void>;
   clearSelectedOrder: () => void;
   setOrderSearchQuery: (query: string) => void;
@@ -202,6 +213,23 @@ export const createOrdersSlice: StateCreator<
       // Always scope to the device's registered terminal — same source
       // of truth as App.tsx and config-slice.
       const terminal = getSavedTerminal();
+
+      // Incoming Transfers is a dedicated view that joins the URY Invoice
+      // Transfer doctype (Pending transfers addressed to me). It ignores
+      // search/pagination and isn't terminal/date scoped on the backend.
+      if (selectedStatus === 'Incoming Transfers') {
+        const res = await getIncomingTransfers(terminal, selectedDate);
+        set({
+          orders: (res.data || []) as POSInvoice[],
+          pagination: {
+            currentPage: 1,
+            hasNextPage: false,
+            itemsPerPage: ITEMS_PER_PAGE,
+          },
+          orderLoading: false,
+        });
+        return;
+      }
 
       if (orderSearchQuery && orderSearchQuery.trim()) {
         // Use search API
