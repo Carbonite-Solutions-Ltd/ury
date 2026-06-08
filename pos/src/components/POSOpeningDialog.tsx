@@ -51,47 +51,64 @@ const formatLocalDate = (d: Date): string => {
  * "Join Session" button once the captain has opened, or a "waiting for main
  * cashier" screen otherwise.
  *
- * For (b) it shows a focused message + a "Close Previous Session" deep-link
- * to the specific unclosed entry. A full in-POS closing dialog is phase-2
- * backlog.
+ * For (b) it shows a focused message + a "Close Previous Session" button
+ * that opens the in-POS POSClosingDialog for the specific unclosed entry
+ * (same flow as the existing-entry branch) — never the Frappe desk.
  */
 const POSOpeningDialog = ({ type, onOpened, unclosedEntry }: POSOpeningDialogProps) => {
   const { posProfile, terminalName } = usePOSStore();
   const { user } = useRootStore();
+  const [showClosingDialog, setShowClosingDialog] = useState(false);
 
   // ───── closing-issue branch ─────
+  // A previous-day entry is still open and the daily-close rule is on.
+  // Let the cashier close it IN-POS via POSClosingDialog (same flow as
+  // the existing-entry branch) instead of dropping them on the Frappe
+  // desk. See CLAUDE.md "Fixes log" 2026-06-05.
   if (type === 'closing') {
-    const closingHref = unclosedEntry
-      ? `${window.location.origin}/app/pos-opening-entry/${encodeURIComponent(unclosedEntry)}`
-      : `${window.location.origin}/app/pos-opening-entry`;
-
     return (
-      <DialogShell
-        icon={<AlertTriangle className="h-8 w-8 text-orange-600" />}
-        iconBg="bg-orange-100"
-        title="Previous POS Not Closed"
-        subtitle={
-          unclosedEntry
-            ? `Entry ${unclosedEntry} is still open. Close it before starting today's session.`
-            : 'A previous POS Opening Entry is still open. Close it before starting today.'
-        }
-      >
-        <Button
-          onClick={() => window.open(closingHref, '_blank')}
-          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-lg"
+      <>
+        <DialogShell
+          icon={<AlertTriangle className="h-8 w-8 text-orange-600" />}
+          iconBg="bg-orange-100"
+          title="Previous POS Not Closed"
+          subtitle={
+            unclosedEntry
+              ? `Entry ${unclosedEntry} is still open. Close it before starting today's session.`
+              : 'A previous POS Opening Entry is still open. Close it before starting today.'
+          }
         >
-          <DoorOpen className="w-5 h-5 mr-2" />
-          Close Previous Session
-        </Button>
-        <Button
-          onClick={() => window.location.reload()}
-          variant="outline"
-          className="w-full mt-3 border-gray-300 text-gray-700 hover:bg-gray-50 font-medium py-3 px-6 rounded-lg"
-        >
-          <RefreshCw className="w-5 h-5 mr-2" />
-          I've Closed It — Reload
-        </Button>
-      </DialogShell>
+          <Button
+            onClick={() => unclosedEntry && setShowClosingDialog(true)}
+            disabled={!unclosedEntry}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-lg disabled:opacity-50"
+          >
+            <DoorOpen className="w-5 h-5 mr-2" />
+            Close Previous Session
+          </Button>
+          <Button
+            onClick={() => window.location.reload()}
+            variant="outline"
+            className="w-full mt-3 border-gray-300 text-gray-700 hover:bg-gray-50 font-medium py-3 px-6 rounded-lg"
+          >
+            <RefreshCw className="w-5 h-5 mr-2" />
+            I've Closed It — Reload
+          </Button>
+        </DialogShell>
+
+        {showClosingDialog && unclosedEntry && (
+          <POSClosingDialog
+            openingEntry={unclosedEntry}
+            onCancel={() => setShowClosingDialog(false)}
+            onClosed={() => {
+              // Closing succeeded — reload so the opening flow re-runs
+              // against a now-clean profile.
+              setShowClosingDialog(false);
+              window.location.reload();
+            }}
+          />
+        )}
+      </>
     );
   }
 

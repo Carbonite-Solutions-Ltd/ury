@@ -95,6 +95,18 @@ const POSOpeningProvider = ({ children }: POSOpeningProviderProps) => {
       // also verify there's no unclosed previous-day entry — also
       // scoped per-terminal.
       if (posProfile?.custom_daily_pos_close === 1) {
+        // Resolve the specific open entry so the "Close Previous Session"
+        // button can open the in-POS closing dialog against it. Older
+        // servers return a bare "Failed" string without the entry name,
+        // so we fall back to looking the entry up directly.
+        const resolveOpenEntryName = async (): Promise<string | null> => {
+          try {
+            const open = await getCurrentPosOpenEntry(terminalName);
+            return open?.name || null;
+          } catch {
+            return null;
+          }
+        };
         try {
           const closeResponse = await validatePOSClose(
             posProfile.name,
@@ -104,23 +116,24 @@ const POSOpeningProvider = ({ children }: POSOpeningProviderProps) => {
 
           // Backend returns {status, unclosed_entry?} (new) but older
           // servers may still return the string "Failed"/"Success".
-          if (typeof msg === 'string') {
-            if (msg === 'Failed') {
-              setValidation({ type: 'closing', unclosedEntry: null });
-              setOutdatedEntry(null);
-              return;
-            }
-          } else if (msg && msg.status === 'Failed') {
-            setValidation({
-              type: 'closing',
-              unclosedEntry: msg.unclosed_entry || null,
-            });
+          const failed =
+            typeof msg === 'string'
+              ? msg === 'Failed'
+              : !!(msg && msg.status === 'Failed');
+          if (failed) {
+            let entryName =
+              typeof msg === 'object' && msg ? msg.unclosed_entry || null : null;
+            if (!entryName) entryName = await resolveOpenEntryName();
+            setValidation({ type: 'closing', unclosedEntry: entryName });
             setOutdatedEntry(null);
             return;
           }
         } catch (error) {
           console.error('Failed to validate POS close status:', error);
-          setValidation({ type: 'closing', unclosedEntry: null });
+          setValidation({
+            type: 'closing',
+            unclosedEntry: await resolveOpenEntryName(),
+          });
           setOutdatedEntry(null);
           return;
         }
