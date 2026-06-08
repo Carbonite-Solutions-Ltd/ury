@@ -6,7 +6,7 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 from erpnext.controllers.queries import item_query
-from ury.ury_pos.api import getBranch
+from ury.ury_pos.api import getBranch, _VALID_ORDER_TYPES
 from ury.ury.api.ury_kot_generate import kot_execute
 from ury.ury.api.ury_kot_generate import process_items_for_cancel_kot
 
@@ -228,7 +228,24 @@ def sync_order(
         invoice.customer = customer
 
     if order_type:
-        invoice.order_type = order_type
+        # Guard against a corrupt order_type (e.g. a phone number leaking
+        # into the field) reaching the DB. An out-of-range value silently
+        # breaks the shift close later — ERPNext's consolidation rejects
+        # the merged Sales Invoice (order_type is a Select). Only write a
+        # recognised option; log + skip anything else so the order still
+        # goes through with its computed default. See CLAUDE.md "Fixes
+        # log" 2026-06-05.
+        if order_type in _VALID_ORDER_TYPES:
+            invoice.order_type = order_type
+        else:
+            try:
+                frappe.log_error(
+                    message=f"Ignored invalid order_type {order_type!r} for "
+                    f"invoice {invoice.name or '(new)'} / customer {customer}",
+                    title="URY: invalid order_type rejected at sync_order",
+                )
+            except Exception:
+                pass
 
     customerdoc = frappe.get_doc("Customer", customer)
     invoice.mobile_number = customerdoc.mobile_number
@@ -522,6 +539,389 @@ def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDisc
     # render an actionable rich toast. Same surgery already done
     # on sync_order — see CLAUDE.md "Fixes log" 2026-04-08.
     invoice.submit()
+
+
+def _user_can_split_orders():
+    """Return (can_split, is_captain).
+
+    Any URY billing role can split an item bill. Captains / managers /
+    admins can split ANY cashier's order; a plain cashier can only split
+    their own (the caller enforces that against invoice.owner).
+    """
+    user = frappe.session.user
+    roles = set(frappe.get_roles(user))
+    captain_roles = {"Administrator", "System Manager", "URY Manager", "URY Captain"}
+    is_captain = user == "Administrator" or bool(roles & captain_roles)
+    if is_captain:
+        return True, True
+    if "URY Cashier" in roles:
+        return True, False
+    return False, False
+
+
+def _plan_item_split(item_qtys, bills):
+    """Pure allocation planner for an item split — no frappe calls, so
+    it's fully unit-testable.
+
+    ``item_qtys``: {row_name: total_qty}. ``bills``: list of dicts each
+    with an 'allocations' list of {source_row, qty}.
+
+    Returns ``(errors, remaining, leftover_rows)``:
+      - ``errors``: list of ``(bill_index, code, row_name)`` tuples, one
+        per bad allocation. ``code`` in {"empty", "unknown",
+        "nonpositive", "over"}.
+      - ``remaining``: {row_name: qty still unallocated after all bills}.
+      - ``leftover_rows``: row_names with remaining qty > 0 (i.e. not
+        fully allocated). 1e-6 tolerance for decimal-qty float noise.
+    """
+    remaining = {k: float(v or 0) for k, v in item_qtys.items()}
+    errors = []
+    for idx, bill in enumerate(bills):
+        allocations = bill.get("allocations") or []
+        if not allocations:
+            errors.append((idx, "empty", None))
+            continue
+        for alloc in allocations:
+            row_name = alloc.get("source_row")
+            qty = float(alloc.get("qty") or 0)
+            if row_name not in remaining:
+                errors.append((idx, "unknown", row_name))
+                continue
+            if qty <= 0:
+                errors.append((idx, "nonpositive", row_name))
+                continue
+            if qty > remaining[row_name] + 1e-6:
+                errors.append((idx, "over", row_name))
+                continue
+            remaining[row_name] -= qty
+    leftover_rows = [k for k, v in remaining.items() if abs(v) > 1e-6]
+    return errors, remaining, leftover_rows
+
+
+@frappe.whitelist()
+def split_invoice_by_item(source_invoice, bills, table=None):
+    """Split a draft POS Invoice's items into N separate submitted
+    invoices, settling each with its own customer + payments.
+
+    ``bills`` is a JSON list (or already-parsed list). Each entry:
+        {
+          "customer": <name>,
+          "allocations": [{"source_row": <POS Invoice Item.name>,
+                           "qty": <number>}, ...],
+          "payments": [{"mode_of_payment": <mode>, "amount": <number>}, ...],
+          "additional_discount_percentage": <number, optional>
+        }
+
+    Approach (see CLAUDE.md "Fixes log" 2026-06-05): cancel the source
+    draft and create N brand-new submitted POS Invoices. This is
+    symmetric (one loop builds every bill), naturally idempotent (the
+    cancelled source is the lock against a double-split — a second call
+    sees docstatus != 0 and throws), and gives KOT re-pointing one
+    deterministic target.
+
+    Everything runs in ONE request → a single implicit commit. Any
+    failure (stock, payment mismatch, validation) rolls the whole split
+    back and leaves the source draft intact. ERPNext ValidationErrors
+    propagate unwrapped so the React POS can render the real message.
+
+    Returns ``{source_invoice, bills: [<new names>], table_freed}``.
+    """
+    if isinstance(bills, str):
+        bills = json.loads(bills)
+    if not isinstance(bills, list) or len(bills) < 2:
+        frappe.throw(
+            _("An item split needs at least two bills."),
+            title=_("Invalid Split"),
+        )
+
+    if not frappe.db.exists("POS Invoice", source_invoice):
+        frappe.throw(
+            _("POS Invoice '{0}' not found.").format(source_invoice),
+            frappe.DoesNotExistError,
+        )
+
+    source = frappe.get_doc("POS Invoice", source_invoice)
+
+    # --- Guard rails -------------------------------------------------
+    if source.docstatus != 0:
+        frappe.throw(
+            _(
+                "Only a draft order can be split. '{0}' is already "
+                "submitted or cancelled."
+            ).format(source_invoice),
+            title=_("Cannot Split"),
+        )
+    if source.get("custom_merged_into"):
+        frappe.throw(
+            _(
+                "'{0}' has been merged into another order and can't be split."
+            ).format(source_invoice),
+            title=_("Cannot Split"),
+        )
+    if int(source.get("custom_charge_to_room") or 0):
+        frappe.throw(
+            _(
+                "'{0}' is charged to a hotel room and can't be split."
+            ).format(source_invoice),
+            title=_("Cannot Split"),
+        )
+
+    # Permission: cashier may split their own order; captain any order.
+    can_split, is_captain = _user_can_split_orders()
+    if not can_split:
+        frappe.throw(
+            _("You don't have permission to split orders."),
+            frappe.PermissionError,
+            title=_("Not Allowed"),
+        )
+    if not is_captain and source.owner != frappe.session.user:
+        frappe.throw(
+            _(
+                "You can only split your own orders. Ask a captain to split "
+                "this one."
+            ),
+            frappe.PermissionError,
+            title=_("Not Allowed"),
+        )
+
+    # --- Allocation validation (no writes yet) -----------------------
+    # The math lives in the pure `_plan_item_split` helper so it can be
+    # unit-tested without a real invoice. Here we just map its result to
+    # friendly, item-named error messages.
+    src_rows = {row.name: row for row in source.items}
+    item_qtys = {row.name: float(row.qty or 0) for row in source.items}
+    errors, _remaining, leftover_rows = _plan_item_split(item_qtys, bills)
+
+    if errors:
+        idx, code, row_name = errors[0]
+        label = (
+            src_rows[row_name].item_name
+            if row_name in src_rows
+            else (row_name or _("item"))
+        )
+        if code == "empty":
+            frappe.throw(
+                _("Bill {0} has no items.").format(idx + 1),
+                title=_("Invalid Split"),
+            )
+        if code == "unknown":
+            frappe.throw(
+                _(
+                    "Bill {0} references an item that isn't on this order."
+                ).format(idx + 1),
+                title=_("Invalid Split"),
+            )
+        if code == "nonpositive":
+            frappe.throw(
+                _(
+                    "Bill {0}: quantity for {1} must be greater than zero."
+                ).format(idx + 1, label),
+                title=_("Invalid Split"),
+            )
+        # code == "over"
+        frappe.throw(
+            _(
+                "Bill {0}: you allocated more {1} than the order has left "
+                "to split."
+            ).format(idx + 1, label),
+            title=_("Invalid Split"),
+        )
+
+    if leftover_rows:
+        leftovers = ", ".join(
+            src_rows[r].item_name for r in leftover_rows if r in src_rows
+        )
+        frappe.throw(
+            _(
+                "Every item must be fully allocated across the bills. "
+                "Unallocated: {0}."
+            ).format(leftovers),
+            title=_("Incomplete Split"),
+        )
+
+    # --- Build + submit each bill ------------------------------------
+    restaurant_table = source.get("restaurant_table")
+    new_names = []
+    for idx, bill in enumerate(bills):
+        new_inv = frappe.new_doc("POS Invoice")
+        new_inv.is_pos = 1
+        new_inv.update_stock = 1
+        new_inv.naming_series = source.naming_series
+        new_inv.company = source.company
+        new_inv.restaurant = source.get("restaurant")
+        new_inv.branch = source.branch
+        new_inv.restaurant_table = restaurant_table
+        new_inv.order_type = source.order_type
+        new_inv.pos_profile = source.pos_profile
+        new_inv.taxes_and_charges = source.taxes_and_charges
+        new_inv.selling_price_list = source.selling_price_list
+        new_inv.custom_terminal = source.get("custom_terminal")
+        new_inv.waiter = source.get("waiter")
+        new_inv.cashier = source.get("cashier")
+        new_inv.no_of_pax = source.get("no_of_pax")
+        new_inv.customer = bill.get("customer") or source.customer
+        cust_mobile = frappe.db.get_value(
+            "Customer", new_inv.customer, "mobile_number"
+        )
+        if cust_mobile:
+            new_inv.mobile_number = cust_mobile
+
+        for alloc in bill.get("allocations"):
+            src = src_rows[alloc["source_row"]]
+            new_inv.append(
+                "items",
+                dict(
+                    item_code=src.item_code,
+                    item_name=src.item_name,
+                    qty=float(alloc["qty"]),
+                    uom=src.get("uom"),
+                    conversion_factor=src.get("conversion_factor") or 1,
+                    rate=src.rate,
+                    price_list_rate=src.get("price_list_rate"),
+                    base_price_list_rate=src.get("base_price_list_rate"),
+                    cost_center=src.get("cost_center"),
+                    warehouse=src.get("warehouse"),
+                    **(
+                        {"custom_course": src.get("custom_course")}
+                        if src.get("custom_course")
+                        else {}
+                    ),
+                    **(
+                        {"comment": src.get("comment")}
+                        if src.get("comment")
+                        else {}
+                    ),
+                ),
+            )
+
+        disc = bill.get("additional_discount_percentage")
+        if disc:
+            new_inv.additional_discount_percentage = disc
+
+        new_inv.calculate_taxes_and_totals()
+
+        # Two ways to settle each bill:
+        #   (a) explicit `payments` [{mode_of_payment, amount}] — the sum
+        #       must match the backend grand total within 1c (the backend
+        #       total is authoritative); or
+        #   (b) a single `payment_mode` string — the backend auto-creates
+        #       one payment row for the full grand total. This is what the
+        #       item-split UI uses, since the frontend can't compute the
+        #       per-bill tax to fill an exact amount.
+        grand = float(new_inv.grand_total or 0)
+        new_inv.set("payments", [])
+        payments = bill.get("payments") or []
+        if payments:
+            pay_total = sum(float(p.get("amount") or 0) for p in payments)
+            if abs(pay_total - grand) > 0.01:
+                frappe.throw(
+                    _(
+                        "Bill {0}: payments ({1}) don't match the bill total "
+                        "({2})."
+                    ).format(idx + 1, pay_total, grand),
+                    title=_("Payment Mismatch"),
+                )
+            for p in payments:
+                new_inv.append(
+                    "payments",
+                    dict(
+                        mode_of_payment=p["mode_of_payment"],
+                        amount=float(p["amount"]),
+                    ),
+                )
+        else:
+            mode = bill.get("payment_mode")
+            if not mode:
+                frappe.throw(
+                    _("Bill {0}: pick a payment method.").format(idx + 1),
+                    title=_("Payment Required"),
+                )
+            new_inv.append(
+                "payments", dict(mode_of_payment=mode, amount=grand)
+            )
+
+        new_inv.insert()
+        new_inv.submit()
+        new_names.append(new_inv.name)
+
+    # --- Re-point KOTs to the last bill (no re-fire) -----------------
+    # The food already went to the kitchen at order time. Do NOT fire a
+    # CNCL KOT and do NOT re-fire — just re-home the existing KOT rows so
+    # they don't dangle on the about-to-be-cancelled source. The last
+    # bill is a deterministic single target (a physical KOT represents
+    # what the kitchen fired, not what each payer owes).
+    last_bill = new_names[-1]
+    frappe.db.sql(
+        """UPDATE `tabURY KOT` SET invoice=%s
+           WHERE invoice=%s AND docstatus != 2""",
+        (last_bill, source_invoice),
+    )
+
+    # --- Free the table once (after the last bill) -------------------
+    table_freed = False
+    if restaurant_table:
+        frappe.db.set_value(
+            "URY Table",
+            restaurant_table,
+            {"occupied": 0, "latest_invoice_time": None},
+        )
+        table_freed = True
+
+    # --- Cancel the source draft last --------------------------------
+    # Mirror cancel_order's direct-SQL cancel: the source never reached
+    # docstatus=1 so there's no GL/stock to reverse; flipping it to
+    # Cancelled removes it from the Orders page and locks against a
+    # double-split.
+    frappe.db.sql(
+        "UPDATE `tabPOS Invoice Item` SET docstatus = 2 WHERE parent = %s",
+        (source_invoice,),
+    )
+    frappe.db.set_value("POS Invoice", source_invoice, "docstatus", 2)
+    frappe.db.set_value("POS Invoice", source_invoice, "status", "Cancelled")
+
+    return {
+        "source_invoice": source_invoice,
+        "bills": new_names,
+        "table_freed": table_freed,
+    }
+
+
+@frappe.whitelist()
+def get_order_items_for_split(invoice):
+    """Return a draft POS Invoice's items (with row names) for the
+    item-split allocator. Row names are needed so the frontend can map
+    each allocation back to a specific POS Invoice Item row.
+    """
+    if not frappe.db.exists("POS Invoice", invoice):
+        frappe.throw(
+            _("POS Invoice '{0}' not found.").format(invoice),
+            frappe.DoesNotExistError,
+        )
+    doc = frappe.get_doc("POS Invoice", invoice)
+    if doc.docstatus != 0:
+        frappe.throw(
+            _("Only a draft order can be split."),
+            title=_("Cannot Split"),
+        )
+    items = [
+        {
+            "row_name": row.name,
+            "item_code": row.item_code,
+            "item_name": row.item_name,
+            "qty": float(row.qty or 0),
+            "rate": float(row.rate or 0),
+            "uom": row.get("uom"),
+        }
+        for row in doc.items
+    ]
+    return {
+        "invoice": doc.name,
+        "table": doc.get("restaurant_table"),
+        "customer": doc.customer,
+        "customer_name": doc.customer_name,
+        "grand_total": float(doc.grand_total or 0),
+        "items": items,
+    }
 
 
 # Cancel KOT Doc Creation

@@ -100,11 +100,20 @@ const POSClosingDialog = ({
     // target before we even hit the backend. The backend also
     // enforces this — but catching it here prevents a confusing
     // round-trip.
-    if (state.preview.draft_count > 0 && !transferTo) {
-      setSubmitError(
-        'You have unpaid orders on this shift. Select a cashier to transfer them to first.'
-      );
-      return;
+    if (state.preview.draft_count > 0) {
+      if (!state.preview.can_transfer) {
+        // Non-captain (or transfers disabled): can't hand drafts off.
+        setSubmitError(
+          'You have unpaid orders on this shift. Pay or cancel them before closing — only a captain can transfer orders to another cashier.'
+        );
+        return;
+      }
+      if (!transferTo) {
+        setSubmitError(
+          'You have unpaid orders on this shift. Select a cashier to transfer them to first.'
+        );
+        return;
+      }
     }
     setSubmitError(null);
     setState({ kind: 'submitting' });
@@ -219,8 +228,13 @@ const POSClosingDialog = ({
 
         {/* Footer */}
         {state.kind === 'form' && (() => {
-          const needsTransfer =
-            state.preview.draft_count > 0 && !transferTo;
+          const hasDrafts = state.preview.draft_count > 0;
+          const canTransfer = state.preview.can_transfer === 1;
+          // Non-captain (or transfers off) with drafts can't close at all.
+          const blockedNonCaptain = hasDrafts && !canTransfer;
+          // Captain with drafts must pick a transfer target.
+          const needsTransfer = hasDrafts && canTransfer && !transferTo;
+          const disableClose = blockedNonCaptain || needsTransfer;
           return (
             <div className="flex gap-3 mt-6 pt-4 border-t border-gray-100 shrink-0">
               <Button
@@ -232,15 +246,19 @@ const POSClosingDialog = ({
               </Button>
               <Button
                 onClick={handleSubmit}
-                disabled={needsTransfer}
+                disabled={disableClose}
                 className={`flex-1 font-medium py-3 text-base rounded-lg ${
-                  needsTransfer
+                  disableClose
                     ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
                     : 'bg-blue-600 hover:bg-blue-700 text-white'
                 }`}
               >
                 <DoorClosed className="w-5 h-5 mr-2" />
-                {needsTransfer ? 'Select a Cashier' : 'Close Shift'}
+                {blockedNonCaptain
+                  ? 'Pay or Cancel Drafts'
+                  : needsTransfer
+                  ? 'Select a Cashier'
+                  : 'Close Shift'}
               </Button>
             </div>
           );
@@ -375,9 +393,10 @@ const FormBody = ({
                 )}
               </div>
               <div className="text-xs text-amber-800 mt-0.5">
-                Total: {formatCurrency(preview.draft_grand_total)}. Pick a
-                cashier below — the orders will be reassigned to them and
-                appear in their Orders list on next reload.
+                Total: {formatCurrency(preview.draft_grand_total)}.{' '}
+                {preview.can_transfer === 1
+                  ? 'Pick a cashier below to offer these orders — they approve the transfer from their Orders page before it lands.'
+                  : 'Pay or cancel these orders before closing. Only a captain can transfer them to another cashier.'}
                 {!draftsExpanded && (
                   <span className="ml-1 text-amber-700 font-medium group-hover:underline">
                     Show details
@@ -423,33 +442,35 @@ const FormBody = ({
             </div>
           )}
 
-          <div className="flex items-center gap-3">
-            <UserPlus className="w-4 h-4 text-amber-700 shrink-0" />
-            <label className="text-xs font-semibold text-amber-900 shrink-0">
-              Transfer to:
-            </label>
-            <div className="flex-1">
-              {preview.transfer_candidates.length === 0 ? (
-                <div className="text-xs italic text-amber-800">
-                  No other cashiers are listed on this branch's ExPOS Users
-                  table. Add one in the desk before closing.
-                </div>
-              ) : (
-                <Select
-                  value={transferTo}
-                  onValueChange={onTransferToChange}
-                  placeholder="Select a cashier"
-                  size="sm"
-                >
-                  {preview.transfer_candidates.map((c) => (
-                    <SelectItem key={c.user} value={c.user}>
-                      {c.full_name} ({c.user})
-                    </SelectItem>
-                  ))}
-                </Select>
-              )}
+          {preview.can_transfer === 1 && (
+            <div className="flex items-center gap-3">
+              <UserPlus className="w-4 h-4 text-amber-700 shrink-0" />
+              <label className="text-xs font-semibold text-amber-900 shrink-0">
+                Transfer to:
+              </label>
+              <div className="flex-1">
+                {preview.transfer_candidates.length === 0 ? (
+                  <div className="text-xs italic text-amber-800">
+                    No other cashiers are listed on this branch's ExPOS Users
+                    table. Add one in the desk before closing.
+                  </div>
+                ) : (
+                  <Select
+                    value={transferTo}
+                    onValueChange={onTransferToChange}
+                    placeholder="Select a cashier"
+                    size="sm"
+                  >
+                    {preview.transfer_candidates.map((c) => (
+                      <SelectItem key={c.user} value={c.user}>
+                        {c.full_name} ({c.user})
+                      </SelectItem>
+                    ))}
+                  </Select>
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 

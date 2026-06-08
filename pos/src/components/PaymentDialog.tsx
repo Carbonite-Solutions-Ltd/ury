@@ -30,6 +30,8 @@ import { showToast } from './ui/toast';
 import { call } from '../lib/frappe-sdk';
 import { DEFAULT_PAYMENT_MODE } from '../data/order-types';
 import { chargeInvoiceToRoom } from '../lib/ihotel-api';
+import { printSplitReceipts } from '../lib/print';
+import ItemSplitFlow from './ItemSplitFlow';
 
 interface PaymentDialogProps {
   onClose: () => void;
@@ -142,8 +144,25 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
   const [splitMode, setSplitMode] = useState<SplitMode>('equal');
   const [payers, setPayers] = useState<Payer[]>([]);
 
+  // Split STYLE: by value (per-payer amounts, one invoice) or by item
+  // (separate invoices, sequential pay). 2026-06-05.
+  const [splitStyle, setSplitStyle] = useState<'value' | 'item'>('value');
+
+  // Normalize payment modes to plain string ids for child components.
+  const paymentModeIds = useMemo(
+    () =>
+      (paymentModes as any[]).map((m) => (typeof m === 'string' ? m : m.id)),
+    [paymentModes]
+  );
+
   const setSplitEnabled = (enabled: boolean) => {
     setPaymentMode(enabled ? 'split' : 'single');
+  };
+
+  const handleSplitComplete = async () => {
+    onClose();
+    clearSelectedOrder();
+    await fetchOrders();
   };
 
   useEffect(() => {
@@ -385,6 +404,38 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
         table,
       });
       showToast.success('Payment successful');
+
+      // Value split (2026-06-05): print one itemized receipt per payer,
+      // each headed with the grand total + that receipt's portion. A
+      // print failure must not undo the (already submitted) payment.
+      if (
+        splitEnabled &&
+        splitStyle === 'value' &&
+        payers.length > 1 &&
+        storePosProfile
+      ) {
+        try {
+          const receipts = payers.map((p, i) => ({
+            index: i + 1,
+            total: finalTotal,
+            amount: parseFloat(p.amount) || 0,
+            mode: p.mode,
+          }));
+          await printSplitReceipts({
+            orderId: invoice,
+            posProfile: storePosProfile,
+            receipts,
+          });
+        } catch (printErr) {
+          console.error('Split receipt print failed:', printErr);
+          showToast.error({
+            title: 'Receipts not printed',
+            description:
+              'Payment went through, but the split receipts could not be printed. Reprint from the Orders page.',
+          });
+        }
+      }
+
       onClose();
       clearSelectedOrder();
       await fetchOrders();
@@ -403,6 +454,32 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
       setIsProcessing(false);
     }
   };
+
+  // Item split takes over the whole dialog with its own allocator +
+  // sequential pay flow. "Cancel" inside returns to the value view.
+  if (paymentMode === 'split' && splitStyle === 'item') {
+    return (
+      <Dialog open={true} onOpenChange={onClose}>
+        <DialogContent
+          variant="xlarge"
+          className="bg-white w-full max-w-4xl p-0"
+          showCloseButton={false}
+        >
+          <ItemSplitFlow
+            sourceInvoice={invoice}
+            table={table}
+            defaultCustomer={customer}
+            defaultCustomerName=""
+            posProfile={storePosProfile}
+            paymentModes={paymentModeIds}
+            defaultMode={defaultMode}
+            onCancel={() => setSplitStyle('value')}
+            onComplete={handleSplitComplete}
+          />
+        </DialogContent>
+      </Dialog>
+    );
+  }
 
   return (
     <Dialog open={true} onOpenChange={onClose}>
@@ -616,6 +693,35 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
           {/* Split-payer mode: per-payer cards */}
           {splitEnabled && (
             <div className="space-y-4">
+              {/* Split style: by value (this view) or by item (separate
+                  bills, opens the item allocator). */}
+              <div className="grid grid-cols-2 gap-1 rounded-lg border border-gray-200 p-1 bg-gray-50 text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setSplitStyle('value')}
+                  className={cn(
+                    'py-2 rounded-md transition-colors',
+                    splitStyle === 'value'
+                      ? 'bg-white text-blue-700 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  )}
+                >
+                  By Value
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSplitStyle('item')}
+                  className={cn(
+                    'py-2 rounded-md transition-colors',
+                    splitStyle === 'item'
+                      ? 'bg-white text-blue-700 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  )}
+                >
+                  By Item
+                </button>
+              </div>
+
               {/* Mode + payer-count controls */}
               <div className="flex items-center justify-between gap-2">
                 <div className="inline-flex rounded-md border border-gray-200 bg-white p-0.5 text-xs">
@@ -873,7 +979,7 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
                 {payers.map((p, i) => (
                   <li key={p.id} className="flex justify-between">
                     <span className="text-gray-600">
-                      Payer {i + 1} · <span className="font-medium">{p.mode}</span>
+                      Receipt {i + 1} · <span className="font-medium">{p.mode}</span>
                     </span>
                     <span className="font-semibold text-gray-900">
                       {formatCurrency(parseFloat(p.amount) || 0)}

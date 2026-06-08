@@ -40,6 +40,7 @@ import {
   reversePosReturn,
   type ReturnResult,
 } from '../lib/invoice-api';
+import { approveTransfer, rejectTransfer } from '../lib/transfer-api';
 import { extractFrappeServerError } from '../lib/utils';
 import '../components/ui/merge-mode.css';
 
@@ -141,6 +142,10 @@ export default function Orders() {
     React.useState(0);
   const [showReturnDialog, setShowReturnDialog] = React.useState(false);
   const [reverseLoading, setReverseLoading] = React.useState(false);
+  // Incoming-transfer approval state (2026-06-05).
+  const [transferLoading, setTransferLoading] = React.useState(false);
+  const [showRejectDialog, setShowRejectDialog] = React.useState(false);
+  const [rejectReason, setRejectReason] = React.useState('');
 
   // Hydrate the per-user view-mode preference once we know who's logged
   // in. The slice's default ('card') is overridden if the user's last
@@ -221,6 +226,54 @@ export default function Orders() {
       });
     } finally {
       setReverseLoading(false);
+    }
+  };
+
+  // A row carrying transfer_meta came from the Incoming Transfers filter
+  // — a draft a captain offered to this user, awaiting their approval.
+  const isIncomingTransfer = (order: POSInvoice | null): boolean =>
+    !!order && !!order.transfer_meta;
+
+  const handleApproveTransfer = async () => {
+    if (!selectedOrder?.transfer_meta) return;
+    setTransferLoading(true);
+    try {
+      await approveTransfer(selectedOrder.transfer_meta.transfer);
+      showToast.success('Transfer accepted — order added to your list.');
+      await fetchOrders();
+      clearSelectedOrder();
+    } catch (err) {
+      const parsed = extractFrappeServerError(err, 'Failed to accept transfer.');
+      showToast.error({
+        title: parsed.title || 'Approve Failed',
+        description: parsed.message,
+      });
+    } finally {
+      setTransferLoading(false);
+    }
+  };
+
+  const handleRejectTransfer = async () => {
+    if (!selectedOrder?.transfer_meta) return;
+    setTransferLoading(true);
+    try {
+      await rejectTransfer(
+        selectedOrder.transfer_meta.transfer,
+        rejectReason || undefined
+      );
+      showToast.success('Transfer rejected — routed to a captain.');
+      setShowRejectDialog(false);
+      setRejectReason('');
+      await fetchOrders();
+      clearSelectedOrder();
+    } catch (err) {
+      const parsed = extractFrappeServerError(err, 'Failed to reject transfer.');
+      showToast.error({
+        title: parsed.title || 'Reject Failed',
+        description: parsed.message,
+      });
+    } finally {
+      setTransferLoading(false);
     }
   };
 
@@ -1020,9 +1073,50 @@ export default function Orders() {
                 </div>
               )}
 
+            {isIncomingTransfer(selectedOrder) && (
+              <div className="mx-6 mb-1 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-xs text-indigo-800">
+                <span className="font-semibold">Incoming transfer</span> from{' '}
+                {selectedOrder.transfer_meta?.from_full_name}
+                {selectedOrder.transfer_meta?.requested_at
+                  ? ` · ${selectedOrder.transfer_meta.requested_at.slice(0, 16)}`
+                  : ''}
+              </div>
+            )}
+
             {/* Sticky Bottom Section - Single Row: Print | Payment | Total */}
             <div className="border-t border-gray-200 p-6 bg-gray-50 sticky bottom-0 left-0 right-0 z-10">
               <div className="flex items-center gap-3 w-full">
+                {isIncomingTransfer(selectedOrder) ? (
+                  <>
+                    <Button
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white"
+                      onClick={handleApproveTransfer}
+                      disabled={transferLoading}
+                    >
+                      {transferLoading ? (
+                        <Spinner className="w-5 h-5 mr-2" hideMessage />
+                      ) : (
+                        <>
+                          <CheckCircle className="w-5 h-5 mr-2" />
+                          Approve Transfer
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="flex-1 border-red-300 text-red-700 hover:bg-red-50"
+                      onClick={() => setShowRejectDialog(true)}
+                      disabled={transferLoading}
+                    >
+                      <X className="w-4 h-4 mr-1.5" />
+                      Reject
+                    </Button>
+                    <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
+                      {formatCurrency(getOrderTotal(selectedOrder))}
+                    </span>
+                  </>
+                ) : (
+                  <>
                 {/*
                   Print / Payment layout is driven by `invoice_printed`:
 
@@ -1128,6 +1222,8 @@ export default function Orders() {
                 <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
                   {formatCurrency(getOrderTotal(selectedOrder))}
                 </span>
+                  </>
+                )}
               </div>
             </div>
           </>
@@ -1156,6 +1252,41 @@ export default function Orders() {
           onCancel={() => setShowReturnDialog(false)}
           onReturned={handleReturned}
         />
+      )}
+      {showRejectDialog && selectedOrder && (
+        <Dialog open={true} onOpenChange={() => setShowRejectDialog(false)}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Reject Transfer</DialogTitle>
+              <DialogDescription>
+                Rejecting sends this order to a branch captain to resolve.
+                Add an optional reason.
+              </DialogDescription>
+            </DialogHeader>
+            <Textarea
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              placeholder="Reason (optional)"
+              rows={3}
+            />
+            <DialogFooter>
+              <Button
+                variant="secondary"
+                onClick={() => setShowRejectDialog(false)}
+                disabled={transferLoading}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="bg-red-600 hover:bg-red-700 text-white"
+                onClick={handleRejectTransfer}
+                disabled={transferLoading}
+              >
+                {transferLoading ? 'Rejecting…' : 'Reject Transfer'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );

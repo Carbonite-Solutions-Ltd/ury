@@ -17,6 +17,7 @@
   "pin_section",
   "pin_max_attempts",
   "pin_lockout_minutes",
+  "pin_expiry_days",
   "column_break_pin",
   "biometric_login_rate_limit_seconds",
   "biometric_login_max_attempts",
@@ -105,6 +106,14 @@
    "fieldname": "pin_lockout_minutes",
    "fieldtype": "Int",
    "label": "PIN Lockout Duration (min)",
+   "non_negative": 1
+  },
+  {
+   "default": "0",
+   "description": "Number of days a PIN stays valid. 0 = never expires. When greater than 0, a cashier whose PIN was last set/changed longer ago than this is forced to choose a new PIN at their next PIN login before reaching the POS.",
+   "fieldname": "pin_expiry_days",
+   "fieldtype": "Int",
+   "label": "PIN Expiry (days)",
    "non_negative": 1
   },
   {

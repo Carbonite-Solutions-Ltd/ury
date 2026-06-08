@@ -188,6 +188,24 @@ def get_custom_fields():
 					"depends_on": "eval:doc.custom_charge_to_room",
 					"description": "iHotel Profile the folio charge was written onto.",
 				},
+				# Invoice-transfer workflow (2026-06-05). Denormalized flag
+				# on the draft so the Orders page can cheaply filter
+				# "Pending Incoming" transfers. Written only inside a
+				# transfer transition (create / approve / reject) alongside
+				# the URY Invoice Transfer record that is the source of
+				# truth. See ury_pos/api.py transfer endpoints.
+				{
+					"fieldname": "custom_transfer_status",
+					"fieldtype": "Select",
+					"insert_after": "custom_ihotel_profile",
+					"label": "Transfer Status",
+					"options": "\nPending Incoming\nApproved\nRejected",
+					"read_only": 1,
+					"in_standard_filter": 1,
+					"print_hide": 1,
+					"print_hide_if_no_value": 1,
+					"description": "Set when this draft is part of an invoice-transfer workflow. 'Pending Incoming' means a captain has offered it to the current owner and is awaiting approval; 'Approved'/'Rejected' record the resolution. Source of truth is the URY Invoice Transfer doctype.",
+				},
 				{
 					"fieldname": "column_break_gd1mq",
 					"fieldtype": "Column Break",
@@ -226,8 +244,17 @@ def get_custom_fields():
 					"fieldname": "order_type",
 					"fieldtype": "Select",
 					"default": "Dine In",
-					"options": "URY Restaurant",
-					"fetch_from": "customer.mobile_number",
+					# fetch_from MUST stay blank. order_type is set by the
+					# order flow / consolidation map_doc, NOT fetched from the
+					# customer. A stray `fetch_from="customer.mobile_number"`
+					# here (copy-pasted from the mobile_number field) put the
+					# customer's phone number into order_type during shift-
+					# close consolidation, failing the Select validation and
+					# blocking every close. Setting "" explicitly so
+					# create_custom_fields CLEARS it on existing sites that
+					# already had the bad value stamped. See CLAUDE.md "Fixes
+					# log" 2026-06-05.
+					"fetch_from": "",
 					"label": "Order Type",
 					"options": "\nDine In\nTake Away\nDelivery\nPhone In\nAggregators",
 					"insert_after": "order_info",
@@ -439,6 +466,30 @@ def get_custom_fields():
 				"label": "Restrict Returns to Captain",
 				"default": "1",
 				"description": "When checked (default), only URY Captain / URY Manager / Administrator users can issue returns from the Orders page right panel. Flip to OFF to let cashiers return their own orders too.",
+			},
+			# Returns master switch (2026-06-05). OFF by default - the
+			# Return Orders feature is hidden everywhere and the backend
+			# rejects return requests until an admin turns this on.
+			# Evaluated BEFORE custom_restrict_returns_to_captain.
+			{
+				"fieldname": "custom_enable_returns",
+				"fieldtype": "Check",
+				"insert_after": "custom_restrict_returns_to_captain",
+				"label": "Enable Returns",
+				"default": "0",
+				"description": "Master switch for the Return Orders feature on the Orders page. OFF by default - returns are hidden everywhere and the backend rejects return requests. Turn ON to allow returns (still subject to 'Restrict Returns to Captain').",
+			},
+			# Per-invoice transfer hop cap (2026-06-05). How many times a
+			# single unpaid order may be transferred between cashiers at
+			# shift close. 0 disables transfers entirely. See the
+			# URY Invoice Transfer workflow in ury_pos/api.py.
+			{
+				"fieldname": "custom_max_invoice_transfers",
+				"fieldtype": "Int",
+				"insert_after": "custom_enable_returns",
+				"label": "Max Invoice Transfers",
+				"default": "2",
+				"description": "How many times a single unpaid order may be transferred between cashiers at shift close (per-invoice hop count). 0 disables transfers entirely - captains must pay/cancel instead. Each approved transfer consumes one hop.",
 			},
 			# Geofence feature. Master switch + company coordinates +
 			# default radius. When enabled, the React POS asks for

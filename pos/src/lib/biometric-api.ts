@@ -34,6 +34,14 @@ export interface LoginResult {
   full_name: string;
   home_page: string;
   method: 'Biometric' | 'PIN' | 'Password';
+  /**
+   * PIN expiry (2026-06-05). Set by pin_login when the PIN is past its
+   * expiry window. The session IS created (the user authenticated with
+   * the correct PIN), but the login page must force a reset before
+   * reaching the POS.
+   */
+  pin_change_required?: boolean;
+  pin_expired?: boolean;
 }
 
 export interface EnrollResult {

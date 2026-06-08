@@ -51,6 +51,16 @@ except ImportError:
 
 URY_LOGIN_ROLES = ("URY Cashier", "URY Captain", "URY Manager")
 URY_ENROLLMENT_ADMIN_ROLES = ("System Manager", "URY Manager", "URY Captain")
+# Who shows up in the /pos login user-picker. Broader than URY_LOGIN_ROLES
+# (which gates PIN/biometric auth) so admins can sign in via password too.
+# The Administrator user is added explicitly in the query — it has no URY
+# role but must always be able to log in.
+URY_LOGIN_SEARCH_ROLES = (
+	"URY Cashier",
+	"URY Captain",
+	"URY Manager",
+	"System Manager",
+)
 
 
 def _is_enrollment_admin(user: str | None = None) -> bool:
@@ -97,6 +107,7 @@ def _get_settings() -> dict[str, Any]:
 		"max_template_bytes": cint(doc.max_template_bytes) or 3500,
 		"pin_max_attempts": cint(doc.pin_max_attempts) or 5,
 		"pin_lockout_minutes": cint(doc.pin_lockout_minutes) or 15,
+		"pin_expiry_days": cint(doc.get("pin_expiry_days") or 0),
 		"biometric_login_rate_limit_seconds": cint(doc.biometric_login_rate_limit_seconds) or 60,
 		"biometric_login_max_attempts": cint(doc.biometric_login_max_attempts) or 10,
 		"template_lookup_rate_limit_seconds": cint(doc.template_lookup_rate_limit_seconds) or 60,
@@ -247,6 +258,30 @@ def _enrollment_is_active(enrollment) -> bool:
 	return True
 
 
+def _pin_is_expired(enrollment, settings) -> bool:
+	"""Return True when the user's PIN is older than the configured
+	expiry window (URY Biometric Settings.pin_expiry_days).
+
+	0 days = never expires. The age is measured from `pin_changed_at`,
+	falling back to `pin_set_at`, then the enrollment's `creation`. A
+	fully-null chain (legacy enrollment from before these timestamps
+	existed) is treated as NOT expired so we don't lock anyone out
+	unexpectedly. See CLAUDE.md "Fixes log" 2026-06-05 (PIN expiry).
+	"""
+	expiry_days = cint(settings.get("pin_expiry_days") or 0)
+	if expiry_days <= 0:
+		return False
+	last = (
+		enrollment.get("pin_changed_at")
+		or enrollment.get("pin_set_at")
+		or enrollment.get("creation")
+	)
+	if not last:
+		return False
+	age_days = (now_datetime() - get_datetime(last)).days
+	return age_days >= expiry_days
+
+
 def _record_login(
 	enrollment,
 	method: str,
@@ -320,15 +355,22 @@ def get_public_settings() -> dict[str, Any]:
 
 @frappe.whitelist(allow_guest=True)
 def search_users_for_login(query: str = "") -> list[dict[str, Any]]:
-	"""Autocomplete search over URY login-eligible users.
+	"""Autocomplete search over POS login-eligible users.
 
-	Scoped to users with URY Cashier / URY Captain / URY Manager role.
-	Returns minimal metadata the login page needs (name, full_name,
-	has_enrollment, last_login_method) so it can switch tabs automatically.
+	Scoped to users with a URY Cashier / URY Captain / URY Manager /
+	System Manager role, PLUS the Administrator account. Returns minimal
+	metadata the login page needs (name, full_name, has_fingerprint,
+	has_pin, last_login_method) so it can switch tabs automatically.
+
+	NOT gated on the biometric `enabled` flag: the /pos login page is the
+	default sign-in for guests whether or not fingerprint/PIN is turned on,
+	and password login always works. When biometric is OFF we still return
+	the users, but report has_fingerprint=0 / has_pin=0 so the page offers
+	password-only (pin_login / biometric_login require the feature enabled).
+	See CLAUDE.md "Fixes log" 2026-06-05.
 	"""
 	settings = _get_settings()
-	if not settings.get("enabled"):
-		return []
+	biometric_enabled = bool(settings.get("enabled"))
 	query = (query or "").strip()
 	if len(query) < 1:
 		return []
@@ -350,12 +392,12 @@ def search_users_for_login(query: str = "") -> list[dict[str, Any]]:
 		FROM `tabUser` AS u
 		INNER JOIN `tabHas Role` AS hr ON hr.parent = u.name
 		WHERE u.enabled = 1
-		  AND hr.role IN %(roles)s
+		  AND (hr.role IN %(roles)s OR u.name = 'Administrator')
 		  AND (u.name LIKE %(like)s OR u.full_name LIKE %(like)s OR u.email LIKE %(like)s)
 		ORDER BY u.full_name
 		LIMIT 15
 		""",
-		{"roles": URY_LOGIN_ROLES, "like": like},
+		{"roles": URY_LOGIN_SEARCH_ROLES, "like": like},
 		as_dict=True,
 	)
 	# Attach enrollment metadata
@@ -375,8 +417,15 @@ def search_users_for_login(query: str = "") -> list[dict[str, Any]]:
 	out = []
 	for r in rows:
 		en = enrollments.get(r["name"])
-		has_fp = bool(en and not en["disabled"] and (en["fingerprint_template_length"] or 0) > 0)
-		has_pin = bool(en and not en["disabled"] and en["pin_hash"])
+		# When biometric is globally disabled, advertise no fingerprint/PIN
+		# so the login page offers password only (those auth endpoints
+		# require the feature enabled). The picker itself still works.
+		has_fp = biometric_enabled and bool(
+			en and not en["disabled"] and (en["fingerprint_template_length"] or 0) > 0
+		)
+		has_pin = biometric_enabled and bool(
+			en and not en["disabled"] and en["pin_hash"]
+		)
 		out.append({
 			"name": r["name"],
 			"full_name": r["full_name"] or r["name"],
@@ -565,6 +614,14 @@ def pin_login(username: str, pin: str, terminal: str | None = None) -> dict[str,
 	response = _create_login_session(username)
 	_record_login(enrollment, method="PIN", terminal=terminal)
 	response["method"] = "PIN"
+	# PIN expiry (2026-06-05). The session is created (they authenticated
+	# with the correct PIN), but if the PIN is past its expiry window the
+	# frontend must force a reset before the POS loads. The reset reuses
+	# the authenticated change_pin endpoint with the just-entered PIN as
+	# the old one.
+	if _pin_is_expired(enrollment, settings):
+		response["pin_change_required"] = True
+		response["pin_expired"] = True
 	return response
 
 

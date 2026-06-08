@@ -14,7 +14,7 @@
  * enrolled simply see a clear "ask your captain" message.
  */
 
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { KeyRound, Loader2, CheckCircle2, X } from 'lucide-react';
 import { Button } from './ui/button';
 import { showToast } from './ui/toast';
@@ -24,6 +24,16 @@ import { extractFrappeServerError } from '../lib/utils';
 interface Props {
   open: boolean;
   onClose: () => void;
+  /**
+   * Forced expiry mode (2026-06-05): non-dismissible, the old PIN is
+   * preset (the user just authenticated with it), and on success we call
+   * `onCompleted` instead of closing — the caller redirects to the POS.
+   */
+  forced?: boolean;
+  /** The PIN the user just logged in with. Used as the old PIN in forced mode. */
+  presetOldPin?: string;
+  /** Called after a successful change in forced mode. */
+  onCompleted?: () => void;
 }
 
 function PinDigits({
@@ -92,13 +102,24 @@ function PinDigits({
   );
 }
 
-export default function ResetPinDialog({ open, onClose }: Props) {
+export default function ResetPinDialog({
+  open,
+  onClose,
+  forced = false,
+  presetOldPin,
+  onCompleted,
+}: Props) {
   const [oldPin, setOldPin] = useState('');
   const [newPin, setNewPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Forced mode: seed the old PIN from the just-used login PIN.
+  useEffect(() => {
+    if (forced && presetOldPin) setOldPin(presetOldPin);
+  }, [forced, presetOldPin, open]);
 
   const reset = useCallback(() => {
     setOldPin('');
@@ -130,9 +151,14 @@ export default function ResetPinDialog({ open, onClose }: Props) {
         title: 'PIN updated',
         description: 'Use the new PIN next time you sign in.',
       });
-      // Auto-close after a brief success flash
+      // Auto-close after a brief success flash. In forced mode, hand off
+      // to the caller (which redirects to the POS) instead of closing.
       setTimeout(() => {
-        handleClose();
+        if (forced && onCompleted) {
+          onCompleted();
+        } else {
+          handleClose();
+        }
       }, 1200);
     } catch (err) {
       const parsed = extractFrappeServerError(err, 'Could not change your PIN.');
@@ -142,7 +168,7 @@ export default function ResetPinDialog({ open, onClose }: Props) {
     } finally {
       setSubmitting(false);
     }
-  }, [canSubmit, oldPin, newPin, handleClose]);
+  }, [canSubmit, oldPin, newPin, handleClose, forced, onCompleted]);
 
   if (!open) return null;
 
@@ -156,19 +182,25 @@ export default function ResetPinDialog({ open, onClose }: Props) {
               <KeyRound className="text-blue-700" size={20} />
             </div>
             <div className="min-w-0">
-              <h2 className="text-lg font-semibold text-gray-900">Reset PIN</h2>
+              <h2 className="text-lg font-semibold text-gray-900">
+                {forced ? 'Your PIN has expired' : 'Reset PIN'}
+              </h2>
               <p className="text-xs text-gray-500">
-                Change the 6-digit PIN you use to sign in.
+                {forced
+                  ? 'Set a new 6-digit PIN to continue.'
+                  : 'Change the 6-digit PIN you use to sign in.'}
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={handleClose}
-            className="text-gray-400 hover:text-gray-700 p-1 rounded-md hover:bg-gray-100"
-          >
-            <X size={18} />
-          </button>
+          {!forced && (
+            <button
+              type="button"
+              onClick={handleClose}
+              className="text-gray-400 hover:text-gray-700 p-1 rounded-md hover:bg-gray-100"
+            >
+              <X size={18} />
+            </button>
+          )}
         </div>
 
         {/* Body */}
@@ -183,8 +215,10 @@ export default function ResetPinDialog({ open, onClose }: Props) {
             </div>
           ) : (
             <>
-              <PinDigits value={oldPin} onChange={setOldPin} autoFocus label="Current PIN" />
-              <PinDigits value={newPin} onChange={setNewPin} label="New PIN" />
+              {!forced && (
+                <PinDigits value={oldPin} onChange={setOldPin} autoFocus label="Current PIN" />
+              )}
+              <PinDigits value={newPin} onChange={setNewPin} autoFocus={forced} label="New PIN" />
               <PinDigits value={confirmPin} onChange={setConfirmPin} label="Confirm New PIN" />
 
               {mismatch && (
@@ -209,9 +243,11 @@ export default function ResetPinDialog({ open, onClose }: Props) {
         {/* Footer */}
         {!success && (
           <div className="px-6 pb-6 pt-2 flex items-center justify-end gap-2">
-            <Button variant="outline" onClick={handleClose} disabled={submitting}>
-              Cancel
-            </Button>
+            {!forced && (
+              <Button variant="outline" onClick={handleClose} disabled={submitting}>
+                Cancel
+              </Button>
+            )}
             <Button onClick={handleSubmit} disabled={!canSubmit} className="bg-blue-600 hover:bg-blue-700">
               {submitting ? (
                 <>

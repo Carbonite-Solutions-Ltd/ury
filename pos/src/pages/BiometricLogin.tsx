@@ -47,6 +47,7 @@ import {
 } from '../lib/biometric-api';
 import { useFingerprintReader } from '../lib/use-fingerprint-reader';
 import { auth } from '../lib/frappe-sdk';
+import ResetPinDialog from '../components/ResetPinDialog';
 
 type LoginMethod = 'biometric' | 'pin' | 'password';
 
@@ -114,7 +115,11 @@ function UserPicker({ onPicked }: UserPickerProps) {
         <div className="p-2 bg-red-50 border border-red-200 rounded-md text-sm text-red-700">{error}</div>
       )}
       {results.length > 0 && (
-        <div className="divide-y divide-gray-100 border border-gray-200 rounded-lg overflow-hidden bg-white">
+        // Cap the list height and scroll it internally so a long result
+        // set doesn't grow the card past the viewport and scroll the whole
+        // page. `overscroll-contain` stops a scroll at the list's edge from
+        // chaining to the page behind it.
+        <div className="divide-y divide-gray-100 border border-gray-200 rounded-lg overflow-y-auto overscroll-contain max-h-80 bg-white">
           {results.map((u) => (
             <button
               key={u.name}
@@ -422,9 +427,13 @@ function PinTab({ user, terminalName }: { user: LoginUserCandidate; terminalName
   const [pin, setPin] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // PIN expiry (2026-06-05): when the backend says the PIN is expired we
+  // hold the just-entered PIN and force a reset before reaching the POS.
+  const [forceReset, setForceReset] = useState(false);
+  const [oldPinForReset, setOldPinForReset] = useState('');
 
   const handleSubmit = useCallback(async () => {
-    if (pin.length !== 6) return;
+    if (pin.length !== 6 || forceReset) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -433,6 +442,14 @@ function PinTab({ user, terminalName }: { user: LoginUserCandidate; terminalName
         pin,
         terminal: terminalName ?? null,
       });
+      if (session.pin_change_required) {
+        // Authenticated, but the PIN expired — force a reset. Clearing
+        // `pin` stops the 6-digit auto-submit from re-firing.
+        setOldPinForReset(pin);
+        setPin('');
+        setForceReset(true);
+        return;
+      }
       showToast.success({
         title: 'Welcome back',
         description: `Signed in as ${session.full_name}.`,
@@ -445,14 +462,14 @@ function PinTab({ user, terminalName }: { user: LoginUserCandidate; terminalName
     } finally {
       setSubmitting(false);
     }
-  }, [user, pin, terminalName]);
+  }, [user, pin, terminalName, forceReset]);
 
   // Auto-submit on 6 digits
   useEffect(() => {
-    if (pin.length === 6 && !submitting) {
+    if (pin.length === 6 && !submitting && !forceReset) {
       handleSubmit();
     }
-  }, [pin, submitting, handleSubmit]);
+  }, [pin, submitting, forceReset, handleSubmit]);
 
   return (
     <div className="space-y-4 py-2">
@@ -486,6 +503,16 @@ function PinTab({ user, terminalName }: { user: LoginUserCandidate; terminalName
           </>
         )}
       </Button>
+
+      {forceReset && (
+        <ResetPinDialog
+          open
+          forced
+          presetOldPin={oldPinForReset}
+          onClose={() => {}}
+          onCompleted={() => window.location.replace('/pos')}
+        />
+      )}
     </div>
   );
 }

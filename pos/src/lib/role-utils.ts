@@ -150,6 +150,12 @@ export const canReturnOrders = (
   posProfile: PosProfileCombined | null
 ): boolean => {
   if (!user) return false;
+
+  // Master switch (2026-06-05). Returns are OFF by default. When off,
+  // NOBODY can return — not even a captain. Evaluated before every role
+  // check. Backend mirrors this in `_user_can_return_orders`.
+  if (posProfile?.custom_enable_returns !== 1) return false;
+
   if (user.name === 'Administrator') return true;
   if (!user.roles) return false;
 
@@ -163,4 +169,32 @@ export const canReturnOrders = (
   if (restrict === 1) return false;
 
   return user.roles.includes('URY Cashier');
+};
+
+/**
+ * Whether the current user can INITIATE an invoice transfer at shift
+ * close. Captain-only (2026-06-05): a regular cashier closing with
+ * unpaid drafts must pay or cancel them. Backend re-validates in
+ * `submit_pos_closing_entry`.
+ */
+export const canTransferOnClose = (user: User | null): boolean => {
+  if (!user) return false;
+  if (user.name === 'Administrator') return true;
+  if (!user.roles) return false;
+  const captainRoles = ['System Manager', 'URY Manager', 'URY Captain'];
+  return user.roles.some((role) => captainRoles.includes(role));
+};
+
+/**
+ * Whether the current user can split an order's items into separate
+ * bills. Any URY billing role can split; the backend additionally
+ * enforces "a plain cashier can only split their own order" in
+ * `split_invoice_by_item`.
+ */
+export const canSplitOrders = (user: User | null): boolean => {
+  if (!user) return false;
+  if (user.name === 'Administrator') return true;
+  if (!user.roles) return false;
+  const allowed = ['System Manager', 'URY Manager', 'URY Captain', 'URY Cashier'];
+  return user.roles.some((role) => allowed.includes(role));
 };

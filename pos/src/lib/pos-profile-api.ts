@@ -34,6 +34,18 @@ export interface PosProfileLimited {
    * Orders page right panel. Flip to 0 to let cashiers return their own.
    */
   custom_restrict_returns_to_captain?: number;
+  /**
+   * Master switch for the Return feature (2026-06-05). OFF (0) by
+   * default — returns are hidden everywhere unless an admin turns this
+   * on. Evaluated before custom_restrict_returns_to_captain.
+   */
+  custom_enable_returns?: number;
+  /**
+   * How many times a single unpaid order may be transferred between
+   * cashiers at shift close (per-invoice hop count). 0 disables
+   * transfers. Default 2.
+   */
+  custom_max_invoice_transfers?: number;
   /** iHotel integration master switch (per-profile). */
   custom_ihotel_enabled?: number;
   /** Default Charge Type written onto the iHotel Profile's folio row. */
@@ -157,6 +169,8 @@ export interface PosProfileCombined extends PosProfileFull {
   custom_block_orders_after_shift_end?: number;
   custom_restrict_merge_to_captain?: number;
   custom_restrict_returns_to_captain?: number;
+  custom_enable_returns?: number;
+  custom_max_invoice_transfers?: number;
   custom_ihotel_enabled?: number;
   custom_ihotel_charge_type?: string | null;
   custom_shift_system_mode?: 'Disabled' | 'URY Shift' | 'HRMS Shift Type';
@@ -251,6 +265,8 @@ export async function getCombinedPosProfile(
       limitedProfile.custom_restrict_merge_to_captain,
     custom_restrict_returns_to_captain:
       limitedProfile.custom_restrict_returns_to_captain,
+    custom_enable_returns: limitedProfile.custom_enable_returns,
+    custom_max_invoice_transfers: limitedProfile.custom_max_invoice_transfers,
     custom_ihotel_enabled: limitedProfile.custom_ihotel_enabled,
     custom_ihotel_charge_type: limitedProfile.custom_ihotel_charge_type,
     custom_shift_system_mode: limitedProfile.custom_shift_system_mode,

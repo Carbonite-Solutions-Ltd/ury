@@ -21,3 +21,5 @@ class URYBiometricSettings(Document):
 				frappe.throw(f"{field.replace('_', ' ').title()} must be at least {floor}.")
 		if (self.min_template_bytes or 0) >= (self.max_template_bytes or 0):
 			frappe.throw("Min Template Bytes must be less than Max Template Bytes.")
+		if (self.pin_expiry_days or 0) < 0:
+			frappe.throw("PIN Expiry (days) cannot be negative.")
