@@ -110,6 +110,41 @@ def get_order_invoice(table=None, invoiceNo=None, order_type=None, is_payment=No
     return invoice
 
 
+def _apply_pos_profile_taxes(invoice, pos_profile_name):
+    """Fetch the tax template + tax category from the POS Profile onto the
+    POS Invoice when they're configured there, and populate the tax rows
+    from the template if they're empty.
+
+    The POS Profile is URY's per-terminal tax source of truth. Previously
+    taxes were only set from URY Restaurant.default_tax_template (often left
+    blank), so orders went out untaxed even when the POS Profile had VAT
+    configured. The profile takes precedence; profiles that leave these
+    blank keep whatever get_order_invoice set. Called from sync_order (order
+    creation) and make_invoice (payment, to cover drafts created before this
+    was wired up). See CLAUDE.md "Fixes log" 2026-06-05.
+    """
+    if not pos_profile_name:
+        return
+    row = frappe.db.get_value(
+        "POS Profile",
+        pos_profile_name,
+        ["taxes_and_charges", "tax_category"],
+        as_dict=True,
+    )
+    if not row:
+        return
+    if row.taxes_and_charges:
+        invoice.taxes_and_charges = row.taxes_and_charges
+    if row.tax_category:
+        invoice.tax_category = row.tax_category
+    # Populate tax rows from the template now when empty. ERPNext's
+    # set_taxes() only auto-fills for brand-new docs, so this guarantees the
+    # tax applies on the first save AND fixes a re-synced older draft.
+    # Guarded against double-appending.
+    if row.taxes_and_charges and not invoice.get("taxes"):
+        invoice.append_taxes_from_master()
+
+
 @frappe.whitelist()
 def sync_order(
     items,
@@ -253,6 +288,9 @@ def sync_order(
         invoice.custom_comments = comments
     invoice.no_of_pax = no_of_pax
     invoice.pos_profile = pos_profile
+    # Pull the tax template + tax category from the POS Profile (if set
+    # there) onto the draft at creation time. See _apply_pos_profile_taxes.
+    _apply_pos_profile_taxes(invoice, pos_profile)
     invoice.cashier = cashier
     invoice.waiter = waiter
     invoice.custom_aggregator_id = aggregator_id
@@ -514,6 +552,10 @@ def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDisc
 
     invoice.customer = customer
     invoice.pos_profile = pos_profile
+    # Ensure the POS Profile's tax template + category are applied even if
+    # the draft predates this config or was never re-synced after it was
+    # set, so the tax is included in the totals below.
+    _apply_pos_profile_taxes(invoice, pos_profile)
     invoice.additional_discount_percentage = additionalDiscount
     invoice.calculate_taxes_and_totals()
 
