@@ -93,12 +93,14 @@
 			if (!frm || !frm.doc) return;
 			if (frm.is_new()) return;
 
-			// Remove any previous copies (rare, but defensive)
-			try {
-				frm.clear_custom_buttons && frm.clear_custom_buttons('Biometrics');
-			} catch (_) {
-				// clear_custom_buttons not available in some Frappe versions - no-op
-			}
+			// NOTE: do NOT call frm.clear_custom_buttons() here — it takes no
+			// group argument and clears ALL custom buttons (including the
+			// standard "Reset Password", "Reset OTP Secret", etc. that
+			// Frappe/ERPNext's user.js adds), leaving only our Biometrics
+			// buttons. Frappe already clears custom buttons at the start of
+			// every form refresh, and add_custom_button dedupes by label, so
+			// our buttons never duplicate without this. See CLAUDE.md
+			// "Fixes log" 2026-06-10.
 
 			if (!callerIsEnrolmentAdmin()) return;
 			if (!userHasUryLoginRole(frm.doc)) return;

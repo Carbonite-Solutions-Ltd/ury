@@ -7,8 +7,14 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatCurrency(amount: number): string {
-  const symbol = storage.getItem('currencySymbol');
-  return `${symbol} ${amount}`;
+  const symbol = storage.getItem('currencySymbol') || '';
+  const value = Number(amount);
+  // Thousands separators + always 2 decimal places (e.g. ₵ 1,234.50).
+  const formatted = (Number.isFinite(value) ? value : 0).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return `${symbol} ${formatted}`.trim();
 }
 
 /** Parsed shape of a single Frappe server message. */

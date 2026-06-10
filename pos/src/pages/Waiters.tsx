@@ -159,10 +159,10 @@ const Waiters = () => {
         ) : waiters.length === 0 ? (
           <div className="text-center text-gray-500 py-20">
             <UserRound className="w-10 h-10 mx-auto text-gray-300 mb-3" />
-            <p className="font-medium">No waiters yet.</p>
+            <p className="font-medium">No pending waiter orders.</p>
             <p className="text-sm">
-              Waiters are added when creating an order (if the profile uses
-              waiters) or from the desk.
+              Only waiters with pending (unpaid) orders show here. An order
+              leaves this list once it's paid.
             </p>
           </div>
         ) : filteredWaiters.length === 0 ? (
