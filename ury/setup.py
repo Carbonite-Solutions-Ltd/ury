@@ -634,7 +634,16 @@ def get_custom_fields():
 				"options": "URY Printer",
 				"depends_on": "eval:doc.custom_print_mode != 'Disabled'",
 				"mandatory_depends_on": "eval:doc.custom_print_mode != 'Disabled'",
-				"description": "The printer that prints the receipt/bill.",
+				"description": "The default printer that prints the receipt/bill. Used when a terminal has no per-terminal printer below.",
+			},
+			{
+				"fieldname": "custom_bill_printers",
+				"fieldtype": "Table",
+				"insert_after": "custom_bill_printer",
+				"label": "Per-Terminal Bill Printers",
+				"options": "URY Terminal Bill Printer",
+				"depends_on": "eval:doc.custom_print_mode != 'Disabled'",
+				"description": "Optional. Map each terminal to its own bill printer. When the printing terminal is listed here, its receipts print to that printer instead of the single Bill Printer above — so several terminals sharing this profile can each print to their own physical printer. Terminals not listed fall back to the Bill Printer above.",
 			},
 			{
 				"fieldname": "custom_kitchen_kot_printer",

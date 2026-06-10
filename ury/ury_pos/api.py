@@ -1123,6 +1123,24 @@ def get_pos_profile_full(pos_profile, terminal=None):
     return doc.as_dict()
 
 
+def _resolve_terminal_bill_printer(pos_profile_doc, terminal):
+    """Pick the bill printer for the requesting terminal.
+
+    A POS Profile can carry a per-terminal bill-printer table
+    (`custom_bill_printers`: terminal -> URY Printer). When the printing
+    terminal has a row there, that printer is used so several terminals
+    sharing one profile each print receipts to their OWN physical printer.
+    Falls back to the single `custom_bill_printer` field when the terminal
+    isn't listed (or no terminal was supplied). See CLAUDE.md "Fixes log"
+    2026-06-10.
+    """
+    if terminal:
+        for row in (pos_profile_doc.get("custom_bill_printers") or []):
+            if row.get("terminal") == terminal and row.get("bill_printer"):
+                return row.bill_printer
+    return pos_profile_doc.get("custom_bill_printer") or None
+
+
 @frappe.whitelist()
 def getPosProfile(terminal=None):
     """Resolve the POS Profile for the current session.
@@ -1216,7 +1234,10 @@ def getPosProfile(terminal=None):
         # resolver / routing logic all lives on the backend — the
         # frontend only needs the mode to pick QZ vs CUPS vs Disabled.
         print_mode = pos_profiles.get("custom_print_mode") or None
-        bill_printer = pos_profiles.get("custom_bill_printer") or None
+        # Per-terminal bill printer (2026-06-10): if this terminal is listed
+        # in the profile's custom_bill_printers table, use its printer; else
+        # fall back to the single custom_bill_printer.
+        bill_printer = _resolve_terminal_bill_printer(pos_profiles, terminal)
         kitchen_kot_printer = pos_profiles.get("custom_kitchen_kot_printer") or None
         bar_kot_printer = pos_profiles.get("custom_bar_kot_printer") or None
         parcel_kot_printer = pos_profiles.get("custom_parcel_kot_printer") or None
@@ -1678,20 +1699,21 @@ def preview_pos_closing_entry(opening_entry):
     ]
     draft_grand_total = sum(r["grand_total"] for r in draft_list)
 
-    # Transfer-target candidates: other cashiers on the same branch who
-    # have URY Cashier or URY Captain role. We exclude the current user
-    # (you can't transfer to yourself).
-    transfer_candidates = _get_cashier_users_on_branch(opening_doc.branch)
-    transfer_candidates = [
-        c for c in transfer_candidates if c["user"] != me
-    ]
-
-    # Captain-only transfer gate (2026-06-05). The frontend uses these to
-    # decide whether to offer the transfer dropdown (captain) or a
-    # "pay or cancel" block (non-captain).
+    # Transfer-target candidates depend on who's closing. Reworked
+    # 2026-06-10 so cashiers are no longer hard-blocked: a regular cashier
+    # hands unpaid drafts UP to a captain (who then approves from the Orders
+    # "Incoming Transfers" filter), while a captain can hand off to any
+    # cashier/captain on the branch (the original flow). Either way you
+    # can't transfer to yourself.
     roles = set(frappe.get_roles(me))
     captain_roles = {"Administrator", "System Manager", "URY Manager", "URY Captain"}
     is_captain = me == "Administrator" or bool(roles & captain_roles)
+    if is_captain:
+        transfer_candidates = _get_cashier_users_on_branch(opening_doc.branch)
+    else:
+        transfer_candidates = _get_captain_users_on_branch(opening_doc.branch)
+    transfer_candidates = [c for c in transfer_candidates if c["user"] != me]
+
     max_transfers = int(
         frappe.db.get_value(
             "POS Profile", opening_doc.pos_profile, "custom_max_invoice_transfers"
@@ -1718,9 +1740,12 @@ def preview_pos_closing_entry(opening_entry):
         "draft_grand_total": draft_grand_total,
         "draft_invoices": draft_list,
         "transfer_candidates": transfer_candidates,
-        # Captain-only transfer flags.
+        # Transfer flags. `can_transfer` is role-agnostic now — anyone can
+        # transfer when the profile allows it (max > 0). `is_captain` tells
+        # the frontend whether the targets are cashiers (captain closing) or
+        # captains (cashier closing) so it can label the picker correctly.
         "is_captain": int(is_captain),
-        "can_transfer": int(is_captain and max_transfers > 0),
+        "can_transfer": int(max_transfers > 0),
         "max_invoice_transfers": max_transfers,
     }
 
@@ -1775,13 +1800,12 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
 
     paid, draft = _get_shift_invoice_breakdown(opening_doc)
 
-    # --- Transfer-before-close guard (reworked 2026-06-05) ------------
-    # Captain-only transfers + receiver approval. A regular cashier
-    # closing with unpaid drafts must pay or cancel them — they can't
-    # transfer. A captain instead creates a Pending URY Invoice Transfer
-    # per draft that the receiving cashier approves from the Orders page
-    # "Incoming Transfers" filter. The invoice owner does NOT change
-    # here — it changes on approval (see approve_transfer).
+    # --- Transfer-before-close guard (reworked 2026-06-10) ------------
+    # Anyone closing with unpaid drafts can hand them off. A regular
+    # cashier transfers UP to a captain; a captain can transfer to any
+    # cashier/captain on the branch. The receiver approves from the Orders
+    # page "Incoming Transfers" filter — the invoice owner does NOT change
+    # here, it changes on approval (see approve_transfer).
     #
     # A draft only BLOCKS the close when it has no active transfer:
     #   - a Pending transfer (already offered, awaiting the receiver), or
@@ -1800,17 +1824,15 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
     transfers_created = 0
 
     if blocking:
-        if not is_captain:
-            names_str = ", ".join(r["name"] for r in blocking[:5])
-            more = f" (+{len(blocking) - 5} more)" if len(blocking) > 5 else ""
-            frappe.throw(
-                _(
-                    "You have {0} unpaid order(s) on this shift: {1}{2}. "
-                    "Pay or cancel them before closing — only a captain can "
-                    "transfer orders to another cashier."
-                ).format(len(blocking), names_str, more),
-                title=_("Pay or Cancel Required"),
-            )
+        # Valid transfer targets depend on who's closing: a cashier hands
+        # off to a captain; a captain hands off to any cashier/captain.
+        if is_captain:
+            target_rows = _get_cashier_users_on_branch(opening_doc.branch)
+            target_label = _("a cashier or captain")
+        else:
+            target_rows = _get_captain_users_on_branch(opening_doc.branch)
+            target_label = _("a captain")
+        candidates = {c["user"] for c in target_rows if c["user"] != me}
 
         if not transfer_to:
             names_str = ", ".join(r["name"] for r in blocking[:5])
@@ -1818,8 +1840,8 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
             frappe.throw(
                 _(
                     "You have {0} unpaid order(s) on this shift: {1}{2}. "
-                    "Select a cashier to transfer them to before closing."
-                ).format(len(blocking), names_str, more),
+                    "Select {3} to transfer them to before closing."
+                ).format(len(blocking), names_str, more, target_label),
                 title=_("Transfer Required"),
             )
         if transfer_to == me:
@@ -1827,15 +1849,12 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
                 _("You can't transfer orders to yourself."),
                 title=_("Invalid Transfer Target"),
             )
-        candidates = {
-            c["user"] for c in _get_cashier_users_on_branch(opening_doc.branch)
-        }
         if transfer_to not in candidates:
             frappe.throw(
                 _(
-                    "Selected cashier {0} isn't listed as a URY Cashier or "
-                    "URY Captain on branch {1}."
-                ).format(transfer_to, opening_doc.branch),
+                    "Selected user {0} isn't a valid transfer target "
+                    "({1}) on branch {2}."
+                ).format(transfer_to, target_label, opening_doc.branch),
                 title=_("Invalid Transfer Target"),
             )
 
