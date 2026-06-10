@@ -272,41 +272,56 @@ def select_network_printer(pos_profile, invoice_id):
 
 @frappe.whitelist()
 def qz_print_update(invoice):
-    """
-    Called by JS AFTER QZ Tray successfully prints, or to update status.
+    """Called by JS AFTER the bill physically prints. Marks the invoice
+    printed (which unhides the Payment button on the Orders page) and frees
+    the table.
+
+    Mark invoice_printed=1 and COMMIT it IMMEDIATELY — before the table-free
+    / auto-unmerge steps. Previously the flag was set but only committed at
+    the end of the request, so if a later step (table free / unmerge) errored
+    or rolled the transaction back, the invoice_printed write was lost too —
+    and the cashier was left with a printed bill but no Payment button. The
+    bill has already printed by the time we get here, so recording that must
+    not depend on the table bookkeeping succeeding. See CLAUDE.md "Fixes log"
+    2026-06-10.
     """
     try:
-        table = frappe.db.get_value("POS Invoice", invoice, "restaurant_table")
-        
-        frappe.db.set_value("POS Invoice", invoice, "invoice_printed", 1, update_modified=False)
-        
-        if frappe.db.get_value("POS Invoice", invoice, "invoice_printed") != 1:
-             return {"status": "Failure"}
+        frappe.db.set_value(
+            "POS Invoice", invoice, "invoice_printed", 1, update_modified=False
+        )
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error(
+            title="Print Update Fail (mark printed)",
+            message=traceback.format_exc(),
+        )
+        return {"status": "Failure"}
 
+    # Free the table — best-effort. The print is already recorded above, so a
+    # failure here must NOT undo invoice_printed (separate commit).
+    try:
+        table = frappe.db.get_value("POS Invoice", invoice, "restaurant_table")
         if table:
-             frappe.db.set_value(
+            frappe.db.set_value(
                 "URY Table",
                 table,
                 {"occupied": 0, "latest_invoice_time": None},
-                update_modified=True
+                update_modified=True,
             )
+            # If this table is the master of an active table merge, the merge
+            # has served its purpose (the combined order has been printed and
+            # is on its way to payment). Auto-unmerge so the source tables
+            # come back into the grid. See CLAUDE.md "Fixes log" 2026-04-11.
+            from ury.ury_pos.api import auto_unmerge_table_if_active
+            auto_unmerge_table_if_active(table)
+            frappe.db.commit()
+    except Exception:
+        frappe.log_error(
+            title="Print Update Fail (free table)",
+            message=traceback.format_exc(),
+        )
 
-             if frappe.db.get_value("URY Table", table, "occupied") != 0:
-                 return {"status": "Failure"}
-
-             # If this table is the master of an active table merge,
-             # the merge has served its purpose (the combined order has
-             # been printed and is on its way to payment). Auto-unmerge
-             # so the source tables come back into the grid as Available.
-             # See CLAUDE.md "Fixes log" 2026-04-11.
-             from ury.ury_pos.api import auto_unmerge_table_if_active
-             auto_unmerge_table_if_active(table)
-
-        return {"status": "Success"}
-
-    except Exception as e:
-        frappe.log_error(title="Print Update Fail", message=traceback.format_exc())
-        return {"status": "Failure"}
+    return {"status": "Success"}
 
 
 @frappe.whitelist()

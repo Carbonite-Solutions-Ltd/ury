@@ -32,6 +32,22 @@ interface PrintSplitReceiptsParams {
 }
 
 /**
+ * Mark the invoice printed on the backend — but never let a hiccup here
+ * throw out of the print flow. By the time this runs the bill has already
+ * physically printed, so the caller MUST still treat the print as done
+ * (and the Orders page marks the invoice printed optimistically). The
+ * backend `qz_print_update` commits invoice_printed=1 immediately, so a
+ * successful call persists it; a transient failure is logged, not thrown.
+ */
+async function markPrintedSafe(orderId: string): Promise<void> {
+  try {
+    await updatePrintStatus(orderId);
+  } catch (e) {
+    console.error('updatePrintStatus failed (bill already printed):', e);
+  }
+}
+
+/**
  * Print an invoice.
  *
  * Reads the NEW unified `custom_print_mode` config first (set by
@@ -74,7 +90,7 @@ export async function printOrder({ orderId, posProfile }: PrintOrderParams): Pro
     // single `printer` field for backwards compat.
     const billPrinter = (custom_bill_printer || printer || null) as string | null;
     await printWithQz(qzHost, html, billPrinter);
-    await updatePrintStatus(orderId);
+    await markPrintedSafe(orderId);
     return 'qz';
   } else if (newCups || printer) {
     // Network printing — unchanged legacy path. CUPS Direct mode
@@ -88,7 +104,7 @@ export async function printOrder({ orderId, posProfile }: PrintOrderParams): Pro
     } else {
       await selectNetworkPrinter(orderId, name, print_format);
     }
-    await updatePrintStatus(orderId);
+    await markPrintedSafe(orderId);
     return 'network';
   } else {
     // Last-resort fallback: open the printview page in a new tab.
@@ -96,7 +112,7 @@ export async function printOrder({ orderId, posProfile }: PrintOrderParams): Pro
     // replace this with an inline print modal + hidden iframe.
     const url = `/printview?doctype=POS Invoice&name=${orderId}&format=${print_format}&no_letterhead=1&settings={}&letterhead=No Letterhead&trigger_print=1&_lang=en`;
     window.open(url, '_blank', 'noopener,noreferrer');
-    await updatePrintStatus(orderId);
+    await markPrintedSafe(orderId);
     return 'socket';
   }
 }
@@ -154,7 +170,7 @@ export async function printSplitReceipts({
       // eslint-disable-next-line no-await-in-loop -- jobs must not interleave
       await printWithQz(qzHost, banner + html, billPrinter);
     }
-    await updatePrintStatus(orderId);
+    await markPrintedSafe(orderId);
     return 'qz';
   }
 
