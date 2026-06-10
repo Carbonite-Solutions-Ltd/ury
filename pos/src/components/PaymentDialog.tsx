@@ -8,7 +8,6 @@ import {
   Plus,
   Minus,
   Trash2,
-  ArrowDownToLine,
   BedDouble,
   AlertCircle,
 } from 'lucide-react';
@@ -143,6 +142,9 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
   // Split-payer state.
   const [splitMode, setSplitMode] = useState<SplitMode>('equal');
   const [payers, setPayers] = useState<Payer[]>([]);
+  // Custom split: payer ids the cashier has typed into. Those keep their
+  // entered amount; every UNTOUCHED payer auto-splits the remainder equally.
+  const [touchedIds, setTouchedIds] = useState<Set<string>>(new Set());
 
   // Split STYLE: by value (per-payer amounts, one invoice) or by item
   // (separate invoices, sequential pay). 2026-06-05.
@@ -201,9 +203,11 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
         makePayer(defaultMode, amounts[1]),
       ]);
       setSplitMode('equal');
+      setTouchedIds(new Set());
     }
     if (!splitEnabled && payers.length > 0) {
       setPayers([]);
+      setTouchedIds(new Set());
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [splitEnabled]);
@@ -269,10 +273,47 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
   // Tolerance of 1 cent to avoid float-comparison pain.
   const splitBalanced = Math.abs(splitRemaining) < 0.01;
 
-  const setPayerAmount = (id: string, value: string) => {
-    setPayers((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, amount: value } : p))
+  // Custom-split redistribution: every UNTOUCHED payer shares the remainder
+  // (total − sum of touched amounts) equally, cent-safe. So when the cashier
+  // types into one bill, the others auto-fill: with 2 bills the second gets
+  // the remainder; with 3+ the rest split it equally.
+  const redistributeUntouched = (
+    list: Payer[],
+    touched: Set<string>
+  ): Payer[] => {
+    const untouched = list.filter((p) => !touched.has(p.id));
+    if (untouched.length === 0) return list;
+    const sumTouched = list
+      .filter((p) => touched.has(p.id))
+      .reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    const remainder = Math.max(
+      0,
+      Math.round((finalTotal - sumTouched) * 100) / 100
     );
+    const amounts = distributeEqually(remainder, untouched.length);
+    let i = 0;
+    return list.map((p) =>
+      touched.has(p.id) ? p : { ...p, amount: amounts[i++].toFixed(2) }
+    );
+  };
+
+  const setPayerAmount = (id: string, value: string) => {
+    if (splitMode !== 'custom') {
+      setPayers((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, amount: value } : p))
+      );
+      return;
+    }
+    // Lock this bill to the typed value; the rest auto-split the remainder.
+    const touched = new Set(touchedIds);
+    touched.add(id);
+    setTouchedIds(touched);
+    setPayers((prev) => {
+      const updated = prev.map((p) =>
+        p.id === id ? { ...p, amount: value } : p
+      );
+      return redistributeUntouched(updated, touched);
+    });
   };
   const setPayerMode = (id: string, mode: string) => {
     setPayers((prev) => prev.map((p) => (p.id === id ? { ...p, mode } : p)));
@@ -285,32 +326,27 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
         const amounts = distributeEqually(finalTotal, next.length);
         return next.map((p, i) => ({ ...p, amount: amounts[i].toFixed(2) }));
       }
-      return next;
+      // Custom: the new bill is untouched — re-split the remainder.
+      return redistributeUntouched(next, touchedIds);
     });
   };
   const removePayer = (id: string) => {
     if (payers.length <= 2) return;
+    const touched = new Set(touchedIds);
+    touched.delete(id);
+    setTouchedIds(touched);
     setPayers((prev) => {
       const next = prev.filter((p) => p.id !== id);
       if (splitMode === 'equal') {
         const amounts = distributeEqually(finalTotal, next.length);
         return next.map((p, i) => ({ ...p, amount: amounts[i].toFixed(2) }));
       }
-      return next;
-    });
-  };
-  const fillRemainingTo = (id: string) => {
-    setPayers((prev) => {
-      const othersSum = prev
-        .filter((p) => p.id !== id)
-        .reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
-      const want = Math.max(0, Math.round((finalTotal - othersSum) * 100) / 100);
-      return prev.map((p) =>
-        p.id === id ? { ...p, amount: want.toFixed(2) } : p
-      );
+      return redistributeUntouched(next, touched);
     });
   };
   const evenSplitFromCustom = () => {
+    // Clear all locks and split evenly again.
+    setTouchedIds(new Set());
     const amounts = distributeEqually(finalTotal, payers.length);
     setPayers((prev) =>
       prev.map((p, i) => ({ ...p, amount: amounts[i].toFixed(2) }))
@@ -727,7 +763,10 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
                 <div className="inline-flex rounded-md border border-gray-200 bg-white p-0.5 text-xs">
                   <button
                     type="button"
-                    onClick={() => setSplitMode('equal')}
+                    onClick={() => {
+                      setSplitMode('equal');
+                      setTouchedIds(new Set());
+                    }}
                     className={cn(
                       'px-3 py-1.5 rounded font-semibold transition-colors',
                       splitMode === 'equal'
@@ -739,7 +778,10 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setSplitMode('custom')}
+                    onClick={() => {
+                      setSplitMode('custom');
+                      setTouchedIds(new Set());
+                    }}
                     className={cn(
                       'px-3 py-1.5 rounded font-semibold transition-colors',
                       splitMode === 'custom'
@@ -840,16 +882,6 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
                                 'bg-gray-50 cursor-not-allowed'
                             )}
                           />
-                          {splitMode === 'custom' && (
-                            <button
-                              type="button"
-                              onClick={() => fillRemainingTo(p.id)}
-                              className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-100 transition-colors"
-                              title="Fill remaining"
-                            >
-                              <ArrowDownToLine className="w-3.5 h-3.5" />
-                            </button>
-                          )}
                         </div>
                         <div className="w-32">
                           <Select

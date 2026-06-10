@@ -14,6 +14,8 @@ import { useRootStore } from '../store/root-store';
 import type { RootState } from '../store/root-store';
 import { showToast } from './ui/toast';
 import { DINE_IN } from '../data/order-types';
+import WaiterSelectDialog from './WaiterSelectDialog';
+import type { Waiter } from '../lib/waiter-api';
 
 const OrderPanel = () => {
   const {
@@ -39,12 +41,19 @@ const OrderPanel = () => {
     terminalName,
     shiftBlocked,
     hotelRoom,
+    selectedWaiter,
+    setSelectedWaiter,
   } = usePOSStore();
   const user = useRootStore((state: RootState) => state.user);
   const [editingItem, setEditingItem] = useState<typeof activeOrders[0] | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showCommentDialog, setShowCommentDialog] = useState(false);
+  const [showWaiterDialog, setShowWaiterDialog] = useState(false);
   const [numberOfPeople, setNumberOfPeople] = useState<number>(1);
+
+  // Waiter feature: pop a waiter picker when CREATING a new order on a
+  // profile that uses waiters. Not on updates (the order already has one).
+  const useWaiter = posProfile?.custom_use_waiter === 1;
 
   const calculateItemTotal = (item: typeof activeOrders[0]) => {
     const basePrice = item.selectedVariant?.price || item.price;
@@ -78,7 +87,7 @@ const OrderPanel = () => {
     }
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (waiterOverride?: Waiter) => {
     try {
       if (!posProfile) {
         throw new Error('POS Profile not found');
@@ -123,6 +132,16 @@ const OrderPanel = () => {
         return;
       }
 
+      // Waiter gate: when the profile uses waiters, a NEW order must have a
+      // waiter. If none is picked yet, pop the picker and stop here — the
+      // dialog re-calls handleSubmit with the chosen waiter. Updates skip
+      // this (the order already carries its waiter).
+      const orderWaiter = waiterOverride || selectedWaiter;
+      if (useWaiter && !isUpdatingOrder && !orderWaiter?.name) {
+        setShowWaiterDialog(true);
+        return;
+      }
+
       setIsSubmitting(true);
       
       const orderData = {
@@ -152,6 +171,7 @@ const OrderPanel = () => {
         last_invoice: isUpdatingOrder ? orderId : null,
         invoice: isUpdatingOrder ? orderId : null,
         waiter: user.name,
+        selected_waiter: orderWaiter?.name || undefined,
         comments: orderComment || undefined,
         terminal: terminalName || undefined,
         hotel_room: hotelRoom || undefined,
@@ -395,7 +415,7 @@ const OrderPanel = () => {
               <span className="text-lg font-semibold">{formatCurrency(total)}</span>
             </div>
             <Button
-              onClick={handleSubmit}
+              onClick={() => handleSubmit()}
               variant="default"
               size="default"
               className="w-full"
@@ -436,6 +456,18 @@ const OrderPanel = () => {
         onSave={handleCommentSave}
         initialComment={orderComment}
       />
+      {showWaiterDialog && (
+        <WaiterSelectDialog
+          onSelect={(w) => {
+            setSelectedWaiter(w);
+            setShowWaiterDialog(false);
+            // Continue the submit with the just-picked waiter (passed
+            // directly to avoid the stale-closure on selectedWaiter).
+            handleSubmit(w);
+          }}
+          onCancel={() => setShowWaiterDialog(false)}
+        />
+      )}
     </div>
   );
 };

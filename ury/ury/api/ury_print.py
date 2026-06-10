@@ -286,8 +286,19 @@ def qz_print_update(invoice):
     2026-06-10.
     """
     try:
+        # Mark printed + bump the per-bill print counter (drives the
+        # per-cashier reprint cap, POS Profile.custom_max_bill_prints).
+        current_count = (
+            frappe.db.get_value("POS Invoice", invoice, "custom_print_count") or 0
+        )
         frappe.db.set_value(
-            "POS Invoice", invoice, "invoice_printed", 1, update_modified=False
+            "POS Invoice",
+            invoice,
+            {
+                "invoice_printed": 1,
+                "custom_print_count": int(current_count) + 1,
+            },
+            update_modified=False,
         )
         frappe.db.commit()
     except Exception:

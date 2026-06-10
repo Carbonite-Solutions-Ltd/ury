@@ -165,6 +165,7 @@ def sync_order(
     room=None,
     terminal=None,
     hotel_room=None,
+    selected_waiter=None,
 ):
     # `owner` is optional. The frontend deliberately omits it when
     # updating an existing order so we don't overwrite the original
@@ -293,6 +294,11 @@ def sync_order(
     _apply_pos_profile_taxes(invoice, pos_profile)
     invoice.cashier = cashier
     invoice.waiter = waiter
+    # Waiter feature (2026-06-10): the picked URY Waiter. Only stamp it when
+    # supplied (use_waiter on + first-order pick); never clear an existing
+    # waiter on a later update where the frontend doesn't send one.
+    if selected_waiter:
+        invoice.custom_waiter = selected_waiter
     invoice.custom_aggregator_id = aggregator_id
     invoice.custom_restaurant_room = room
     invoice.restaurant_table = table

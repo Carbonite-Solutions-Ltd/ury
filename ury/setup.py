@@ -206,6 +206,30 @@ def get_custom_fields():
 					"print_hide_if_no_value": 1,
 					"description": "Set when this draft is part of an invoice-transfer workflow. 'Pending Incoming' means a captain has offered it to the current owner and is awaiting approval; 'Approved'/'Rejected' record the resolution. Source of truth is the URY Invoice Transfer doctype.",
 				},
+				# Waiter feature (2026-06-10). Selected URY Waiter stamped on
+				# the order when POS Profile.custom_use_waiter is on.
+				{
+					"fieldname": "custom_waiter",
+					"fieldtype": "Link",
+					"insert_after": "custom_transfer_status",
+					"label": "Waiter",
+					"options": "URY Waiter",
+					"read_only": 1,
+					"in_standard_filter": 1,
+					"description": "The waiter assigned to this order (when the POS Profile uses waiters). Stamped at order creation; shown on the Waiters page.",
+				},
+				# Bill reprint count (2026-06-10). Incremented each print by
+				# qz_print_update; capped per cashier by POS Profile.custom_max_bill_prints.
+				{
+					"fieldname": "custom_print_count",
+					"fieldtype": "Int",
+					"insert_after": "custom_waiter",
+					"label": "Print Count",
+					"default": "0",
+					"read_only": 1,
+					"non_negative": 1,
+					"description": "How many times this bill has been printed. Drives the per-cashier reprint cap (POS Profile.custom_max_bill_prints).",
+				},
 				{
 					"fieldname": "column_break_gd1mq",
 					"fieldtype": "Column Break",
@@ -490,6 +514,28 @@ def get_custom_fields():
 				"label": "Max Invoice Transfers",
 				"default": "2",
 				"description": "How many times a single unpaid order may be transferred between cashiers at shift close (per-invoice hop count). 0 disables transfers entirely - captains must pay/cancel instead. Each approved transfer consumes one hop.",
+			},
+			# Waiter feature (2026-06-10). When ON, the React POS pops a
+			# waiter picker when the cashier creates a NEW order; the chosen
+			# waiter is stamped on the invoice (POS Invoice.custom_waiter).
+			{
+				"fieldname": "custom_use_waiter",
+				"fieldtype": "Check",
+				"insert_after": "custom_max_invoice_transfers",
+				"label": "Use Waiter",
+				"default": "0",
+				"description": "When ON, the POS asks the cashier to pick a waiter (URY Waiter) when creating a new order. The waiter is stamped on the order and shown on the Waiters page.",
+			},
+			# Bill reprint cap (2026-06-10). Total times a CASHIER can print
+			# one bill. Captains/Managers/Admins are unlimited.
+			{
+				"fieldname": "custom_max_bill_prints",
+				"fieldtype": "Int",
+				"insert_after": "custom_use_waiter",
+				"label": "Max Bill Prints (Cashier)",
+				"default": "3",
+				"non_negative": 1,
+				"description": "Total times a cashier may print one bill (counts the first print). After this many the reprint button hides for cashiers. 0 = only the first print. Captains/Managers/Admins can always reprint.",
 			},
 			# Geofence feature. Master switch + company coordinates +
 			# default radius. When enabled, the React POS asks for

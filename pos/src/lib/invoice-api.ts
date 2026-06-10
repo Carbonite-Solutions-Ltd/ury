@@ -60,6 +60,10 @@ export interface POSInvoice {
   custom_hotel_room?: string | null;
   /** iHotel Profile the charge is written to. */
   custom_ihotel_profile?: string | null;
+  /** Times this bill has been printed (drives the cashier reprint cap). */
+  custom_print_count?: number;
+  /** Assigned URY Waiter (when the profile uses waiters). */
+  custom_waiter?: string | null;
 }
 
 export interface CashierUser {

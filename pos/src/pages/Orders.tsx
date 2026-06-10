@@ -185,6 +185,16 @@ export default function Orders() {
 
   const canReprint = useMemo(() => canReprintInvoice(user), [user]);
 
+  // Reprint gating: captains/managers/admins reprint freely; a cashier may
+  // reprint until the bill's print count hits the profile's max (default 3).
+  const canReprintNow = useMemo(() => {
+    if (canReprint) return true;
+    if (!selectedOrder) return false;
+    const max = posStore.posProfile?.custom_max_bill_prints ?? 3;
+    const count = Number(selectedOrder.custom_print_count) || 0;
+    return count < max;
+  }, [canReprint, selectedOrder, posStore.posProfile]);
+
   const canReturn = useMemo(
     () => canReturnOrders(user, posStore.posProfile),
     [user, posStore.posProfile]
@@ -1155,9 +1165,10 @@ export default function Orders() {
                   </Button>
                 ) : (
                   <>
-                    {/* Re-print button — captains / managers / admins only.
-                        Cashiers don't need this after the first print. */}
-                    {canReprint && (
+                    {/* Re-print button. Captains/managers/admins reprint
+                        freely; cashiers can reprint until the bill's print
+                        count hits the profile's Max Bill Prints. */}
+                    {canReprintNow && (
                       <Button
                         variant="outline"
                         size="icon"

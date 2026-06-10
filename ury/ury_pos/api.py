@@ -836,7 +836,7 @@ def getPosInvoice(
             pi.order_type, pi.custom_order_status, pi.custom_terminal,
             pi.owner, pi.is_return, pi.return_against,
             pi.custom_charge_to_room, pi.custom_hotel_room,
-            pi.custom_ihotel_profile,
+            pi.custom_ihotel_profile, pi.custom_print_count, pi.custom_waiter,
             u.full_name AS owner_full_name,
             (
                 SELECT ml.name
@@ -1141,6 +1141,131 @@ def _resolve_terminal_bill_printer(pos_profile_doc, terminal):
     return pos_profile_doc.get("custom_bill_printer") or None
 
 
+# ---------------------------------------------------------------------------
+# Waiter feature (2026-06-10)
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist()
+def get_waiters(query=None):
+    """Active URY Waiters for the order-time picker. Optional name/mobile
+    filter. Returns [{name, full_name, mobile_number}]."""
+    or_filters = None
+    if query:
+        like = f"%{query.strip()}%"
+        or_filters = {
+            "full_name": ["like", like],
+            "mobile_number": ["like", like],
+            "name": ["like", like],
+        }
+    return frappe.get_all(
+        "URY Waiter",
+        filters={"disabled": 0},
+        or_filters=or_filters,
+        fields=["name", "full_name", "mobile_number"],
+        order_by="full_name asc",
+        limit_page_length=100,
+    )
+
+
+@frappe.whitelist()
+def create_waiter(full_name, mobile_number=None):
+    """Quick-add a waiter from the POS. Returns the created waiter row."""
+    full_name = (full_name or "").strip()
+    if not full_name:
+        frappe.throw(_("Waiter name is required."), title=_("Invalid Waiter"))
+    if frappe.db.exists("URY Waiter", full_name):
+        frappe.throw(
+            _("A waiter named '{0}' already exists.").format(full_name),
+            title=_("Duplicate Waiter"),
+        )
+    doc = frappe.get_doc(
+        {
+            "doctype": "URY Waiter",
+            "full_name": full_name,
+            "mobile_number": (mobile_number or "").strip() or None,
+        }
+    )
+    doc.insert()
+    return {
+        "name": doc.name,
+        "full_name": doc.full_name,
+        "mobile_number": doc.mobile_number,
+    }
+
+
+@frappe.whitelist()
+def get_waiters_with_pending_orders():
+    """For the Waiters page: every active waiter plus their DRAFT (unpaid)
+    POS Invoices on the current branch, each with its items. Branch-scoped.
+    Orders charged-to-room (iHotel) are excluded — they aren't pending
+    payment. Returns [{name, full_name, mobile_number, orders: [...]}]."""
+    branch = getBranch()
+    waiters = frappe.get_all(
+        "URY Waiter",
+        filters={"disabled": 0},
+        fields=["name", "full_name", "mobile_number"],
+        order_by="full_name asc",
+    )
+    drafts = frappe.db.sql(
+        """
+        SELECT pi.name, pi.custom_waiter AS waiter, pi.customer,
+               pi.customer_name, pi.grand_total, pi.restaurant_table,
+               pi.order_type, pi.invoice_printed, pi.creation
+        FROM `tabPOS Invoice` pi
+        WHERE pi.branch = %(branch)s
+          AND pi.docstatus = 0
+          AND pi.status = 'Draft'
+          AND COALESCE(pi.custom_waiter, '') != ''
+          AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)
+          AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
+        ORDER BY pi.creation DESC
+        """,
+        {"branch": branch},
+        as_dict=True,
+    )
+    by_waiter = {}
+    for d in drafts:
+        d["items"] = frappe.get_all(
+            "POS Invoice Item",
+            filters={"parent": d["name"]},
+            fields=["item_name", "qty", "rate", "amount"],
+            order_by="idx asc",
+        )
+        d["creation"] = str(d.get("creation") or "")
+        by_waiter.setdefault(d["waiter"], []).append(d)
+    return [
+        {
+            "name": w["name"],
+            "full_name": w["full_name"],
+            "mobile_number": w["mobile_number"],
+            "orders": by_waiter.get(w["name"], []),
+        }
+        for w in waiters
+    ]
+
+
+@frappe.whitelist()
+def get_waiter_pending_order_count():
+    """Total pending (Draft) orders with a waiter on the current branch —
+    drives the Waiters navbar badge. Cheap COUNT, branch-scoped."""
+    branch = getBranch()
+    row = frappe.db.sql(
+        """
+        SELECT COUNT(pi.name) AS c
+        FROM `tabPOS Invoice` pi
+        WHERE pi.branch = %(branch)s
+          AND pi.docstatus = 0
+          AND pi.status = 'Draft'
+          AND COALESCE(pi.custom_waiter, '') != ''
+          AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)
+          AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
+        """,
+        {"branch": branch},
+        as_dict=True,
+    )
+    return {"count": int(row[0].c if row else 0)}
+
+
 @frappe.whitelist()
 def getPosProfile(terminal=None):
     """Resolve the POS Profile for the current session.
@@ -1226,6 +1351,14 @@ def getPosProfile(terminal=None):
         max_invoice_transfers = (
             2 if raw_max_transfers is None else int(raw_max_transfers or 0)
         )
+        # Waiter feature (2026-06-10). When on, the React POS pops a waiter
+        # picker at new-order creation.
+        use_waiter = int(pos_profiles.get("custom_use_waiter") or 0)
+        # Per-cashier bill reprint cap (2026-06-10). Default 3 when unset.
+        raw_max_prints = pos_profiles.get("custom_max_bill_prints")
+        max_bill_prints = (
+            3 if raw_max_prints is None else int(raw_max_prints or 0)
+        )
         ihotel_enabled = int(pos_profiles.get("custom_ihotel_enabled") or 0)
         ihotel_charge_type = pos_profiles.get("custom_ihotel_charge_type") or None
         shift_system_mode = pos_profiles.get("custom_shift_system_mode") or "Disabled"
@@ -1301,6 +1434,8 @@ def getPosProfile(terminal=None):
         "custom_restrict_returns_to_captain": restrict_returns_to_captain,
         "custom_enable_returns": enable_returns,
         "custom_max_invoice_transfers": max_invoice_transfers,
+        "custom_use_waiter": use_waiter,
+        "custom_max_bill_prints": max_bill_prints,
         "custom_ihotel_enabled": ihotel_enabled,
         "custom_ihotel_charge_type": ihotel_charge_type,
         "custom_shift_system_mode": shift_system_mode,
