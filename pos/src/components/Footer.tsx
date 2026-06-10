@@ -12,6 +12,7 @@ import { call } from '../lib/frappe-sdk';
 import NotificationToast from './NotificationToast';
 import { BarChart3 } from 'lucide-react';
 import { getWaiterPendingOrderCount } from '../lib/waiter-api';
+import { usePOSStore } from '../store/pos-store';
 
 // @ts-ignore
 const socket = window.frappe?.socketio || null;
@@ -20,21 +21,19 @@ const Footer = () => {
   const [notificationCount, setNotificationCount] = useState(0);
   const [waiterPendingCount, setWaiterPendingCount] = useState(0);
   const [currentNotification, setCurrentNotification] = useState<any>(null);
+  // The Waiters tab only exists when the POS Profile uses waiters.
+  const useWaiter = usePOSStore((s) => s.posProfile?.custom_use_waiter === 1);
 
   const fetchWaiterPendingCount = async () => {
     setWaiterPendingCount(await getWaiterPendingOrderCount());
   };
 
   useEffect(() => {
-    // Fetch notification + waiter-pending counts on mount
+    // Fetch notification count on mount
     fetchNotificationCount();
-    fetchWaiterPendingCount();
 
     // Poll for updates every 30 seconds as backup
-    const interval = setInterval(() => {
-      fetchNotificationCount();
-      fetchWaiterPendingCount();
-    }, 30000);
+    const interval = setInterval(fetchNotificationCount, 30000);
 
     // Listen for realtime notifications
     if (socket) {
@@ -48,6 +47,17 @@ const Footer = () => {
       }
     };
   }, []);
+
+  // Waiter pending-order badge — only when the profile uses waiters.
+  useEffect(() => {
+    if (!useWaiter) {
+      setWaiterPendingCount(0);
+      return;
+    }
+    fetchWaiterPendingCount();
+    const interval = setInterval(fetchWaiterPendingCount, 30000);
+    return () => clearInterval(interval);
+  }, [useWaiter]);
 
   const handleNewNotification = (data: any) => {
     console.log('🔔 New order served notification:', data);
@@ -85,7 +95,9 @@ const Footer = () => {
   { icon: LayoutGrid, label: 'POS', path: '/' },
   { icon: Table, label: 'Table', path: '/table' },
   { icon: ClipboardList, label: 'Orders', path: '/orders' },
-  { icon: Users, label: 'Waiters', path: '/waiters', badge: waiterPendingCount },
+  ...(useWaiter
+    ? [{ icon: Users, label: 'Waiters', path: '/waiters', badge: waiterPendingCount }]
+    : []),
   { icon: BarChart3, label: 'Reports', path: '/reports' },
   { icon: Bell, label: 'Alerts', path: '/notifications', badge: notificationCount },
 

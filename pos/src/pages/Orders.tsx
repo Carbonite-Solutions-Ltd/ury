@@ -171,6 +171,14 @@ export default function Orders() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderSearchQuery]);
 
+  // Pending KOTs view never merges — drop out of merge mode if the cashier
+  // switches into it while selecting orders to merge.
+  useEffect(() => {
+    if (selectedStatus === 'Pending KOTs' && mergeMode) {
+      exitMergeMode();
+    }
+  }, [selectedStatus, mergeMode, exitMergeMode]);
+
   // Show the cashier column only when the captain has flipped the scope
   // off "mine" — otherwise every row would say the same name.
   const showCashierColumn = useMemo(
@@ -425,6 +433,13 @@ export default function Orders() {
         showToast.info('Order moved to Draft after printing.');
         setSelectedStatus('Draft');
         fetchOrders();
+      } else if (selectedStatus === 'Pending KOTs') {
+        // The held KOTs just fired, so this order no longer has any
+        // pending KOTs — it drops out of this filter. Clear the panel and
+        // refresh the list + the sidebar badge.
+        clearSelectedOrder();
+        await fetchOrders();
+        setPendingKotRefreshVersion((v) => v + 1);
       }
     } catch (err: any) {
       showToast.error('Print failed: ' + (err?.message || err));
@@ -508,7 +523,9 @@ export default function Orders() {
               )}
             </div>
             <div className="flex items-center gap-2">
-              {canMerge && (
+              {/* Merging is disabled in the Pending KOTs view — held KOTs are
+                  only printed there, never merged. */}
+              {canMerge && selectedStatus !== 'Pending KOTs' && (
                 <Button
                   onClick={() => enterMergeMode()}
                   variant="outline"
@@ -885,8 +902,11 @@ export default function Orders() {
                 {selectedOrder.name}
               </h2>
               <div className="flex items-center gap-2">
-                {/* Only show edit and cancel buttons for Draft, Unbilled, and Recently Paid orders */}
-                {(selectedOrder.status === 'Draft' || selectedOrder.status === 'Unbilled' || selectedOrder.status === 'Recently Paid') && (
+                {/* Only show edit and cancel buttons for Draft, Unbilled, and
+                    Recently Paid orders. In the "Pending KOTs" view the cashier
+                    only prints (which fires the held KOTs) — no edit/cancel. */}
+                {(selectedOrder.status === 'Draft' || selectedOrder.status === 'Unbilled' || selectedOrder.status === 'Recently Paid') &&
+                 selectedStatus !== 'Pending KOTs' && (
                   <>
                     <button
                       type="button"
@@ -1120,6 +1140,32 @@ export default function Orders() {
                     >
                       <X className="w-4 h-4 mr-1.5" />
                       Reject
+                    </Button>
+                    <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
+                      {formatCurrency(getOrderTotal(selectedOrder))}
+                    </span>
+                  </>
+                ) : selectedStatus === 'Pending KOTs' ? (
+                  /* Pending KOTs view: the cashier only PRINTS, which fires
+                     the held KOTs. No payment / edit / return here. After
+                     printing the order leaves this filter. */
+                  <>
+                    <Button
+                      className="flex-1"
+                      onClick={handlePrintOrder}
+                      disabled={isPrinting}
+                    >
+                      {isPrinting ? (
+                        <>
+                          <Spinner className="w-5 h-5 mr-2" hideMessage />
+                          Printing…
+                        </>
+                      ) : (
+                        <>
+                          <Printer className="w-5 h-5 mr-2" />
+                          Print
+                        </>
+                      )}
                     </Button>
                     <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
                       {formatCurrency(getOrderTotal(selectedOrder))}

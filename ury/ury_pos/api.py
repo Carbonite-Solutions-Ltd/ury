@@ -1233,6 +1233,7 @@ def get_waiters_with_pending_orders():
         )
         d["creation"] = str(d.get("creation") or "")
         by_waiter.setdefault(d["waiter"], []).append(d)
+    # Only surface waiters who actually have pending orders.
     return [
         {
             "name": w["name"],
@@ -1241,6 +1242,7 @@ def get_waiters_with_pending_orders():
             "orders": by_waiter.get(w["name"], []),
         }
         for w in waiters
+        if by_waiter.get(w["name"])
     ]
 
 

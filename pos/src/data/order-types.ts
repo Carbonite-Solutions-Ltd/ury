@@ -100,15 +100,13 @@ export const INCOMING_TRANSFERS_STATUS_TYPE = [
     }
 ];
 
-// Extended status types that are only available when view_all_status is enabled
+// Extended status types that are only available when view_all_status is enabled.
+// "Return" was removed from the sidebar on 2026-06-10 (returns are no longer
+// used) — the union type keeps "Return" for back-compat with existing data.
 export const EXTENDED_ORDER_STATUS_TYPES = [
     {
         label: "Consolidated",
         value: "Consolidated"
-    },
-    {
-        label: "Return",
-        value: "Return"
     }
 ];
 
