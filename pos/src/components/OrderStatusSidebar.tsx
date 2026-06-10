@@ -110,8 +110,11 @@ const OrderStatusSidebar = ({
       )}
     >
       <nav className="flex-1 p-6 overflow-y-auto space-y-4">
-        {/* ───── Order Status ───── */}
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+        {/* ───── Order Status ─────
+            No card wrapper here (unlike the other sections) so the full
+            sidebar width is available for the longer labels like
+            "Incoming Transfers" and "Pending KOTs". */}
+        <div>
           <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3 px-1">
             Order Status
           </h2>

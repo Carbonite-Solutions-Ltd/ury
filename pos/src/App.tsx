@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Footer from './components/Footer';
 import Header from './components/Header';
 import Orders from './pages/Orders';
+import Waiters from './pages/Waiters';
 import POS from './pages/POS';
 import Table from './pages/Table';
 import Reports from './pages/Reports';
@@ -294,6 +295,7 @@ function App() {
                     <Route path="/" element={<POS />} />
                     <Route path="/orders" element={<Orders />} />
                     <Route path="/table" element={<Table />} />
+                    <Route path="/waiters" element={<Waiters />} />
                     <Route path="/reports" element={<Reports />} />
                     <Route path="/notifications" element={<Notifications />} />
                     <Route path="/biometric-enrollment" element={<BiometricEnrollment />} />

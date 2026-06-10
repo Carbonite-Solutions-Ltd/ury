@@ -74,6 +74,8 @@ export interface SyncOrderRequest {
   cashier?: string;
   owner?: string;
   waiter?: string;
+  /** Selected URY Waiter (when the profile uses waiters). */
+  selected_waiter?: string;
   pos_profile: string;
   invoice: string | null;
   aggregator_id?: string | null;

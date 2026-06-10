@@ -57,6 +57,10 @@ export interface POSInvoice {
   custom_charge_to_room?: number;
   custom_hotel_room?: string | null;
   custom_ihotel_profile?: string | null;
+  /** Times this bill has been printed (drives the cashier reprint cap). */
+  custom_print_count?: number;
+  /** Assigned URY Waiter (when the profile uses waiters). */
+  custom_waiter?: string | null;
   /** Transfer workflow: denormalized state ('Pending Incoming' etc). */
   custom_transfer_status?: string | null;
   /** Present on rows from the Incoming Transfers filter. */

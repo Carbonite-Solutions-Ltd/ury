@@ -1,29 +1,40 @@
 import { NavLink } from 'react-router-dom';
-import { 
-  LayoutGrid, 
-  ClipboardList, 
+import {
+  LayoutGrid,
+  ClipboardList,
   Table,
   Bell,
+  Users,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useEffect, useState } from 'react';
 import { call } from '../lib/frappe-sdk';
 import NotificationToast from './NotificationToast';
 import { BarChart3 } from 'lucide-react';
+import { getWaiterPendingOrderCount } from '../lib/waiter-api';
 
 // @ts-ignore
 const socket = window.frappe?.socketio || null;
 
 const Footer = () => {
   const [notificationCount, setNotificationCount] = useState(0);
+  const [waiterPendingCount, setWaiterPendingCount] = useState(0);
   const [currentNotification, setCurrentNotification] = useState<any>(null);
 
+  const fetchWaiterPendingCount = async () => {
+    setWaiterPendingCount(await getWaiterPendingOrderCount());
+  };
+
   useEffect(() => {
-    // Fetch notification count on mount
+    // Fetch notification + waiter-pending counts on mount
     fetchNotificationCount();
+    fetchWaiterPendingCount();
 
     // Poll for updates every 30 seconds as backup
-    const interval = setInterval(fetchNotificationCount, 30000);
+    const interval = setInterval(() => {
+      fetchNotificationCount();
+      fetchWaiterPendingCount();
+    }, 30000);
 
     // Listen for realtime notifications
     if (socket) {
@@ -74,9 +85,10 @@ const Footer = () => {
   { icon: LayoutGrid, label: 'POS', path: '/' },
   { icon: Table, label: 'Table', path: '/table' },
   { icon: ClipboardList, label: 'Orders', path: '/orders' },
+  { icon: Users, label: 'Waiters', path: '/waiters', badge: waiterPendingCount },
   { icon: BarChart3, label: 'Reports', path: '/reports' },
   { icon: Bell, label: 'Alerts', path: '/notifications', badge: notificationCount },
-  
+
 ];
 
   return (
@@ -91,9 +103,11 @@ const Footer = () => {
                 key={item.path}
                 to={item.path}
                 onClick={() => {
-                  // Refresh count when clicking notifications
+                  // Refresh the relevant badge count on tab change.
                   if (item.path === '/notifications') {
                     fetchNotificationCount();
+                  } else if (item.path === '/waiters') {
+                    fetchWaiterPendingCount();
                   }
                 }}
                 className={({ isActive }) =>

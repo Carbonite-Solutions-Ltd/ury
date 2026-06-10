@@ -46,6 +46,10 @@ export interface PosProfileLimited {
    * transfers. Default 2.
    */
   custom_max_invoice_transfers?: number;
+  /** When 1, the POS pops a waiter picker at new-order creation. */
+  custom_use_waiter?: number;
+  /** Total times a cashier may (re)print one bill. Default 3. */
+  custom_max_bill_prints?: number;
   /** iHotel integration master switch (per-profile). */
   custom_ihotel_enabled?: number;
   /** Default Charge Type written onto the iHotel Profile's folio row. */
@@ -267,6 +271,8 @@ export async function getCombinedPosProfile(
       limitedProfile.custom_restrict_returns_to_captain,
     custom_enable_returns: limitedProfile.custom_enable_returns,
     custom_max_invoice_transfers: limitedProfile.custom_max_invoice_transfers,
+    custom_use_waiter: limitedProfile.custom_use_waiter,
+    custom_max_bill_prints: limitedProfile.custom_max_bill_prints,
     custom_ihotel_enabled: limitedProfile.custom_ihotel_enabled,
     custom_ihotel_charge_type: limitedProfile.custom_ihotel_charge_type,
     custom_shift_system_mode: limitedProfile.custom_shift_system_mode,
