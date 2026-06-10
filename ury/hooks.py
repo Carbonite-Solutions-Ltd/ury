@@ -418,6 +418,7 @@ fixtures = [
                     "POS Profile-custom_print_routing_section",
                     "POS Profile-custom_print_mode",
                     "POS Profile-custom_bill_printer",
+                    "POS Profile-custom_bill_printers",
                     "POS Profile-custom_kitchen_kot_printer",
                     "POS Profile-custom_bar_kot_printer",
                     "POS Profile-custom_parcel_kot_printer",
