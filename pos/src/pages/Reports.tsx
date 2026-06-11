@@ -53,6 +53,13 @@ import {
 // payment-mode mix, active cashiers). See reports-api.ts.
 type DashboardStats = DashboardStatsExtended;
 
+interface DailySaleItem {
+  item_name: string;
+  qty: number;
+  rate: number;
+  amount: number;
+}
+
 interface SalesInvoice {
   name: string;
   posting_date: string;
@@ -62,6 +69,7 @@ interface SalesInvoice {
   status: string;
   restaurant_table: string | null;
   items_count: number;
+  items?: DailySaleItem[];
 }
 
 interface PaymentTotal {
@@ -103,6 +111,9 @@ export default function Reports() {
   const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
   const [salesInvoices, setSalesInvoices] = useState<SalesInvoice[]>([]);
   const [paymentTotals, setPaymentTotals] = useState<PaymentTotal[]>([]);
+  // Daily Sales "Itemized" toggle — on by default. When on, each sale row
+  // expands to show its line items (on screen + in the printout).
+  const [itemized, setItemized] = useState(true);
   // New report data slots
   const [shiftSummary, setShiftSummary] =
     useState<ShiftSummaryResponse | null>(null);
@@ -532,6 +543,16 @@ export default function Reports() {
             background: #f5f5f5;
             font-weight: bold;
           }
+          .items-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 10px;
+            color: #555;
+          }
+          .items-table td {
+            padding: 2px 6px;
+            border-bottom: 1px dotted #eee;
+          }
           .footer {
             margin-top: 30px;
             text-align: center;
@@ -612,6 +633,21 @@ export default function Reports() {
                 <td>${invoice.status}</td>
                 <td class="text-right">${formatCurrency(invoice.grand_total)}</td>
               </tr>
+              ${itemized && (invoice.items?.length ?? 0) > 0 ? `
+                <tr>
+                  <td colspan="7" style="padding: 0 10px 10px 28px; border-bottom: 1px solid #eee;">
+                    <table class="items-table">
+                      ${invoice.items!.map(it => `
+                        <tr>
+                          <td>${it.qty}&times; ${it.item_name}</td>
+                          <td class="text-right">@ ${formatCurrency(it.rate)}</td>
+                          <td class="text-right">${formatCurrency(it.amount)}</td>
+                        </tr>
+                      `).join('')}
+                    </table>
+                  </td>
+                </tr>
+              ` : ''}
             `).join('')}
             <tr class="total-row">
               <td colspan="6" class="text-right">TOTAL</td>
@@ -699,15 +735,26 @@ export default function Reports() {
             </Button>
 
             {activeTab === 'daily-sales' && (
-              <Button
-                variant="default"
-                size="sm"
-                onClick={handlePrint}
-                disabled={salesInvoices.length === 0}
-              >
-                <Printer className="w-4 h-4 mr-2" />
-                Print Report
-              </Button>
+              <>
+                <label className="flex items-center gap-1.5 text-sm text-gray-700 select-none cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={itemized}
+                    onChange={(e) => setItemized(e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  Itemized
+                </label>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={handlePrint}
+                  disabled={salesInvoices.length === 0}
+                >
+                  <Printer className="w-4 h-4 mr-2" />
+                  Print Report
+                </Button>
+              </>
             )}
           </div>
         </div>
@@ -1131,7 +1178,8 @@ export default function Reports() {
                         </thead>
                         <tbody className="divide-y divide-gray-200">
                           {salesInvoices.map((invoice) => (
-                            <tr key={invoice.name} className="hover:bg-gray-50">
+                            <React.Fragment key={invoice.name}>
+                            <tr className="hover:bg-gray-50">
                               <td className="px-4 py-3 text-sm font-medium text-gray-900">{invoice.name}</td>
                               <td className="px-4 py-3 text-sm text-gray-600">
                                 {new Date(invoice.posting_date + ' ' + invoice.posting_time).toLocaleTimeString('en-US', {
@@ -1154,6 +1202,34 @@ export default function Reports() {
                                 {formatCurrency(invoice.grand_total)}
                               </td>
                             </tr>
+                            {itemized && (invoice.items?.length ?? 0) > 0 && (
+                              <tr className="bg-gray-50/50">
+                                <td colSpan={7} className="px-8 pb-3 pt-0">
+                                  <div className="rounded-md border border-gray-200 bg-white divide-y divide-gray-100">
+                                    {invoice.items!.map((it, i) => (
+                                      <div
+                                        key={i}
+                                        className="flex items-center justify-between px-3 py-1.5 text-xs text-gray-600"
+                                      >
+                                        <span className="truncate">
+                                          <span className="font-medium text-gray-800">
+                                            {it.qty}×
+                                          </span>{' '}
+                                          {it.item_name}
+                                          <span className="text-gray-400">
+                                            {' '}@ {formatCurrency(it.rate)}
+                                          </span>
+                                        </span>
+                                        <span className="tabular-nums shrink-0 ml-2 font-medium text-gray-700">
+                                          {formatCurrency(it.amount)}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                            </React.Fragment>
                           ))}
                         </tbody>
                       </table>

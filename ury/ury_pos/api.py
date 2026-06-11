@@ -1196,7 +1196,8 @@ def create_waiter(full_name, mobile_number=None):
 @frappe.whitelist()
 def get_waiters_with_pending_orders():
     """For the Waiters page: every active waiter plus their DRAFT (unpaid)
-    POS Invoices on the current branch, each with its items. Branch-scoped.
+    POS Invoices that the CURRENT cashier rang, each with its items.
+    Scoped to the session user (the cashier who rang the order) + branch.
     Orders charged-to-room (iHotel) are excluded — they aren't pending
     payment. Returns [{name, full_name, mobile_number, orders: [...]}]."""
     branch = getBranch()
@@ -1213,6 +1214,7 @@ def get_waiters_with_pending_orders():
                pi.order_type, pi.invoice_printed, pi.creation
         FROM `tabPOS Invoice` pi
         WHERE pi.branch = %(branch)s
+          AND pi.owner = %(owner)s
           AND pi.docstatus = 0
           AND pi.status = 'Draft'
           AND COALESCE(pi.custom_waiter, '') != ''
@@ -1220,7 +1222,7 @@ def get_waiters_with_pending_orders():
           AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
         ORDER BY pi.creation DESC
         """,
-        {"branch": branch},
+        {"branch": branch, "owner": frappe.session.user},
         as_dict=True,
     )
     by_waiter = {}
@@ -1248,21 +1250,23 @@ def get_waiters_with_pending_orders():
 
 @frappe.whitelist()
 def get_waiter_pending_order_count():
-    """Total pending (Draft) orders with a waiter on the current branch —
-    drives the Waiters navbar badge. Cheap COUNT, branch-scoped."""
+    """Pending (Draft) orders with a waiter that the CURRENT cashier rang —
+    drives the Waiters navbar badge. Cheap COUNT, scoped to the session
+    user (the cashier who rang the order) + branch."""
     branch = getBranch()
     row = frappe.db.sql(
         """
         SELECT COUNT(pi.name) AS c
         FROM `tabPOS Invoice` pi
         WHERE pi.branch = %(branch)s
+          AND pi.owner = %(owner)s
           AND pi.docstatus = 0
           AND pi.status = 'Draft'
           AND COALESCE(pi.custom_waiter, '') != ''
           AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)
           AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
         """,
-        {"branch": branch},
+        {"branch": branch, "owner": frappe.session.user},
         as_dict=True,
     )
     return {"count": int(row[0].c if row else 0)}
@@ -3184,17 +3188,18 @@ def print_pending_kots_for_invoice(invoice):
 
 
 @frappe.whitelist()
-def get_pending_kot_count(terminal=None, posting_date=None):
+def get_pending_kot_count(terminal=None, posting_date=None, cashier=None):
     """Return the count of draft POS Invoices that still have at
     least one URY KOT with ``kot_printed = 0``.
 
     Feeds the live badge next to the "Pending KOTs" sidebar entry on
     the Orders page. Scoping follows the same rules as
     ``getPosInvoice``: branch (required), optional terminal, optional
-    posting_date. Cashier scoping is deliberately omitted — pending
-    KOTs are a kitchen/bar concern, not a per-cashier ledger. A
-    captain arriving mid-shift sees every held ticket on the terminal
-    regardless of who rang it.
+    posting_date, and the cashier scope (``mine`` / ``all`` /
+    specific user) via ``_resolve_orders_scope`` — so the badge counts
+    the pending KOTs of the cashier who rang the orders, matching the
+    Pending KOTs list. A cashier sees only their own; a captain can
+    widen the scope from the sidebar's cashier picker (2026-06-11).
 
     Response::
 
@@ -3220,6 +3225,11 @@ def get_pending_kot_count(terminal=None, posting_date=None):
     if posting_date:
         where_parts.append("pi.posting_date = %s")
         params.append(posting_date)
+
+    # Scope to the cashier who rang the order (mine / all / specific).
+    scope_clause, scope_params = _resolve_orders_scope(terminal, cashier)
+    where_parts.append(f"pi.{scope_clause}")
+    params.extend(scope_params)
 
     where_parts.append(
         "EXISTS ("
@@ -3556,7 +3566,32 @@ def get_daily_sales(date=None):
             GROUP BY pi.name
             ORDER BY pi.posting_time DESC
         """, (date, user), as_dict=True)
-        
+
+        # Attach the line items per invoice (for the "Itemized" view +
+        # itemized print). One query for all of the day's invoices,
+        # grouped by parent. get_all ignores DocType perms so a cashier
+        # always sees their own invoices' items.
+        invoice_names = [inv["name"] for inv in invoices]
+        items_by_invoice = {}
+        if invoice_names:
+            item_rows = frappe.get_all(
+                "POS Invoice Item",
+                filters={"parent": ["in", invoice_names]},
+                fields=["parent", "item_name", "qty", "rate", "amount"],
+                order_by="parent asc, idx asc",
+            )
+            for r in item_rows:
+                items_by_invoice.setdefault(r["parent"], []).append(
+                    {
+                        "item_name": r["item_name"],
+                        "qty": r["qty"],
+                        "rate": r["rate"],
+                        "amount": r["amount"],
+                    }
+                )
+        for inv in invoices:
+            inv["items"] = items_by_invoice.get(inv["name"], [])
+
         # Get payment method totals - correct table name
         payment_totals = frappe.db.sql("""
             SELECT 

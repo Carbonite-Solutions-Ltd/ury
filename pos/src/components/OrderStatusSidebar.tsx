@@ -64,9 +64,13 @@ const OrderStatusSidebar = ({
   const [incomingCount, setIncomingCount] = useState<number>(0);
 
   const refreshPendingCount = useCallback(async () => {
-    const count = await getPendingKotCount(terminalName, selectedDate);
+    const count = await getPendingKotCount(
+      terminalName,
+      selectedDate,
+      cashierFilter
+    );
     setPendingKotCount(count);
-  }, [terminalName, selectedDate]);
+  }, [terminalName, selectedDate, cashierFilter]);
 
   const transfersEnabled = (posProfile?.custom_max_invoice_transfers ?? 0) > 0;
   const refreshIncomingCount = useCallback(async () => {
