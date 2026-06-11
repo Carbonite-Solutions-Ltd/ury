@@ -61,6 +61,8 @@ export interface POSInvoice {
   custom_print_count?: number;
   /** Assigned URY Waiter (when the profile uses waiters). */
   custom_waiter?: string | null;
+  /** Reason captured when the order was cancelled (Cancelled filter). */
+  cancel_reason?: string | null;
   /** Transfer workflow: denormalized state ('Pending Incoming' etc). */
   custom_transfer_status?: string | null;
   /** Present on rows from the Incoming Transfers filter. */

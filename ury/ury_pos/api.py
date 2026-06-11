@@ -837,6 +837,7 @@ def getPosInvoice(
             pi.owner, pi.is_return, pi.return_against,
             pi.custom_charge_to_room, pi.custom_hotel_room,
             pi.custom_ihotel_profile, pi.custom_print_count, pi.custom_waiter,
+            pi.cancel_reason,
             u.full_name AS owner_full_name,
             (
                 SELECT ml.name

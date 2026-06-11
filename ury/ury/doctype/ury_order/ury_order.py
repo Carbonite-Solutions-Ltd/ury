@@ -519,6 +519,17 @@ def get_menu_name(order_type):
 
 @frappe.whitelist()
 def cancel_order(invoice_id, reason):
+    # Only captains / managers / admins may cancel an order. Cashiers don't
+    # see the cancel button; this enforces it server-side too (2026-06-11).
+    roles = set(frappe.get_roles(frappe.session.user))
+    if frappe.session.user != "Administrator" and not (
+        roles & {"System Manager", "URY Manager", "URY Captain"}
+    ):
+        frappe.throw(
+            _("Only a captain or manager can cancel an order."),
+            title=_("Not Permitted"),
+        )
+
     pos_invoice = frappe.get_doc("POS Invoice", invoice_id)
 
     # Update table status
