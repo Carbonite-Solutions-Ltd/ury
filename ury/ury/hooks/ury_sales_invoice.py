@@ -10,6 +10,76 @@ def on_update(doc,method):
 
 def before_submit(doc, method):
     allow_zero_valuation_on_pos_stock(doc, method)
+    set_pos_stock_expense_account(doc, method)
+
+
+def _resolve_default_cogs_account(company):
+    """Return a usable COGS / expense account for `company`, or None.
+
+    Mirrors ERPNext's get_default_expense_account resolution for Sales
+    Invoices: the Company's `default_expense_account`; falling back to the
+    first enabled, non-group 'Cost of Goods Sold' account on the company.
+    """
+    if not company:
+        return None
+    acc = frappe.get_cached_value("Company", company, "default_expense_account")
+    if acc:
+        return acc
+    # Deterministic fallback: the lowest-numbered enabled, non-group
+    # 'Cost of Goods Sold' ledger on the company. With zero valuation the
+    # posting amount is 0, so the specific COGS account doesn't affect the
+    # books — picking by name just keeps it predictable across closes.
+    rows = frappe.get_all(
+        "Account",
+        filters={
+            "company": company,
+            "account_type": "Cost of Goods Sold",
+            "is_group": 0,
+            "disabled": 0,
+        },
+        order_by="name asc",
+        limit_page_length=1,
+        pluck="name",
+    )
+    return rows[0] if rows else None
+
+
+def set_pos_stock_expense_account(doc, method):
+    """Set a COGS / expense account on POS / consolidated stock item rows
+    that don't have one, so consolidation can post the stock GL entry
+    instead of blocking the shift close with:
+
+        "Row #N: Expense Account not set for the Item X. Please set an
+         Expense Account in the Items table"
+
+    Same situation as the zero-valuation case: ERPNext defers a POS
+    Invoice's stock postings to the consolidated Sales Invoice at shift
+    close, and a restaurant menu item that's stock-tracked but has no
+    expense/COGS account anywhere (item / item group / brand / company
+    default) makes `check_expense_account` throw and rolls the whole close
+    back. We fill the company's default COGS account onto the rows that
+    lack one (combined with allow_zero_valuation_rate, the stock entry just
+    posts at zero cost). Narrow scope — POS-side, stock-moving invoices
+    only; a no-op for rows that already have an expense account. The
+    account itself is a real ledger account, so the GL stays valid.
+
+    See CLAUDE.md "Fixes log" 2026-06-11.
+    """
+    if not (doc.get("is_consolidated") or doc.get("is_pos")):
+        return
+    if not doc.get("update_stock"):
+        return
+    missing = [it for it in (doc.items or []) if not it.get("expense_account")]
+    if not missing:
+        return
+    default_acc = _resolve_default_cogs_account(doc.get("company"))
+    if not default_acc:
+        # Nothing we can safely set — let ERPNext throw its own (now
+        # visible) "Expense Account not set" error so the admin knows to
+        # configure a Cost of Goods Sold account on the company.
+        return
+    for it in missing:
+        it.expense_account = default_acc
 
 
 def allow_zero_valuation_on_pos_stock(doc, method):

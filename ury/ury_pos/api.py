@@ -2196,29 +2196,59 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
     # the closing entry is marked "Failed", the shift stays OPEN, and the
     # cashier gets NO error: the dialog already reported success. Running it
     # inline means any error surfaces in THIS request so we can show it.
-    # Reversible — restored in finally. Trade-off: a very large shift close
-    # blocks a bit longer instead of returning immediately. (2026-06-11)
+    #
+    # We ALSO capture the GENUINE consolidation error. When consolidation
+    # fails, ERPNext computes the real message via get_error_message(), then
+    # calls closing_entry.set_status("Failed") — but the entry was just
+    # rolled back, so set_status itself raises "Could not find Reference
+    # Name: POS-CLO-…" and MASKS the real cause. We intercept
+    # get_error_message to grab the real message and re-throw THAT instead
+    # of the mask. Reversible — all restored in finally. (2026-06-11)
     import erpnext.accounts.doctype.pos_invoice_merge_log.pos_invoice_merge_log as _merge_mod
 
     _orig_enqueue_job = _merge_mod.enqueue_job
+    _orig_get_error_message = _merge_mod.get_error_message
+    _captured = {}
 
     def _run_consolidation_inline(job, **kwargs):
         return job(**kwargs)
 
+    def _capturing_get_error_message(message):
+        real = _orig_get_error_message(message)
+        try:
+            _captured["error"] = real
+        except Exception:
+            pass
+        return real
+
     _merge_mod.enqueue_job = _run_consolidation_inline
+    _merge_mod.get_error_message = _capturing_get_error_message
     try:
         closing_doc.insert(ignore_permissions=True)
         closing_doc.submit()
     except Exception as err:
         # Catch the consolidation-time cascade and re-throw with a
         # pointer to the most common root causes — Mode of Payment
-        # account misconfig, missing customer fields, etc. Preserves
-        # the original error text for the full diagnostic trail but
-        # prepends a hint so cashiers don't have to dig through the
-        # traceback to know what to check.
+        # account misconfig, missing customer fields, etc.
+        real = _captured.get("error")
+        if real and "could not find reference name" in str(err).lower():
+            # The visible error is the set_status-on-rolled-back-entry mask;
+            # surface the genuine consolidation failure we captured instead.
+            real_str = real if isinstance(real, str) else str(real)
+            try:
+                frappe.log_error(
+                    title="URY: shift close failed — real cause (unmasked)",
+                    message="Masked by: {0}\n\nReal error:\n{1}".format(
+                        str(err)[:500], real_str[:4000]
+                    ),
+                )
+            except Exception:
+                pass
+            raise _wrap_close_error(Exception(real_str), opening_doc.company)
         raise _wrap_close_error(err, opening_doc.company)
     finally:
         _merge_mod.enqueue_job = _orig_enqueue_job
+        _merge_mod.get_error_message = _orig_get_error_message
         frappe.flags.mute_emails = prev_mute_emails
 
     # Defensive: ERPNext's create_merge_logs catches some errors and marks
