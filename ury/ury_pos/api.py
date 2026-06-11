@@ -2188,6 +2188,24 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
     prev_mute_emails = frappe.flags.mute_emails
     if not _has_outgoing_email_account():
         frappe.flags.mute_emails = True
+
+    # Force invoice consolidation to run SYNCHRONOUSLY during the close.
+    # ERPNext enqueues consolidation in a background worker when the shift
+    # has >= 10 invoices (pos_invoice_merge_log.consolidate_pos_invoices) —
+    # if that background job fails (e.g. a Mode of Payment account problem)
+    # the closing entry is marked "Failed", the shift stays OPEN, and the
+    # cashier gets NO error: the dialog already reported success. Running it
+    # inline means any error surfaces in THIS request so we can show it.
+    # Reversible — restored in finally. Trade-off: a very large shift close
+    # blocks a bit longer instead of returning immediately. (2026-06-11)
+    import erpnext.accounts.doctype.pos_invoice_merge_log.pos_invoice_merge_log as _merge_mod
+
+    _orig_enqueue_job = _merge_mod.enqueue_job
+
+    def _run_consolidation_inline(job, **kwargs):
+        return job(**kwargs)
+
+    _merge_mod.enqueue_job = _run_consolidation_inline
     try:
         closing_doc.insert(ignore_permissions=True)
         closing_doc.submit()
@@ -2200,7 +2218,22 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
         # traceback to know what to check.
         raise _wrap_close_error(err, opening_doc.company)
     finally:
+        _merge_mod.enqueue_job = _orig_enqueue_job
         frappe.flags.mute_emails = prev_mute_emails
+
+    # Defensive: ERPNext's create_merge_logs catches some errors and marks
+    # the closing entry "Failed" with an error_message. If that happened,
+    # don't tell the cashier it closed — surface the real reason.
+    try:
+        closing_doc.reload()
+    except Exception:
+        pass
+    if (closing_doc.get("status") or "") == "Failed":
+        err_msg = (
+            closing_doc.get("error_message")
+            or "The shift could not be consolidated. Check the Error Log in the desk."
+        )
+        raise _wrap_close_error(Exception(err_msg), opening_doc.company)
 
     return {
         "name": closing_doc.name,
@@ -2337,7 +2370,13 @@ def _validate_close_preflight(paid_invoices, company):
             title=_("Invoice Missing Customer"),
         )
 
-    # Check 2: mode of payment accounts on each invoice.
+    # Check 2: mode of payment accounts on each invoice. The consolidated
+    # Sales Invoice posts a GL entry to each payment's account, so a bad
+    # account (missing / Receivable / group / disabled / wrong-company /
+    # nonexistent) makes consolidation fail and rolls the whole close back.
+    # We validate ALL of these up front so the cashier gets a precise
+    # message naming the Mode of Payment + the exact problem, instead of a
+    # silent failure or a cryptic GL cascade. (2026-06-11: was Receivable-only.)
     names = [row["name"] for row in paid_invoices]
     payment_rows = frappe.db.sql(
         """
@@ -2351,30 +2390,88 @@ def _validate_close_preflight(paid_invoices, company):
         as_dict=True,
     )
     bad_mops = []
+    diag_rows = []  # full dump for the Error Log
     for row in payment_rows:
+        mop = row.mode_of_payment or "(blank)"
         if not row.account:
-            bad_mops.append((row.mode_of_payment, "no account"))
-            continue
-        account_type = frappe.db.get_value("Account", row.account, "account_type")
-        if account_type == "Receivable":
+            diag_rows.append(f"{mop}: <no account on payment row>")
             bad_mops.append(
                 (
-                    row.mode_of_payment,
-                    f"account '{row.account}' is a Receivable account",
+                    mop,
+                    "no account is set — configure a Default Account for this "
+                    "Mode of Payment (company '%s')" % company,
+                )
+            )
+            continue
+        acc = frappe.db.get_value(
+            "Account",
+            row.account,
+            ["account_type", "is_group", "disabled", "company"],
+            as_dict=True,
+        )
+        diag_rows.append(
+            "{0}: account='{1}' type='{2}' is_group={3} disabled={4} company='{5}'".format(
+                mop,
+                row.account,
+                (acc.account_type if acc else "?"),
+                (acc.is_group if acc else "?"),
+                (acc.disabled if acc else "?"),
+                (acc.company if acc else "?"),
+            )
+        )
+        if not acc:
+            bad_mops.append((mop, f"account '{row.account}' does not exist"))
+        elif acc.account_type == "Receivable":
+            bad_mops.append(
+                (
+                    mop,
+                    f"account '{row.account}' is a Receivable account (it needs "
+                    "a party) — set it to a Bank or Cash account",
+                )
+            )
+        elif acc.is_group:
+            bad_mops.append(
+                (
+                    mop,
+                    f"account '{row.account}' is a group account — you can't "
+                    "post to a group; pick a ledger (non-group) Bank/Cash account",
+                )
+            )
+        elif acc.disabled:
+            bad_mops.append(
+                (mop, f"account '{row.account}' is disabled — enable it or pick another")
+            )
+        elif acc.company and acc.company != company:
+            bad_mops.append(
+                (
+                    mop,
+                    f"account '{row.account}' belongs to company '{acc.company}', "
+                    f"not '{company}'",
                 )
             )
     if bad_mops:
+        # Log the full account map so we can diagnose from the desk too.
+        try:
+            frappe.log_error(
+                title="URY: shift close blocked — Mode of Payment account issue",
+                message="Company: {0}\n\nProblems:\n{1}\n\nAll payment accounts:\n{2}".format(
+                    company,
+                    "\n".join(f"- {mop}: {reason}" for mop, reason in bad_mops),
+                    "\n".join(diag_rows),
+                ),
+            )
+        except Exception:
+            pass
         lines = [f"- {mop}: {reason}" for mop, reason in bad_mops]
         frappe.throw(
             _(
-                "Cannot close this shift: one or more Modes of Payment "
-                "are misconfigured for company '{0}'.\n\n{1}\n\n"
-                "Open 'Mode of Payment' in the desk for each listed "
-                "mode and set its Default Account to a Bank or Cash "
-                "account (not a Receivable account like Debtors). "
-                "Save the Mode of Payment, then reload the close dialog."
+                "Cannot close this shift — one or more Modes of Payment have a "
+                "bad account for company '{0}':\n\n{1}\n\nOpen Accounting → "
+                "Mode of Payment in the desk, fix each one's Default Account "
+                "(a ledger Bank or Cash account for this company), save, then "
+                "reopen the close dialog."
             ).format(company, "\n".join(lines)),
-            title=_("Mode of Payment Account Misconfigured"),
+            title=_("Mode of Payment Account Issue"),
         )
 
 
