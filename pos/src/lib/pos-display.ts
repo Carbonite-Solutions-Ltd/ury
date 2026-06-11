@@ -1,11 +1,15 @@
 // src/lib/pos-display.ts
 // Ury POS Dual Screen Display - Production Version
 
+import { usePOSStore, type OrderItem } from "../store/pos-store";
+
 const BRIDGE_URL = "http://localhost:8000";
 const DEFAULT_DWELL_MS = 5000; // Default 5 seconds if no setting
+const EPSILON = 0.005;
 
 let lastTotal: number | null = null;
 let lastChange: number | null = null;
+let lastCollect: number | null = null;
 let isDialogOpen = false;
 let enabled = false;
 let posType = "";
@@ -13,7 +17,19 @@ let dwellMs = DEFAULT_DWELL_MS;
 let observer: MutationObserver | null = null;
 let initialized = false;
 let loopTimer: ReturnType<typeof setTimeout> | null = null;
-let loopIndex = 0; // 0: total, 1: change
+let loopIndex = 0; // cycles through the active payment display types
+
+// Which values the customer screen should show (from POS Dual Screen Settings).
+// Defaults preserve the previous behaviour (total + change) until settings load.
+let showTotal = true;
+let showPrice = false;
+let showChange = true;
+let showCollect = false;
+
+// Cart-phase (pre-payment) tracking, driven by the Zustand store.
+let lastCartTotal: number | null = null;
+let lastItemCount = 0;
+let cartUnsub: (() => void) | null = null;
 
 function parseLoopTimerToMs(val: unknown): number {
   if (val == null) return DEFAULT_DWELL_MS;
@@ -47,30 +63,29 @@ function parseLoopTimerToMs(val: unknown): number {
 
 async function fetchSettings(): Promise<boolean> {
   try {
-    const [enabledRes, posTypeRes, loopTimerRes] = await Promise.all([
+    const getSingle = (field: string) =>
       fetch("/api/method/frappe.client.get_single_value?" + new URLSearchParams({
         doctype: "POS Dual Screen Settings",
-        field: "enabled"
-      })),
-      fetch("/api/method/frappe.client.get_single_value?" + new URLSearchParams({
-        doctype: "POS Dual Screen Settings",
-        field: "pos_type"
-      })),
-      fetch("/api/method/frappe.client.get_single_value?" + new URLSearchParams({
-        doctype: "POS Dual Screen Settings",
-        field: "loop_timer"
-      }))
+        field
+      })).then((r) => r.json());
+
+    const [
+      enabledData, posTypeData, loopTimerData,
+      totalData, priceData, changeData, collectData,
+    ] = await Promise.all([
+      getSingle("enabled"), getSingle("pos_type"), getSingle("loop_timer"),
+      getSingle("total"), getSingle("price"), getSingle("change"), getSingle("collect"),
     ]);
 
-    const [enabledData, posTypeData, loopTimerData] = await Promise.all([
-      enabledRes.json(),
-      posTypeRes.json(),
-      loopTimerRes.json()
-    ]);
+    const isOn = (m: unknown) => m === 1 || m === "1";
 
-    enabled = enabledData.message === 1 || enabledData.message === "1";
+    enabled = isOn(enabledData.message);
     posType = (posTypeData.message || "").toLowerCase().trim();
     dwellMs = parseLoopTimerToMs(loopTimerData.message);
+    showTotal = isOn(totalData.message);
+    showPrice = isOn(priceData.message);
+    showChange = isOn(changeData.message);
+    showCollect = isOn(collectData.message);
 
     return true;
   } catch (e) {
@@ -129,30 +144,32 @@ function stopLoop(): void {
   loopIndex = 0;
 }
 
+// Build the list of values to cycle on the customer screen during payment,
+// honouring the enabled flags. Change is only shown once there's change due.
+function activePaymentTypes(): Array<{ type: string; value: number }> {
+  const types: Array<{ type: string; value: number }> = [];
+  if (showTotal && lastTotal != null) types.push({ type: "total", value: lastTotal });
+  if (showCollect) types.push({ type: "collect", value: lastCollect ?? 0 });
+  if (showChange && (lastChange ?? 0) > 0) types.push({ type: "change", value: lastChange ?? 0 });
+  return types;
+}
+
 async function loopStep(): Promise<void> {
   if (!isDialogOpen || !shouldRun()) {
     stopLoop();
     return;
   }
 
-  const total = lastTotal ?? 0;
-  const change = lastChange ?? 0;
-
-  // Only loop if there's change to show
-  if (change > 0) {
-    if (loopIndex % 2 === 0) {
-      await sendToDisplay("total", total);
-    } else {
-      await sendToDisplay("change", change);
-    }
-    loopIndex++;
+  const types = activePaymentTypes();
+  if (types.length === 0) {
     loopTimer = setTimeout(loopStep, dwellMs);
-  } else {
-    // No change, just show total once
-    await sendToDisplay("total", total);
-    // Keep checking for changes
-    loopTimer = setTimeout(loopStep, dwellMs);
+    return;
   }
+
+  const { type, value } = types[loopIndex % types.length];
+  await sendToDisplay(type, value);
+  loopIndex++;
+  loopTimer = setTimeout(loopStep, dwellMs);
 }
 
 function startLoop(): void {
@@ -253,6 +270,7 @@ async function checkAndUpdate(): Promise<void> {
     isDialogOpen = true;
     lastTotal = null;
     lastChange = null;
+    lastCollect = null;
   }
 
   // Dialog just closed
@@ -260,6 +278,8 @@ async function checkAndUpdate(): Promise<void> {
     isDialogOpen = false;
     lastTotal = null;
     lastChange = null;
+    lastCollect = null;
+    lastCartTotal = null; // force the cart total to resend when we return
     stopLoop();
     await clearDisplay();
     return;
@@ -272,15 +292,57 @@ async function checkAndUpdate(): Promise<void> {
     const change = total !== null ? calculateChange(total, paymentsTotal) : 0;
 
     const totalChanged = total !== null && total !== lastTotal;
+    const collectChanged = paymentsTotal !== lastCollect;
     const changeChanged = change !== lastChange;
 
-    if (totalChanged || changeChanged) {
+    if (totalChanged || collectChanged || changeChanged) {
       lastTotal = total;
+      lastCollect = paymentsTotal;
       lastChange = change;
-      
+
       // Restart the loop with new values
       startLoop();
     }
+  }
+}
+
+// Unit price of a cart line (mirrors calculateItemPrice() in pos-store.ts).
+function unitPrice(item: OrderItem): number {
+  const base = item.selectedVariant?.price || item.price;
+  const addons = item.selectedAddons?.reduce((sum, a) => sum + a.price, 0) || 0;
+  return base + addons;
+}
+
+// While building the order (payment dialog not open), push the running cart
+// total and the price of each item as it's added, straight from the store.
+function startCartWatch(): void {
+  if (cartUnsub) return;
+  cartUnsub = usePOSStore.subscribe((state) => {
+    if (!shouldRun() || isDialogOpen) return;
+
+    if (showTotal) {
+      const total = state.getCartTotals().total;
+      if (lastCartTotal === null || Math.abs(total - lastCartTotal) > EPSILON) {
+        lastCartTotal = total;
+        void sendToDisplay("total", total);
+      }
+    }
+
+    if (showPrice) {
+      const count = state.activeOrders.reduce((s, i) => s + i.quantity, 0);
+      if (count > lastItemCount) {
+        const last = state.activeOrders[state.activeOrders.length - 1];
+        if (last) void sendToDisplay("price", unitPrice(last));
+      }
+      lastItemCount = count;
+    }
+  });
+}
+
+function stopCartWatch(): void {
+  if (cartUnsub) {
+    cartUnsub();
+    cartUnsub = null;
   }
 }
 
@@ -296,6 +358,7 @@ export async function initPosDisplay(): Promise<void> {
   });
 
   observer.observe(document.body, { childList: true, subtree: true });
+  startCartWatch();
   checkAndUpdate();
 
   initialized = true;
@@ -306,6 +369,7 @@ export function destroyPosDisplay(): void {
     observer.disconnect();
     observer = null;
   }
+  stopCartWatch();
   stopLoop();
   initialized = false;
 }
