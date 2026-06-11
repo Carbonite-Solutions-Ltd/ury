@@ -109,9 +109,8 @@ const POSClosingDialog = ({
         return;
       }
       if (!transferTo) {
-        const word = state.preview.is_captain ? 'cashier' : 'captain';
         setSubmitError(
-          `You have unpaid orders on this shift. Select a ${word} to transfer them to first.`
+          `You have unpaid orders on this shift. Select a captain to transfer them to first.`
         );
         return;
       }
@@ -231,10 +230,8 @@ const POSClosingDialog = ({
         {state.kind === 'form' && (() => {
           const hasDrafts = state.preview.draft_count > 0;
           const canTransfer = state.preview.can_transfer === 1;
-          const isCaptain = state.preview.is_captain === 1;
-          // A cashier hands drafts up to a captain; a captain hands off to
-          // a cashier. Label the action accordingly.
-          const targetWord = isCaptain ? 'Cashier' : 'Captain';
+          // Unpaid drafts always transfer up to a captain, whoever's closing.
+          const targetWord = 'Captain';
           // Transfers disabled for this profile (max = 0): drafts block close.
           const blockedNoTransfer = hasDrafts && !canTransfer;
           // Drafts + transfers allowed: must pick a transfer target first.
@@ -400,7 +397,7 @@ const FormBody = ({
               <div className="text-xs text-amber-800 mt-0.5">
                 Total: {formatCurrency(preview.draft_grand_total)}.{' '}
                 {preview.can_transfer === 1
-                  ? `Pick a ${preview.is_captain === 1 ? 'cashier' : 'captain'} below to offer these orders — they approve the transfer from their Orders page before it lands.`
+                  ? `Pick a captain below to offer these orders — they approve the transfer from their Orders page before it lands.`
                   : 'Pay or cancel these orders before closing — invoice transfers are disabled for this POS Profile.'}
                 {!draftsExpanded && (
                   <span className="ml-1 text-amber-700 font-medium group-hover:underline">
@@ -456,7 +453,7 @@ const FormBody = ({
               <div className="flex-1">
                 {preview.transfer_candidates.length === 0 ? (
                   <div className="text-xs italic text-amber-800">
-                    No {preview.is_captain === 1 ? 'cashiers' : 'captains'} are
+                    No captains are
                     listed on this branch's ExPOS Users table. Add one in the
                     desk before closing.
                   </div>
@@ -464,11 +461,7 @@ const FormBody = ({
                   <Select
                     value={transferTo}
                     onValueChange={onTransferToChange}
-                    placeholder={
-                      preview.is_captain === 1
-                        ? 'Select a cashier'
-                        : 'Select a captain'
-                    }
+                    placeholder="Select a captain"
                     size="sm"
                   >
                     {preview.transfer_candidates.map((c) => (
