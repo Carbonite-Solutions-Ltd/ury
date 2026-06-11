@@ -259,6 +259,10 @@ export async function firePendingKotsForInvoice(
       return fired;
     }
     const result = await response.json();
+    // In URY Production Unit mode the `department` field is the production
+    // name, not a course department — there's no partial-fire tracking, so
+    // we mark the WHOLE KOT printed after firing (not per-department).
+    const isPuMode = result?.message?.production_unit_mode === 1;
     const print_jobs = result?.message?.print_jobs as
       | Array<{
           printer: string;
@@ -298,7 +302,11 @@ export async function firePendingKotsForInvoice(
     }
 
     for (const [kotName, depts] of Object.entries(stampsByKot)) {
-      await markKotDepartmentsPrinted(kotName, depts);
+      if (isPuMode) {
+        await markKotAsPrinted(kotName);
+      } else {
+        await markKotDepartmentsPrinted(kotName, depts);
+      }
     }
   } catch (error) {
     console.error('Error firing pending KOTs:', error);
