@@ -1840,19 +1840,16 @@ def preview_pos_closing_entry(opening_entry):
     ]
     draft_grand_total = sum(r["grand_total"] for r in draft_list)
 
-    # Transfer-target candidates depend on who's closing. Reworked
-    # 2026-06-10 so cashiers are no longer hard-blocked: a regular cashier
-    # hands unpaid drafts UP to a captain (who then approves from the Orders
-    # "Incoming Transfers" filter), while a captain can hand off to any
-    # cashier/captain on the branch (the original flow). Either way you
-    # can't transfer to yourself.
+    # Unpaid drafts always escalate to a CAPTAIN / Manager at shift close,
+    # whoever is closing (cashier OR captain). The captain then approves the
+    # transfer from the Orders "Incoming Transfers" filter. (2026-06-11: this
+    # used to be role-aware — a captain handed off to a cashier — but the
+    # target is now always a captain so the responsible supervisor handles
+    # leftover orders.) You can't transfer to yourself.
     roles = set(frappe.get_roles(me))
     captain_roles = {"Administrator", "System Manager", "URY Manager", "URY Captain"}
     is_captain = me == "Administrator" or bool(roles & captain_roles)
-    if is_captain:
-        transfer_candidates = _get_cashier_users_on_branch(opening_doc.branch)
-    else:
-        transfer_candidates = _get_captain_users_on_branch(opening_doc.branch)
+    transfer_candidates = _get_captain_users_on_branch(opening_doc.branch)
     transfer_candidates = [c for c in transfer_candidates if c["user"] != me]
 
     max_transfers = int(
@@ -1881,10 +1878,11 @@ def preview_pos_closing_entry(opening_entry):
         "draft_grand_total": draft_grand_total,
         "draft_invoices": draft_list,
         "transfer_candidates": transfer_candidates,
-        # Transfer flags. `can_transfer` is role-agnostic now — anyone can
-        # transfer when the profile allows it (max > 0). `is_captain` tells
-        # the frontend whether the targets are cashiers (captain closing) or
-        # captains (cashier closing) so it can label the picker correctly.
+        # Transfer flags. `can_transfer` is role-agnostic — anyone can
+        # transfer when the profile allows it (max > 0). The targets are
+        # always captains/managers now, so the frontend labels the picker
+        # "Select a captain" regardless of who's closing. `is_captain` is
+        # kept for back-compat / informational use.
         "is_captain": int(is_captain),
         "can_transfer": int(max_transfers > 0),
         "max_invoice_transfers": max_transfers,
@@ -1956,23 +1954,17 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
     # guard: ending the shift twice never re-transfers, because the
     # second pass sees the existing Pending transfer and skips it.
     me = frappe.session.user
-    roles = set(frappe.get_roles(me))
-    captain_roles = {"Administrator", "System Manager", "URY Manager", "URY Captain"}
-    is_captain = me == "Administrator" or bool(roles & captain_roles)
 
     excluded_drafts = _drafts_with_active_transfer([r["name"] for r in draft], me)
     blocking = [r for r in draft if r["name"] not in excluded_drafts]
     transfers_created = 0
 
     if blocking:
-        # Valid transfer targets depend on who's closing: a cashier hands
-        # off to a captain; a captain hands off to any cashier/captain.
-        if is_captain:
-            target_rows = _get_cashier_users_on_branch(opening_doc.branch)
-            target_label = _("a cashier or captain")
-        else:
-            target_rows = _get_captain_users_on_branch(opening_doc.branch)
-            target_label = _("a captain")
+        # Unpaid drafts always escalate to a captain/manager at close,
+        # whoever is closing (2026-06-11). Must match the candidate set the
+        # preview offered.
+        target_rows = _get_captain_users_on_branch(opening_doc.branch)
+        target_label = _("a captain")
         candidates = {c["user"] for c in target_rows if c["user"] != me}
 
         if not transfer_to:
