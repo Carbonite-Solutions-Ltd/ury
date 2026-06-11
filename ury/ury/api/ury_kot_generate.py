@@ -216,10 +216,19 @@ def process_items_for_kot(
     # KOT with production=None. The new unified print resolver
     # handles per-department routing downstream via
     # ury_print.resolve_kot_print_plan.
+    #
+    # IMPORTANT (2026-06-11): in URY Production Unit mode we DON'T create
+    # this fallback KOT. Only items that belong to a production need a
+    # kitchen ticket; anything else (e.g. a drink) shouldn't generate a
+    # KOT at all. Creating the fallback here also broke order-time
+    # printing: it's created LAST, so it became the "latest" KOT that
+    # get_latest_kot returns — masking the real production KOT, which then
+    # never auto-printed. Menu Course mode still relies on this fallback
+    # (it's the single KOT that gets department-split downstream).
     unmatched_items = [
         item for item in kot_items if item["item_code"] not in matched_item_codes
     ]
-    if unmatched_items:
+    if unmatched_items and kds_mode != "URY Production Unit":
         invoice_has_fallback_kot = frappe.db.exists(
             "URY KOT",
             {

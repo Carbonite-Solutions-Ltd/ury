@@ -14,6 +14,19 @@ def before_uninstall():
 def get_custom_fields():
 	"""URY specific custom fields that need to be added to the masters in ERPNext"""
 	return {
+     	"URY Printer Settings": [
+				{
+					"fieldname": "custom_terminal",
+					"fieldtype": "Link",
+					"label": "Terminal",
+					"options": "URY POS Terminal",
+					"insert_after": "printer",
+					"in_list_view": 1,
+					"depends_on": "eval:doc.parenttype=='URY Production Unit'",
+					"description": "When set, this printer only fires for KOTs of orders rung on this terminal. Leave blank to print on every terminal.",
+					"translatable": 0,
+				},
+			],
      	"POS Invoice": [
 				{
 					"fieldname": "mobile_number",

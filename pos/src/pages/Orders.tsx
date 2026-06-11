@@ -448,6 +448,34 @@ export default function Orders() {
     }
   }
 
+  // Pending KOTs view: fire ONLY the KOT(s) to the kitchen/production
+  // printer — no bill. The backend marks each fired KOT printed, so the
+  // order drops out of the Pending KOTs list afterwards.
+  async function handleFirePendingKot() {
+    if (!selectedOrder) return;
+    setIsPrinting(true);
+    try {
+      const fired = await firePendingKotsForInvoice(selectedOrder.name);
+      if (fired.length > 0) {
+        const depts = Array.from(new Set(fired.map((f) => f.department))).join(
+          ', ',
+        );
+        showToast.success(`KOT printed: ${depts}`);
+      } else {
+        showToast.info('No KOT to print for this order.');
+      }
+      // firePendingKotsForInvoice marks each KOT printed; clear the panel
+      // and refresh the list + the sidebar badge so it leaves the filter.
+      clearSelectedOrder();
+      await fetchOrders();
+      setPendingKotRefreshVersion((v) => v + 1);
+    } catch (err: any) {
+      showToast.error('Print failed: ' + (err?.message || err));
+    } finally {
+      setIsPrinting(false);
+    }
+  }
+
   if (error) {
     return (
       <div className="flex items-center justify-center h-screen">
@@ -1152,7 +1180,7 @@ export default function Orders() {
                   <>
                     <Button
                       className="flex-1"
-                      onClick={handlePrintOrder}
+                      onClick={handleFirePendingKot}
                       disabled={isPrinting}
                     >
                       {isPrinting ? (

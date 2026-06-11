@@ -2752,7 +2752,7 @@ def validate_pos_close(pos_profile, terminal=None):
     return {"status": "Success"}
 
 @frappe.whitelist(allow_guest=True)
-def _build_pu_print_jobs_for_kot(kot_doc):
+def _build_pu_print_jobs_for_kot(kot_doc, terminal=None):
     """Build QZ print jobs for one KOT in URY Production Unit mode.
 
     Reads the KOT's `production`'s `URY Printer Settings` rows that have
@@ -2762,8 +2762,14 @@ def _build_pu_print_jobs_for_kot(kot_doc):
     ``{printer, department, html, kot_name}`` dicts (``department`` carries
     the production name) and reason is a short string
     ("no_production" / "no_kot_printers" / "no_print_jobs") when the list
-    is empty, else None. Shared by get_latest_kot (order-time auto-fire)
-    and print_pending_kots_for_invoice (manual fire from the Orders
+    is empty, else None.
+
+    Per-terminal routing (2026-06-11): when ``terminal`` is supplied, only
+    printer rows tagged for THAT terminal (`custom_terminal`) — plus
+    untagged rows, which print on every terminal — fire. So a production
+    with one printer per terminal only prints the current terminal's
+    ticket. Shared by get_latest_kot (order-time auto-fire) and
+    print_pending_kots_for_invoice (manual fire from the Orders
     "Pending KOTs" view). See CLAUDE.md "Fixes log" 2026-06-11.
     """
     production_name = getattr(kot_doc, "production", None)
@@ -2776,6 +2782,7 @@ def _build_pu_print_jobs_for_kot(kot_doc):
             "custom_kot_print_format",
             "custom_kot_print",
             "custom_block_takeaway_kot",
+            "custom_terminal",
         ],
         filters={
             "parent": production_name,
@@ -2786,6 +2793,19 @@ def _build_pu_print_jobs_for_kot(kot_doc):
     )
     if not prod_printer_rows:
         return [], "no_kot_printers"
+
+    # Per-terminal filtering: a row tagged with a terminal only prints on
+    # that terminal; untagged rows print everywhere. Only applied when we
+    # know the terminal (else keep all rows for back-compat).
+    if terminal:
+        prod_printer_rows = [
+            r
+            for r in prod_printer_rows
+            if not r.get("custom_terminal")
+            or r.get("custom_terminal") == terminal
+        ]
+        if not prod_printer_rows:
+            return [], "no_printer_for_terminal"
     is_takeaway = (
         getattr(kot_doc, "table_takeaway", 0) == 1
         or not getattr(kot_doc, "restaurant_table", None)
@@ -2954,17 +2974,29 @@ def get_latest_kot():
         )
 
         # ---- URY Production Unit QZ path ----
-        # Only KOTs actually assigned to a production print here. A
-        # fallback KOT (production=None — items that didn't match any
-        # production's item groups, e.g. a drink when the bar unit isn't
-        # configured) falls THROUGH to the Menu Course department routing
-        # below so it isn't silently stranded. See CLAUDE.md 2026-06-11.
-        if (
-            new_qz
-            and kds_mode == "URY Production Unit"
-            and getattr(kot_doc, "production", None)
-        ):
-            jobs, reason = _build_pu_print_jobs_for_kot(kot_doc)
+        # In PU mode ONLY production-matched KOTs print, to their
+        # production's terminal printer. A production-less KOT prints
+        # nothing — these aren't created for new orders anymore (see
+        # process_items_for_kot) and we deliberately do NOT fall back to
+        # Menu Course department routing, which would print an unwanted
+        # default-format ticket. See CLAUDE.md 2026-06-11.
+        if new_qz and kds_mode == "URY Production Unit":
+            if not getattr(kot_doc, "production", None):
+                return {
+                    "debug": "pu_mode_no_production",
+                    "pos_profile": pos_profile,
+                    "kot_name": kot_doc.name,
+                }
+            kot_terminal = (
+                frappe.db.get_value(
+                    "POS Invoice", kot_doc.invoice, "custom_terminal"
+                )
+                if getattr(kot_doc, "invoice", None)
+                else None
+            )
+            jobs, reason = _build_pu_print_jobs_for_kot(
+                kot_doc, terminal=kot_terminal
+            )
             if jobs:
                 return {
                     "kot_name": kot_doc.name,
@@ -3182,7 +3214,7 @@ def print_pending_kots_for_invoice(invoice):
     invoice_row = frappe.db.get_value(
         "POS Invoice",
         invoice,
-        ["pos_profile", "order_type"],
+        ["pos_profile", "order_type", "custom_terminal"],
         as_dict=True,
     )
     if not invoice_row:
@@ -3190,6 +3222,7 @@ def print_pending_kots_for_invoice(invoice):
 
     pos_profile = invoice_row.pos_profile
     order_type = invoice_row.order_type
+    invoice_terminal = invoice_row.custom_terminal
 
     kds_mode = (
         frappe.db.get_value(
@@ -3198,19 +3231,17 @@ def print_pending_kots_for_invoice(invoice):
         or "Menu Course"
     )
 
-    # URY Production Unit mode: build print jobs for every un-printed KOT
-    # so the cashier can fire them from the Orders "Pending KOTs" view
-    # (e.g. when the order-time auto-print didn't reach the printer). A KOT
-    # assigned to a production prints to that production's KOT printers
-    # (with its KOT print format); a fallback KOT (production=None) routes
-    # by department via the Menu Course resolver so it still prints when
-    # department printers are configured. `production_unit_mode=1` tells the
-    # frontend to mark the whole KOT printed after firing. Previously this
-    # short-circuited to an empty list, so Pending-KOTs print fired nothing
-    # (only the bill) and never marked the KOT. See CLAUDE.md 2026-06-11.
+    # URY Production Unit mode: build print jobs for every un-printed,
+    # production-matched KOT so the cashier can re-fire them from the
+    # Orders "Pending KOTs" view (e.g. when the order-time auto-print
+    # didn't reach the printer). Each matched KOT prints to its
+    # production's printer for THIS terminal, with the printer's KOT
+    # format. A production-less KOT prints NOTHING — and any legacy one
+    # (created before the fallback-KOT change) is marked printed so it
+    # leaves the pending list instead of sitting there forever.
+    # `production_unit_mode=1` tells the frontend to mark the whole KOT
+    # printed after firing. See CLAUDE.md 2026-06-11.
     if kds_mode == "URY Production Unit":
-        from ury.ury.api.ury_print import resolve_kot_print_plan
-
         pu_kot_rows = frappe.get_all(
             "URY KOT",
             filters={
@@ -3231,46 +3262,18 @@ def print_pending_kots_for_invoice(invoice):
                     message=f"invoice={invoice} kot={row.name} err={e}",
                 )
                 continue
-            if getattr(kot_doc, "production", None):
-                jobs, _reason = _build_pu_print_jobs_for_kot(kot_doc)
-                pu_print_jobs.extend(jobs)
-                continue
-            # Unmatched fallback KOT (no production) — route by department.
-            plan = resolve_kot_print_plan(
-                kot_doc, pos_profile_name=pos_profile, order_type=order_type
-            )
-            for entry in (plan or []):
-                printer = entry.get("printer")
-                if not printer:
-                    continue
-                filtered_doc = frappe.copy_doc(kot_doc)
-                filtered_doc.kot_items = entry["items"]
-                filtered_doc.flags.kot_department = entry["department"]
-                try:
-                    html = frappe.get_print(
-                        "URY KOT",
-                        kot_doc.name,
-                        None,
-                        doc=filtered_doc,
-                        no_letterhead=1,
-                    )
-                except Exception as e:
-                    frappe.log_error(
-                        title="URY print_pending_kots (PU fallback) render failed",
-                        message=(
-                            f"invoice={invoice} kot={kot_doc.name} "
-                            f"dept={entry['department']} err={e}"
-                        ),
-                    )
-                    continue
-                pu_print_jobs.append(
-                    {
-                        "printer": printer,
-                        "department": entry["department"],
-                        "html": html,
-                        "kot_name": kot_doc.name,
-                    }
+            if not getattr(kot_doc, "production", None):
+                # Legacy production-less KOT — nothing to print; clear it
+                # so it stops showing in the pending list.
+                frappe.db.set_value(
+                    "URY KOT", kot_doc.name, "kot_printed", 1,
+                    update_modified=False,
                 )
+                continue
+            jobs, _reason = _build_pu_print_jobs_for_kot(
+                kot_doc, terminal=invoice_terminal
+            )
+            pu_print_jobs.extend(jobs)
         return {
             "invoice": invoice,
             "print_jobs": pu_print_jobs,
