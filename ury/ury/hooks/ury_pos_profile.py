@@ -5,6 +5,17 @@ from frappe import _, msgprint
 def validate(doc, method):
     validate_bill_check(doc, method)
     validate_cost_center(doc, method)
+    clear_warehouse_in_item_mode(doc, method)
+
+
+def clear_warehouse_in_item_mode(doc, method):
+    """In item-warehouse mode (`custom_use_pos_warehouse` OFF) the single
+    profile Warehouse must be blank — otherwise ERPNext's `set_warehouse`
+    would force it onto every POS Invoice item row and defeat the per-item
+    routing. Clear it on save. (The field is also hidden + non-mandatory in
+    this mode via Property Setters.) See CLAUDE.md 2026-06-11."""
+    if not doc.get("custom_use_pos_warehouse"):
+        doc.warehouse = None
 
 
 def on_update(doc, method):
