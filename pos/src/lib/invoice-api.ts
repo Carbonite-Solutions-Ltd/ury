@@ -350,17 +350,19 @@ export async function getCashierUsersForTerminal(
  * one URY KOT with kot_printed=0. Drives the live badge next to the
  * "Pending KOTs" entry in the Orders page sidebar. Scope follows the
  * same rules as getPOSInvoices (branch + optional terminal + optional
- * posting_date), but cashier scoping is deliberately omitted — pending
- * KOTs are a kitchen/bar concern, not a per-cashier ledger.
+ * posting_date + cashier scope), so the badge counts the pending KOTs of
+ * the cashier who rang the orders — matching the Pending KOTs list.
  */
 export async function getPendingKotCount(
   terminal?: string | null,
-  posting_date?: string | null
+  posting_date?: string | null,
+  cashier?: string | null
 ): Promise<number> {
   try {
     const params: Record<string, unknown> = {};
     if (terminal) params.terminal = terminal;
     if (posting_date) params.posting_date = posting_date;
+    if (cashier) params.cashier = cashier;
     const response = await call.get<{ message: { count: number } }>(
       'ury.ury_pos.api.get_pending_kot_count',
       params
