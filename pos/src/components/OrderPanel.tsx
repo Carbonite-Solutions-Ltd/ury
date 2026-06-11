@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Trash2, Edit, FrownIcon, Plus, Loader2, MessageSquare, Users } from 'lucide-react';
 import { usePOSStore } from '../store/pos-store';
 import { formatCurrency, cn, extractFrappeServerError } from '../lib/utils';
-import { canManageMenuPrices } from '../lib/role-utils';
+import { canManageMenuPrices, isCaptainOrAbove } from '../lib/role-utils';
 import { CustomerSelect } from './CustomerSelect';
 import ProductDialog from './ProductDialog';
 import OrderTypeSelect from './OrderTypeSelect';
@@ -43,8 +43,15 @@ const OrderPanel = () => {
     hotelRoom,
     selectedWaiter,
     setSelectedWaiter,
+    lockedItemQtys,
   } = usePOSStore();
   const user = useRootStore((state: RootState) => state.user);
+  // On an EXISTING order, a plain cashier can only INCREASE the original
+  // items — never reduce them below what was ordered or remove them (that
+  // previously let them delete the whole order by emptying it). Captains /
+  // managers / admins keep full control. New items added this session stay
+  // freely editable for everyone.
+  const restrictExistingItems = isUpdatingOrder && !isCaptainOrAbove(user);
   const [editingItem, setEditingItem] = useState<typeof activeOrders[0] | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showCommentDialog, setShowCommentDialog] = useState(false);
@@ -334,8 +341,19 @@ const OrderPanel = () => {
                       variant="ghost"
                       size="icon"
                       className="text-blue-600 hover:text-blue-700"
-                      title="Edit item"
-                      disabled={isInteractionDisabled}
+                      title={
+                        restrictExistingItems &&
+                        (lockedItemQtys[item.uniqueId!] || 0) > 0
+                          ? 'Only a captain can edit an item already ordered'
+                          : 'Edit item'
+                      }
+                      // Editing re-opens the product dialog (qty/add-ons); a
+                      // cashier mustn't use it to reduce an original item.
+                      disabled={
+                        isInteractionDisabled ||
+                        (restrictExistingItems &&
+                          (lockedItemQtys[item.uniqueId!] || 0) > 0)
+                      }
                     >
                       <Edit className="w-4 h-4" />
                     </Button>
@@ -352,7 +370,20 @@ const OrderPanel = () => {
                         variant="outline"
                         size="icon"
                         className="w-8 h-8 rounded-full"
-                        disabled={isInteractionDisabled}
+                        // Cashiers can't reduce an original item below the
+                        // quantity already ordered.
+                        disabled={
+                          isInteractionDisabled ||
+                          (restrictExistingItems &&
+                            item.quantity <=
+                              (lockedItemQtys[item.uniqueId!] || 0))
+                        }
+                        title={
+                          restrictExistingItems &&
+                          item.quantity <= (lockedItemQtys[item.uniqueId!] || 0)
+                            ? 'Only a captain can reduce an item already ordered'
+                            : undefined
+                        }
                       >
                         -
                       </Button>
@@ -367,21 +398,32 @@ const OrderPanel = () => {
                         +
                       </Button>
                     </div>
-                    
-                    <Button
-                      onClick={() => removeFromOrder(item.uniqueId!)}
-                      variant="ghost"
-                      size="icon"
-                      className="text-red-500 hover:text-red-600"
-                      disabled={isInteractionDisabled}
-                    >
-                      <Trash2 className="w-5 h-5" />
-                    </Button>
+
+                    {/* Remove (trash) — hidden for a cashier on an original
+                        item; only a captain can remove what's already
+                        ordered (new items this session stay removable). */}
+                    {!(
+                      restrictExistingItems &&
+                      (lockedItemQtys[item.uniqueId!] || 0) > 0
+                    ) && (
+                      <Button
+                        onClick={() => removeFromOrder(item.uniqueId!)}
+                        variant="ghost"
+                        size="icon"
+                        className="text-red-500 hover:text-red-600"
+                        disabled={isInteractionDisabled}
+                      >
+                        <Trash2 className="w-5 h-5" />
+                      </Button>
+                    )}
                   </div>
                 </div>
               </div>
             ))}
-            {activeOrders.length > 0 && (
+            {/* Clear cart wipes every line — hidden for a cashier editing an
+                existing order (it would empty the original items, the very
+                loophole we're closing). Captains keep it. */}
+            {activeOrders.length > 0 && !restrictExistingItems && (
               <Button
                 onClick={clearOrder}
                 variant="ghost"

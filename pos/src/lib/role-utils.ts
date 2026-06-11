@@ -198,3 +198,24 @@ export const canSplitOrders = (user: User | null): boolean => {
   const allowed = ['System Manager', 'URY Manager', 'URY Captain', 'URY Cashier'];
   return user.roles.some((role) => allowed.includes(role));
 };
+
+/**
+ * Captain / Manager / Admin tier. The canonical "elevated user" check
+ * used for order-lifecycle actions a plain cashier shouldn't have:
+ *   - Cancelling an order (the X on a draft) — 2026-06-11.
+ *   - Freely editing an already-made order's items (a cashier can only
+ *     INCREASE original-item qty; never decrease below the original or
+ *     remove an original line, which previously let them delete the
+ *     whole order by emptying it). New items they add this session stay
+ *     fully editable.
+ *
+ * Allowed: Administrator, System Manager, URY Manager, URY Captain.
+ * Backend should re-validate where it matters.
+ */
+export const isCaptainOrAbove = (user: User | null): boolean => {
+  if (!user) return false;
+  if (user.name === 'Administrator') return true;
+  if (!user.roles) return false;
+  const allowed = ['System Manager', 'URY Manager', 'URY Captain'];
+  return user.roles.some((role) => allowed.includes(role));
+};

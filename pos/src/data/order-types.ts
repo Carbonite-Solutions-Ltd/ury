@@ -40,7 +40,7 @@ export const DINE_IN="Dine In"
 export const DEFAULT_ORDER_TYPE="Take Away"
 export const DEFAULT_PAYMENT_MODE="Cash"
 
-export type OrderStatusType = "Draft" | "Unbilled" | "Recently Paid" | "Paid" | "Consolidated" | "Return" | "Room Charges" | "Pending KOTs" | "Incoming Transfers";
+export type OrderStatusType = "Draft" | "Unbilled" | "Recently Paid" | "Paid" | "Consolidated" | "Return" | "Room Charges" | "Pending KOTs" | "Incoming Transfers" | "Cancelled";
 
 // Base status types that are always available.
 // "Paid" was moved out of EXTENDED_ORDER_STATUS_TYPES on 2026-04-09
@@ -70,6 +70,10 @@ export const BASE_ORDER_STATUS_TYPES = [
     {
         label: "Pending KOTs",
         value: "Pending KOTs"
+    },
+    {
+        label: "Cancelled",
+        value: "Cancelled"
     }
 ];
 

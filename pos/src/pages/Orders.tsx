@@ -35,6 +35,7 @@ import {
   canMergeOrders,
   canReprintInvoice,
   canReturnOrders,
+  isCaptainOrAbove,
 } from '../lib/role-utils';
 import {
   reversePosReturn,
@@ -192,6 +193,10 @@ export default function Orders() {
   );
 
   const canReprint = useMemo(() => canReprintInvoice(user), [user]);
+
+  // Only captains / managers / admins may cancel an order — the X on a
+  // draft is hidden for cashiers (2026-06-11).
+  const canCancel = useMemo(() => isCaptainOrAbove(user), [user]);
 
   // Reprint gating: captains/managers/admins reprint freely; a cashier may
   // reprint until the bill's print count hits the profile's max (default 3).
@@ -392,6 +397,9 @@ export default function Orders() {
       for (const cartItem of items) {
         await posStore.addToOrder(cartItem);
       }
+      // Capture the baseline qtys so a cashier can't reduce/remove the
+      // original items (only increase) when editing this existing order.
+      posStore.snapshotLockedQtys();
       // Redirect to POS page
       navigate('/');
     } catch (err) {
@@ -946,14 +954,17 @@ export default function Orders() {
                       <Pencil className="w-4 h-4" />
                       {editLoading && <span className="ml-2 text-xs">Loading...</span>}
                     </button>
-                    <button
-                      type="button"
-                      className="inline-flex items-center justify-center rounded-md p-2 bg-gray-100 hover:bg-gray-200 text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500"
-                      aria-label="Cancel order"
-                      onClick={() => setCancelDialogOpen(true)}
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
+                    {/* Cancel (X) — captains / managers / admins only. */}
+                    {canCancel && (
+                      <button
+                        type="button"
+                        className="inline-flex items-center justify-center rounded-md p-2 bg-gray-100 hover:bg-gray-200 text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500"
+                        aria-label="Cancel order"
+                        onClick={() => setCancelDialogOpen(true)}
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
                   </>
                 )}
                 {/* Served Badge in Header */}
@@ -992,6 +1003,19 @@ export default function Orders() {
                 </Badge>
               </div>
             </div>
+            {/* Cancelled order — show the reason it was cancelled. */}
+            {selectedOrder.status === 'Cancelled' && (
+              <div className="mx-6 mt-3 rounded-lg border border-red-200 bg-red-50 p-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-red-700">
+                  <X className="w-4 h-4" />
+                  Order Cancelled
+                </div>
+                <div className="mt-1 text-sm text-red-800">
+                  <span className="font-medium">Reason:</span>{' '}
+                  {selectedOrder.cancel_reason || '—'}
+                </div>
+              </div>
+            )}
             {/* Cancel Order Dialog */}
             <Dialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
               <DialogContent>

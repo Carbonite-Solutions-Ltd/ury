@@ -110,6 +110,11 @@ interface POSState {
   currency: string;
   currencySymbol: string | null;
   isUpdatingOrder: boolean;
+  // When an EXISTING order is opened for editing, a snapshot of each cart
+  // line's original quantity keyed by uniqueId. Used to stop a cashier
+  // from removing / reducing the original items below what was already
+  // ordered (only a captain can). Empty for brand-new orders.
+  lockedItemQtys: Record<string, number>;
   orderId: string | null;
   posProfile: PosProfileCombined | null;
   customerGroups: string[];
@@ -179,6 +184,9 @@ interface POSStore extends POSState {
   isOrderInteractionDisabled: () => boolean;
   initializeApp: () => Promise<void>;
   setOrderForUpdate: (orderId: string | null) => void;
+  // Snapshot current cart line qtys as the "original" baseline (called
+  // after an existing order is hydrated for editing).
+  snapshotLockedQtys: () => void;
   resetOrderState: () => void;
   setSelectedAggregator: (aggregator: Aggregator | null) => void;
   setOrderComment: (comment: string) => void;
@@ -235,6 +243,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   tableOrder: null,
   isInitializing: true,
   isUpdatingOrder: false,
+  lockedItemQtys: {},
   orderId: null,
   orderComment: '',
   terminalName: null,
@@ -708,6 +717,15 @@ export const usePOSStore = create<POSStore>((set, get) => ({
         set({
           tableOrder: response,
           activeOrders: orderItems,
+          // Baseline of original line quantities — a cashier can't reduce
+          // these below what was already ordered (or remove them).
+          lockedItemQtys: orderItems.reduce(
+            (acc, it) => {
+              if (it.uniqueId) acc[it.uniqueId] = it.quantity;
+              return acc;
+            },
+            {} as Record<string, number>
+          ),
           selectedCustomer: order.customer ? {
             id: order.customer,
             name: order.customer_name,
@@ -764,10 +782,25 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   },
 
   setOrderForUpdate: (orderId: string | null) => {
-    set({ 
+    set({
       isUpdatingOrder: orderId !== null,
       orderId,
+      // Starting fresh (orderId null) clears the baseline; an actual
+      // order's baseline is captured separately via snapshotLockedQtys
+      // (Orders-page edit flow) or set directly in loadTableOrder.
+      ...(orderId === null ? { lockedItemQtys: {} } : {}),
     });
+  },
+
+  snapshotLockedQtys: () => {
+    const qtys = get().activeOrders.reduce(
+      (acc, it) => {
+        if (it.uniqueId) acc[it.uniqueId] = it.quantity;
+        return acc;
+      },
+      {} as Record<string, number>
+    );
+    set({ lockedItemQtys: qtys });
   },
 
   resetOrderState: () => {
@@ -776,6 +809,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   set({
     selectedCustomer: { id: 'Cash Customer', name: 'Cash Customer', phone: '' },
     selectedWaiter: null,
+    lockedItemQtys: {},
     selectedTable: null,
     selectedRoom: selectedRoom,
     selectedAggregator: null,

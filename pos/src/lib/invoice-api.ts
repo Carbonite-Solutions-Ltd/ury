@@ -64,6 +64,8 @@ export interface POSInvoice {
   custom_print_count?: number;
   /** Assigned URY Waiter (when the profile uses waiters). */
   custom_waiter?: string | null;
+  /** Reason captured when the order was cancelled (Cancelled filter). */
+  cancel_reason?: string | null;
 }
 
 export interface CashierUser {
