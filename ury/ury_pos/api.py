@@ -2109,6 +2109,7 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
     # throws with a clear title + message naming the exact document
     # that's misconfigured. See CLAUDE.md "Fixes log" 2026-04-11.
     _validate_close_preflight(paid, opening_doc.company)
+    _validate_item_warehouses(paid, opening_doc.pos_profile)
 
     # Data repair: a corrupt `order_type` on a paid invoice (e.g. a phone
     # number that leaked into the field) makes ERPNext's consolidation
@@ -2369,6 +2370,67 @@ def _root_cause_message(err):
         root = cur
         cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
     return str(root)
+
+
+def _validate_item_warehouses(paid_invoices, pos_profile):
+    """When the POS Profile is in item-warehouse mode
+    (`custom_use_pos_warehouse` OFF), every sold item must have a warehouse
+    so consolidation can post its stock ledger entry. An item with no
+    warehouse (its Item Defaults has no Default Warehouse for the company)
+    blocks the close with a clear, item-named error so a manager fixes the
+    item before the close proceeds. No-op in single-warehouse mode (the
+    profile warehouse covers every item). See CLAUDE.md 2026-06-11.
+    """
+    if not paid_invoices or not pos_profile:
+        return
+    prof = frappe.db.get_value(
+        "POS Profile",
+        pos_profile,
+        ["custom_use_pos_warehouse", "company"],
+        as_dict=True,
+    )
+    if not prof:
+        return
+    # Default ON when unset → single warehouse, nothing to validate.
+    if prof.custom_use_pos_warehouse is None or int(prof.custom_use_pos_warehouse or 0):
+        return
+    company = prof.company
+    names = [row["name"] for row in paid_invoices]
+    # Distinct STOCK items sold this shift (non-stock items don't post
+    # stock, so they don't need a warehouse).
+    item_rows = frappe.db.sql(
+        """
+        SELECT DISTINCT pii.item_code, pii.item_name
+        FROM `tabPOS Invoice Item` AS pii
+        INNER JOIN `tabItem` AS it ON it.name = pii.item_code
+        WHERE pii.parent IN %(names)s
+          AND it.is_stock_item = 1
+        """,
+        {"names": tuple(names)},
+        as_dict=True,
+    )
+    missing = []
+    for it in item_rows:
+        wh = frappe.db.get_value(
+            "Item Default",
+            {"parent": it.item_code, "company": company},
+            "default_warehouse",
+        )
+        if not wh:
+            missing.append(it.item_name or it.item_code)
+    if missing:
+        missing = sorted(set(missing))
+        listed = ", ".join(missing[:10])
+        more = f" (+{len(missing) - 10} more)" if len(missing) > 10 else ""
+        frappe.throw(
+            _(
+                "Cannot close this shift — these item(s) have no Default "
+                "Warehouse set for company '{2}': {0}{1}. Ask a manager to "
+                "open each Item in the desk → Item Defaults → set a Default "
+                "Warehouse, then reopen the close dialog."
+            ).format(listed, more, company),
+            title=_("Item Warehouse Missing"),
+        )
 
 
 def _validate_close_preflight(paid_invoices, company):

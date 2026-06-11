@@ -377,6 +377,15 @@ def get_custom_fields():
 
 		"POS Profile": [
 			{
+				"fieldname": "custom_use_pos_warehouse",
+				"fieldtype": "Check",
+				"label": "Use Single POS Warehouse",
+				"default": "1",
+				"insert_after": "warehouse",
+				"description": "ON: all sold items post stock to the POS Profile's Warehouse above (the Warehouse field is required). OFF: the Warehouse is hidden and each item posts to its own Default Warehouse (Item > Item Defaults) at shift close; an item with no warehouse blocks the close.",
+				"translatable": 0,
+			},
+			{
 				"fieldname": "restaurant_info",
 				"fieldtype": "Section Break",
 				"label": "Restaurant Info",

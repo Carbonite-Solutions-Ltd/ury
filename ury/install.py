@@ -19,6 +19,7 @@ def after_install():
     # fail we want it loud, not silent. Each function is idempotent.
     _fix_sales_invoice_order_type_fetch()
     ensure_pos_settings_configured()
+    _ensure_pos_warehouse_optional()
     _safe_ensure_role_permissions()
     _check_cups_dependency()
 
@@ -38,6 +39,7 @@ def after_migrate():
     _safe_refresh_custom_fields()
     _fix_sales_invoice_order_type_fetch()
     ensure_pos_settings_configured()
+    _ensure_pos_warehouse_optional()
     _safe_ensure_role_permissions()
     _check_cups_dependency()
 
@@ -145,6 +147,66 @@ def _safe_refresh_custom_fields():
         click.secho(
             f"[URY] Custom field refresh: {successes} fields OK.",
             fg="green",
+        )
+
+
+def _ensure_pos_warehouse_optional():
+    """Make POS Profile.warehouse conditional on the
+    `custom_use_pos_warehouse` checkbox via Property Setters.
+
+    ERPNext ships POS Profile.warehouse as `reqd: 1`. URY's "Use Single POS
+    Warehouse" toggle (2026-06-11) needs the field to be required + visible
+    only when the box is ON; when OFF (item-warehouse mode) the admin saves
+    the profile without a warehouse and each item posts to its own Default
+    Warehouse at shift close. We override the field with three Property
+    Setters: reqd→0, plus mandatory_depends_on / depends_on bound to the
+    checkbox. Runs on after_install + after_migrate, idempotent.
+    """
+    from frappe.custom.doctype.property_setter.property_setter import (
+        make_property_setter,
+    )
+
+    specs = [
+        ("reqd", "0", "Check"),
+        ("mandatory_depends_on", "eval:doc.custom_use_pos_warehouse", "Data"),
+        ("depends_on", "eval:doc.custom_use_pos_warehouse", "Data"),
+    ]
+    try:
+        for prop, value, prop_type in specs:
+            existing = frappe.db.exists(
+                "Property Setter",
+                {
+                    "doc_type": "POS Profile",
+                    "field_name": "warehouse",
+                    "property": prop,
+                },
+            )
+            if existing:
+                frappe.db.set_value("Property Setter", existing, "value", value)
+            else:
+                make_property_setter(
+                    "POS Profile",
+                    "warehouse",
+                    prop,
+                    value,
+                    prop_type,
+                    for_doctype=False,
+                    validate_fields_for_doctype=False,
+                )
+        frappe.clear_cache(doctype="POS Profile")
+        frappe.db.commit()
+        click.secho(
+            "[URY] POS Profile.warehouse is now optional (bound to the "
+            "'Use Single POS Warehouse' toggle).",
+            fg="green",
+        )
+    except Exception as e:
+        click.secho(
+            f"[URY] Failed to make POS Profile.warehouse optional: {e}. The "
+            f"'Use Single POS Warehouse' toggle still works, but the "
+            f"Warehouse field may stay mandatory — fix via Customize Form "
+            f"on POS Profile (set Warehouse reqd off).",
+            fg="red",
         )
 
 

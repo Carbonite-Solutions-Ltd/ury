@@ -110,6 +110,20 @@ def get_order_invoice(table=None, invoiceNo=None, order_type=None, is_payment=No
     return invoice
 
 
+def _resolve_item_warehouse(item_code, company):
+    """An item's Default Warehouse for the given company (Item Defaults),
+    or None when the item has no default for that company. Used in
+    item-warehouse mode (POS Profile `custom_use_pos_warehouse` OFF) so each
+    sold item posts stock to its own warehouse. See CLAUDE.md 2026-06-11."""
+    if not item_code or not company:
+        return None
+    return frappe.db.get_value(
+        "Item Default",
+        {"parent": item_code, "company": company},
+        "default_warehouse",
+    )
+
+
 def _apply_pos_profile_taxes(invoice, pos_profile_name):
     """Fetch the tax template + tax category from the POS Profile onto the
     POS Invoice when they're configured there, and populate the tax rows
@@ -364,9 +378,32 @@ def sync_order(
     if isinstance(items, str):
         items = json.loads(items)
     invoice.items = []
-    
+
+    # Warehouse mode (2026-06-11). When the POS Profile has
+    # `custom_use_pos_warehouse` OFF, each item posts stock to its OWN
+    # Default Warehouse (Item Defaults for the company) instead of the
+    # single profile warehouse. We stamp each item row's warehouse here and
+    # clear the header set_warehouse so ERPNext doesn't force one. Items
+    # with no default warehouse get a blank warehouse — that's caught at
+    # shift close by _validate_item_warehouses with a clear, item-named
+    # error so a manager fixes the item.
+    _raw_use_wh = (
+        frappe.db.get_value("POS Profile", pos_profile, "custom_use_pos_warehouse")
+        if pos_profile
+        else None
+    )
+    # Default ON (single warehouse) when the field is unset, for back-compat.
+    use_pos_warehouse = 1 if _raw_use_wh is None else int(_raw_use_wh or 0)
+    invoice_company = (
+        frappe.db.get_value("POS Profile", pos_profile, "company")
+        if pos_profile
+        else None
+    )
+    if not use_pos_warehouse:
+        invoice.set_warehouse = None
+
     menu = frappe.db.get_value("URY Menu", {"branch": invoice.branch}, "name")
-   
+
     for d in items:
 
         course = frappe.db.get_value("URY Menu Item", {"item": d.get("item"),"parent":menu}, "course")
@@ -402,6 +439,11 @@ def sync_order(
                 item_name=d.get("item_name"),
                 qty=d.get("qty"),
                 **({"custom_course": course} if course else {}),
+                **(
+                    {"warehouse": _resolve_item_warehouse(d.get("item"), invoice_company)}
+                    if not use_pos_warehouse
+                    else {}
+                ),
                 comment=d.get("comment"),
                 rate=item_prices[0].price_list_rate,
                 price_list_rate=item_prices[0].price_list_rate,
