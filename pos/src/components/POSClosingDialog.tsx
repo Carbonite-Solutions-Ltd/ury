@@ -563,7 +563,7 @@ const FormBody = ({
       )}
 
       {submitError && (
-        <div className="mt-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
+        <div className="mt-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm whitespace-pre-line break-words max-h-56 overflow-y-auto">
           {submitError}
         </div>
       )}
