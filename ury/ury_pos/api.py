@@ -2752,6 +2752,78 @@ def validate_pos_close(pos_profile, terminal=None):
     return {"status": "Success"}
 
 @frappe.whitelist(allow_guest=True)
+def _build_pu_print_jobs_for_kot(kot_doc):
+    """Build QZ print jobs for one KOT in URY Production Unit mode.
+
+    Reads the KOT's `production`'s `URY Printer Settings` rows that have
+    `custom_kot_print = 1`, renders the KOT with each row's KOT print
+    format (falling back to the doctype default when blank), and returns
+    ``(jobs, reason)`` where jobs is a list of
+    ``{printer, department, html, kot_name}`` dicts (``department`` carries
+    the production name) and reason is a short string
+    ("no_production" / "no_kot_printers" / "no_print_jobs") when the list
+    is empty, else None. Shared by get_latest_kot (order-time auto-fire)
+    and print_pending_kots_for_invoice (manual fire from the Orders
+    "Pending KOTs" view). See CLAUDE.md "Fixes log" 2026-06-11.
+    """
+    production_name = getattr(kot_doc, "production", None)
+    if not production_name:
+        return [], "no_production"
+    prod_printer_rows = frappe.get_all(
+        "URY Printer Settings",
+        fields=[
+            "printer",
+            "custom_kot_print_format",
+            "custom_kot_print",
+            "custom_block_takeaway_kot",
+        ],
+        filters={
+            "parent": production_name,
+            "parenttype": "URY Production Unit",
+            "custom_kot_print": 1,
+        },
+        order_by="idx",
+    )
+    if not prod_printer_rows:
+        return [], "no_kot_printers"
+    is_takeaway = (
+        getattr(kot_doc, "table_takeaway", 0) == 1
+        or not getattr(kot_doc, "restaurant_table", None)
+    )
+    jobs = []
+    for row in prod_printer_rows:
+        if row.custom_block_takeaway_kot and is_takeaway:
+            continue
+        if not row.printer:
+            continue
+        try:
+            html = frappe.get_print(
+                "URY KOT",
+                kot_doc.name,
+                row.custom_kot_print_format or None,
+                doc=kot_doc,
+                no_letterhead=1,
+            )
+        except Exception as e:
+            frappe.log_error(
+                title="URY PU KOT render failed",
+                message=(
+                    f"KOT {kot_doc.name} production={production_name} "
+                    f"printer={row.printer} err={e}"
+                ),
+            )
+            continue
+        jobs.append(
+            {
+                "printer": row.printer,
+                "department": production_name,
+                "html": html,
+                "kot_name": kot_doc.name,
+            }
+        )
+    return jobs, ("no_print_jobs" if not jobs else None)
+
+
 def get_latest_kot():
     """Get the latest unprinted KOT for the current user's POS Profile.
 
@@ -2882,97 +2954,30 @@ def get_latest_kot():
         )
 
         # ---- URY Production Unit QZ path ----
-        if new_qz and kds_mode == "URY Production Unit":
-            production_name = getattr(kot_doc, "production", None)
-            if not production_name:
-                # No production assigned — fall through to legacy
-                # printer_settings scan below so SOMETHING prints.
+        # Only KOTs actually assigned to a production print here. A
+        # fallback KOT (production=None — items that didn't match any
+        # production's item groups, e.g. a drink when the bar unit isn't
+        # configured) falls THROUGH to the Menu Course department routing
+        # below so it isn't silently stranded. See CLAUDE.md 2026-06-11.
+        if (
+            new_qz
+            and kds_mode == "URY Production Unit"
+            and getattr(kot_doc, "production", None)
+        ):
+            jobs, reason = _build_pu_print_jobs_for_kot(kot_doc)
+            if jobs:
                 return {
-                    "debug": "pu_mode_no_production",
-                    "pos_profile": pos_profile,
                     "kot_name": kot_doc.name,
-                }
-
-            prod_printer_rows = frappe.get_all(
-                "URY Printer Settings",
-                fields=[
-                    "printer",
-                    "custom_kot_print_format",
-                    "custom_kot_print",
-                    "custom_block_takeaway_kot",
-                ],
-                filters={
-                    "parent": production_name,
-                    "parenttype": "URY Production Unit",
-                    "custom_kot_print": 1,
-                },
-                order_by="idx",
-            )
-
-            if not prod_printer_rows:
-                return {
-                    "debug": "pu_mode_no_kot_printers",
                     "pos_profile": pos_profile,
-                    "kot_name": kot_doc.name,
-                    "production": production_name,
+                    "kot_printed": kot_rows[0].kot_printed,
+                    "production_unit_mode": 1,
+                    "print_jobs": jobs,
                 }
-
-            # Takeaway-blocked rows: if the block-takeaway flag is
-            # set on a printer row, skip that printer when the order
-            # is a takeaway / the table is flagged takeaway.
-            is_takeaway = (
-                getattr(kot_doc, "table_takeaway", 0) == 1
-                or not getattr(kot_doc, "restaurant_table", None)
-            )
-
-            print_jobs = []
-            for row in prod_printer_rows:
-                if (
-                    row.custom_block_takeaway_kot
-                    and is_takeaway
-                ):
-                    continue
-                if not row.printer:
-                    continue
-                try:
-                    html = frappe.get_print(
-                        "URY KOT",
-                        kot_doc.name,
-                        row.custom_kot_print_format or None,
-                        doc=kot_doc,
-                        no_letterhead=1,
-                    )
-                except Exception as e:
-                    frappe.log_error(
-                        title="URY get_latest_kot PU render failed",
-                        message=(
-                            f"KOT {kot_doc.name} production={production_name} "
-                            f"printer={row.printer} err={e}"
-                        ),
-                    )
-                    continue
-                print_jobs.append(
-                    {
-                        "printer": row.printer,
-                        "department": production_name,
-                        "html": html,
-                    }
-                )
-
-            if not print_jobs:
-                return {
-                    "debug": "pu_mode_no_print_jobs",
-                    "pos_profile": pos_profile,
-                    "kot_name": kot_doc.name,
-                    "production": production_name,
-                }
-
             return {
-                "kot_name": kot_doc.name,
+                "debug": f"pu_mode_{reason}",
                 "pos_profile": pos_profile,
-                "kot_printed": kot_rows[0].kot_printed,
-                "production_unit_mode": 1,
-                "print_jobs": print_jobs,
+                "kot_name": kot_doc.name,
+                "production": getattr(kot_doc, "production", None),
             }
 
         # ---- New unified config path (Menu Course mode) ----
@@ -3186,20 +3191,91 @@ def print_pending_kots_for_invoice(invoice):
     pos_profile = invoice_row.pos_profile
     order_type = invoice_row.order_type
 
-    # PU mode short-circuit: the "held Drinks until bill print" flow
-    # is a Menu Course concept. In URY Production Unit mode every KOT
-    # fires at order time through the production's own printers —
-    # there's nothing to "fire again at bill print". Returning empty
-    # here is the correct behavior and lets the Print Invoice button
-    # skip straight to the bill print.
     kds_mode = (
         frappe.db.get_value(
             "POS Profile", pos_profile, "custom_kds_routing_mode"
         )
         or "Menu Course"
     )
+
+    # URY Production Unit mode: build print jobs for every un-printed KOT
+    # so the cashier can fire them from the Orders "Pending KOTs" view
+    # (e.g. when the order-time auto-print didn't reach the printer). A KOT
+    # assigned to a production prints to that production's KOT printers
+    # (with its KOT print format); a fallback KOT (production=None) routes
+    # by department via the Menu Course resolver so it still prints when
+    # department printers are configured. `production_unit_mode=1` tells the
+    # frontend to mark the whole KOT printed after firing. Previously this
+    # short-circuited to an empty list, so Pending-KOTs print fired nothing
+    # (only the bill) and never marked the KOT. See CLAUDE.md 2026-06-11.
     if kds_mode == "URY Production Unit":
-        return {"invoice": invoice, "print_jobs": []}
+        from ury.ury.api.ury_print import resolve_kot_print_plan
+
+        pu_kot_rows = frappe.get_all(
+            "URY KOT",
+            filters={
+                "invoice": invoice,
+                "kot_printed": 0,
+                "docstatus": ["!=", 2],
+            },
+            fields=["name"],
+            order_by="creation asc",
+        )
+        pu_print_jobs = []
+        for row in pu_kot_rows:
+            try:
+                kot_doc = frappe.get_doc("URY KOT", row.name)
+            except Exception as e:
+                frappe.log_error(
+                    title="URY print_pending_kots (PU) load KOT failed",
+                    message=f"invoice={invoice} kot={row.name} err={e}",
+                )
+                continue
+            if getattr(kot_doc, "production", None):
+                jobs, _reason = _build_pu_print_jobs_for_kot(kot_doc)
+                pu_print_jobs.extend(jobs)
+                continue
+            # Unmatched fallback KOT (no production) — route by department.
+            plan = resolve_kot_print_plan(
+                kot_doc, pos_profile_name=pos_profile, order_type=order_type
+            )
+            for entry in (plan or []):
+                printer = entry.get("printer")
+                if not printer:
+                    continue
+                filtered_doc = frappe.copy_doc(kot_doc)
+                filtered_doc.kot_items = entry["items"]
+                filtered_doc.flags.kot_department = entry["department"]
+                try:
+                    html = frappe.get_print(
+                        "URY KOT",
+                        kot_doc.name,
+                        None,
+                        doc=filtered_doc,
+                        no_letterhead=1,
+                    )
+                except Exception as e:
+                    frappe.log_error(
+                        title="URY print_pending_kots (PU fallback) render failed",
+                        message=(
+                            f"invoice={invoice} kot={kot_doc.name} "
+                            f"dept={entry['department']} err={e}"
+                        ),
+                    )
+                    continue
+                pu_print_jobs.append(
+                    {
+                        "printer": printer,
+                        "department": entry["department"],
+                        "html": html,
+                        "kot_name": kot_doc.name,
+                    }
+                )
+        return {
+            "invoice": invoice,
+            "print_jobs": pu_print_jobs,
+            "production_unit_mode": 1,
+        }
 
     # Find every un-fully-printed KOT for this invoice. kot_printed=0
     # catches both "never printed anything" and "partially printed"
