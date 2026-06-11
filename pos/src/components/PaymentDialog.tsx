@@ -27,6 +27,11 @@ import {
 } from './ui';
 import { showToast } from './ui/toast';
 import { call } from '../lib/frappe-sdk';
+import {
+  displayPaymentOpen,
+  displayPaymentUpdate,
+  displayPaymentClose,
+} from '../lib/pos-display';
 import { DEFAULT_PAYMENT_MODE } from '../data/order-types';
 import { chargeInvoiceToRoom } from '../lib/ihotel-api';
 import { printSplitReceipts } from '../lib/print';
@@ -385,6 +390,18 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
     () => sumAmounts(outgoingPayments.map((p) => p.amount)),
     [outgoingPayments]
   );
+
+  // Customer dual-screen: push amount due / collected / change to the display
+  // bridge while this dialog is open (no DOM scraping). 2026-06-11.
+  const changeDue = Math.max(0, Math.round((outgoingTotal - finalTotal) * 100) / 100);
+  useEffect(() => {
+    displayPaymentOpen(finalTotal);
+    return () => displayPaymentClose();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    displayPaymentUpdate(finalTotal, outgoingTotal, changeDue);
+  }, [finalTotal, outgoingTotal, changeDue]);
 
   const canSubmit =
     paymentMode === 'room'
