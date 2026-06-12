@@ -376,7 +376,14 @@ export default {
               this.daily_order_number = msg.daily_order_number;
               this.kds_routing_mode = msg.kds_routing_mode || "Menu Course";
               this.kot_channel = `kot_update_${this.branch}_${this.production}`;
-              this.kot = msg.KOT || [];
+              // Stamp the moment we received each KOT so the timer can tick
+              // forward from the server-computed elapsed_seconds base.
+              const fetchedAt = Date.now();
+              const list = msg.KOT || [];
+              list.forEach((k) => {
+                k._fetchedAt = fetchedAt;
+              });
+              this.kot = list;
               this.updateQtyColorTable();
               this.updateTimeRemaining();
               this.masonryLoading();
@@ -559,8 +566,21 @@ export default {
       });
     },
     _elapsedSeconds(kot) {
-      // Prefer the full creation timestamp; fall back to date+time. Both
-      // come from Frappe in site-local time ("YYYY-MM-DD HH:MM:SS[.ffffff]").
+      // Prefer the SERVER-computed elapsed base (`elapsed_seconds`) and
+      // tick forward from when the client received this KOT. This is
+      // timezone-safe: the server computed the base entirely in its own
+      // timezone, so the timer is correct regardless of the KDS browser's
+      // timezone. (The old path parsed Frappe's site-local creation string
+      // as browser-local time — when the server tz was ahead of the
+      // browser the diff went negative and the timer stuck at 00:00.)
+      // Falls back to creation parsing only for legacy payloads with no
+      // elapsed_seconds / no _fetchedAt stamp.
+      if (kot._fetchedAt) {
+        const base = Number(kot.elapsed_seconds);
+        const since = (Date.now() - kot._fetchedAt) / 1000;
+        const total = (isNaN(base) ? 0 : base) + since;
+        return total > 0 ? Math.floor(total) : 0;
+      }
       const raw = kot.creation || `${kot.date || ""} ${kot.time || ""}`.trim();
       if (!raw) return 0;
       const iso = raw.replace(" ", "T").split(".")[0];
@@ -658,6 +678,10 @@ export default {
                 });
               }
             }
+            // A realtime KOT is brand-new (~0 elapsed); stamp its receipt
+            // time so the timer ticks up from 0 (it carries no
+            // elapsed_seconds, so base defaults to 0).
+            doc.kot._fetchedAt = Date.now();
             this.kot.unshift(doc.kot);
             this.masonryLoading();
             this.updateQtyColorTable();

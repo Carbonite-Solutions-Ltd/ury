@@ -187,10 +187,21 @@ def kot_list(target=None):
         order_by="creation desc",
     )
 
+    now_dt = frappe.utils.now_datetime()
     KOT = []
     for kot in kotList:
         kotdoc = frappe.get_doc("URY KOT", kot.name)
         kotjson = json.loads(frappe.as_json(kotdoc))
+        # Server-computed elapsed seconds since the KOT was created. Both
+        # sides of the subtraction are in the system timezone, so this is
+        # correct regardless of the KDS browser's timezone — the client
+        # just ticks forward from this base. Fixes the Mosaic timer that
+        # stuck at 00:00 when the server tz was ahead of the browser
+        # (creation parsed as browser-local went negative). See CLAUDE.md.
+        kotjson["elapsed_seconds"] = max(
+            0,
+            int((now_dt - frappe.utils.get_datetime(kotdoc.creation)).total_seconds()),
+        )
 
         if kds_mode == "Menu Course" and target and target != "All":
             # Per-department item filter. Walk the KOT's kot_items and
