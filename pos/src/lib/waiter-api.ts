@@ -62,12 +62,30 @@ export async function createWaiter(
   return res.message;
 }
 
-/** Every active waiter + their pending (draft) orders for the Waiters page. */
-export async function getWaitersWithPendingOrders(): Promise<WaiterWithOrders[]> {
+/**
+ * Every active waiter + their pending (draft) orders for the Waiters page.
+ * Pass `includeEmpty` to also return waiters with no pending orders (so they
+ * can be drag-and-drop targets).
+ */
+export async function getWaitersWithPendingOrders(
+  includeEmpty = false
+): Promise<WaiterWithOrders[]> {
   const res = await call.get<{ message: WaiterWithOrders[] }>(
-    'ury.ury_pos.api.get_waiters_with_pending_orders'
+    'ury.ury_pos.api.get_waiters_with_pending_orders',
+    includeEmpty ? { include_empty: 1 } : {}
   );
   return res.message || [];
+}
+
+/** Move a draft order to a different waiter (drag-and-drop reassign). */
+export async function reassignOrderWaiter(
+  invoice: string,
+  waiter: string
+): Promise<{ invoice: string; waiter: string; changed: number }> {
+  const res = await call.post<{
+    message: { invoice: string; waiter: string; changed: number };
+  }>('ury.ury_pos.api.reassign_order_waiter', { invoice, waiter });
+  return res.message;
 }
 
 /** Total pending waiter orders on the branch (navbar badge). Never throws. */

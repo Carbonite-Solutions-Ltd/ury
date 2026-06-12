@@ -10,17 +10,43 @@ import {
   Search,
   ChevronDown,
   ChevronRight,
+  GripVertical,
+  ArrowRightLeft,
 } from 'lucide-react';
 import { Input } from '../components/ui/input';
 import { usePOSStore } from '../store/pos-store';
 import {
   getWaitersWithPendingOrders,
+  reassignOrderWaiter,
   type WaiterWithOrders,
+  type WaiterPendingOrder,
 } from '../lib/waiter-api';
-import { formatCurrency, extractFrappeServerError } from '../lib/utils';
+import { formatCurrency, extractFrappeServerError, cn } from '../lib/utils';
 import { showToast } from '../components/ui/toast';
 import { Button } from '../components/ui/button';
 import { Spinner } from '../components/ui/spinner';
+
+type DragState = { order: WaiterPendingOrder; fromWaiter: string } | null;
+
+// Move an order between waiters in the local list (optimistic update).
+const moveOrderLocally = (
+  list: WaiterWithOrders[],
+  orderName: string,
+  from: string,
+  to: string
+): WaiterWithOrders[] => {
+  let moved: WaiterPendingOrder | null = null;
+  const stripped = list.map((w) => {
+    if (w.name !== from) return w;
+    const found = w.orders.find((o) => o.name === orderName);
+    if (found) moved = found;
+    return { ...w, orders: w.orders.filter((o) => o.name !== orderName) };
+  });
+  if (!moved) return list;
+  return stripped.map((w) =>
+    w.name === to ? { ...w, orders: [moved as WaiterPendingOrder, ...w.orders] } : w
+  );
+};
 
 const Waiters = () => {
   const navigate = useNavigate();
@@ -29,15 +55,28 @@ const Waiters = () => {
   const [loading, setLoading] = useState(true);
   const [editLoadingId, setEditLoadingId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  // Per-waiter collapse state. Absent = expanded (default).
+  // Per-waiter collapse override. Absent = default (expanded if it has
+  // orders, collapsed if empty).
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const toggle = (name: string) =>
-    setCollapsed((c) => ({ ...c, [name]: !c[name] }));
+  // Drag-and-drop reassignment state.
+  const [drag, setDrag] = useState<DragState>(null);
+  const [dragOverWaiter, setDragOverWaiter] = useState<string | null>(null);
+  const [reassigningId, setReassigningId] = useState<string | null>(null);
+  const [justMovedId, setJustMovedId] = useState<string | null>(null);
+
+  const isCollapsed = (w: WaiterWithOrders) =>
+    collapsed[w.name] ?? w.orders.length === 0;
+  const toggle = (w: WaiterWithOrders) =>
+    setCollapsed((c) => ({
+      ...c,
+      [w.name]: !(c[w.name] ?? w.orders.length === 0),
+    }));
 
   const load = async () => {
     setLoading(true);
     try {
-      setWaiters(await getWaitersWithPendingOrders());
+      // includeEmpty: show every active waiter so any can be a drop target.
+      setWaiters(await getWaitersWithPendingOrders(true));
     } catch (e) {
       showToast.error(
         extractFrappeServerError(e, 'Failed to load waiters').message
@@ -108,6 +147,40 @@ const Waiters = () => {
     }
   };
 
+  // Drop an order onto a waiter card → reassign it (optimistic, with revert).
+  const handleDrop = async (toWaiter: WaiterWithOrders) => {
+    const dnd = drag;
+    setDragOverWaiter(null);
+    setDrag(null);
+    if (!dnd || dnd.fromWaiter === toWaiter.name) return;
+    const order = dnd.order;
+    setReassigningId(order.name);
+    // Optimistically move + reveal the destination.
+    setWaiters((prev) =>
+      moveOrderLocally(prev, order.name, dnd.fromWaiter, toWaiter.name)
+    );
+    setCollapsed((c) => ({ ...c, [toWaiter.name]: false }));
+    try {
+      await reassignOrderWaiter(order.name, toWaiter.name);
+      showToast.success(`Order ${order.name} moved to ${toWaiter.full_name}`);
+      setJustMovedId(order.name);
+      setTimeout(
+        () => setJustMovedId((cur) => (cur === order.name ? null : cur)),
+        1300
+      );
+    } catch (e) {
+      // Revert on failure.
+      setWaiters((prev) =>
+        moveOrderLocally(prev, order.name, toWaiter.name, dnd.fromWaiter)
+      );
+      showToast.error(
+        extractFrappeServerError(e, 'Failed to move order').message
+      );
+    } finally {
+      setReassigningId(null);
+    }
+  };
+
   const totalPending = waiters.reduce((s, w) => s + w.orders.length, 0);
 
   const filteredWaiters = useMemo(() => {
@@ -139,14 +212,20 @@ const Waiters = () => {
             Refresh
           </Button>
         </div>
-        <div className="relative max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search a waiter by name or mobile…"
-            className="pl-9"
-          />
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="relative max-w-sm flex-1 min-w-[12rem]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search a waiter by name or mobile…"
+              className="pl-9"
+            />
+          </div>
+          <p className="text-xs text-gray-400 flex items-center gap-1.5">
+            <ArrowRightLeft className="w-3.5 h-3.5" />
+            Drag an order onto another waiter to reassign it.
+          </p>
         </div>
       </div>
 
@@ -159,10 +238,9 @@ const Waiters = () => {
         ) : waiters.length === 0 ? (
           <div className="text-center text-gray-500 py-20">
             <UserRound className="w-10 h-10 mx-auto text-gray-300 mb-3" />
-            <p className="font-medium">No pending waiter orders.</p>
+            <p className="font-medium">No waiters yet.</p>
             <p className="text-sm">
-              Only waiters with pending (unpaid) orders show here. An order
-              leaves this list once it's paid.
+              Add a waiter from the POS to start assigning orders.
             </p>
           </div>
         ) : filteredWaiters.length === 0 ? (
@@ -172,125 +250,207 @@ const Waiters = () => {
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 items-start">
-            {filteredWaiters.map((w) => (
-              <div
-                key={w.name}
-                className="bg-white rounded-xl border border-gray-200 overflow-hidden"
-              >
-                <button
-                  type="button"
-                  onClick={() => toggle(w.name)}
-                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-100/70 transition-colors"
-                >
-                  <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center shrink-0">
-                    <UserRound className="w-4 h-4 text-blue-700" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="font-semibold text-gray-900 truncate">
-                      {w.full_name}
-                    </div>
-                    {w.mobile_number && (
-                      <div className="text-xs text-gray-500 truncate">
-                        {w.mobile_number}
-                      </div>
-                    )}
-                  </div>
-                  <span
-                    className="text-xs font-semibold text-gray-600 bg-gray-100 rounded-full px-2.5 py-1 shrink-0"
-                    title={`${w.orders.length} pending order${
-                      w.orders.length === 1 ? '' : 's'
-                    }`}
-                  >
-                    {w.orders.length}
-                  </span>
-                  {collapsed[w.name] ? (
-                    <ChevronRight className="w-4 h-4 text-gray-400 shrink-0" />
-                  ) : (
-                    <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
+            {filteredWaiters.map((w) => {
+              const isDropTarget = !!drag && drag.fromWaiter !== w.name;
+              const isOver = dragOverWaiter === w.name && isDropTarget;
+              return (
+                <div
+                  key={w.name}
+                  onDragOver={(e) => {
+                    if (!isDropTarget) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    if (dragOverWaiter !== w.name) setDragOverWaiter(w.name);
+                  }}
+                  onDragLeave={(e) => {
+                    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                      setDragOverWaiter((cur) => (cur === w.name ? null : cur));
+                    }
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    handleDrop(w);
+                  }}
+                  className={cn(
+                    'bg-white rounded-xl border overflow-hidden transition-all duration-200',
+                    isOver &&
+                      'border-blue-500 ring-2 ring-blue-400 shadow-xl scale-[1.02] bg-blue-50/40',
+                    isDropTarget &&
+                      !isOver &&
+                      'border-dashed border-blue-300 bg-blue-50/20',
+                    !isDropTarget && 'border-gray-200'
                   )}
-                </button>
+                >
+                  {/* Drop hint banner while hovering a valid target */}
+                  {isOver && (
+                    <div className="px-4 py-2 bg-blue-600 text-white text-xs font-semibold flex items-center gap-1.5">
+                      <ArrowRightLeft className="w-3.5 h-3.5 shrink-0" />
+                      Drop to move order to {w.full_name}
+                    </div>
+                  )}
 
-                {!collapsed[w.name] &&
-                  (w.orders.length === 0 ? (
-                  <div className="px-4 py-4 text-sm text-gray-400 italic">
-                    No pending orders.
-                  </div>
-                ) : (
-                  <div className="p-3 space-y-2.5 bg-gray-50/60">
-                    {w.orders.map((o, idx) => (
-                      <div
-                        key={o.name}
-                        onClick={() => handleEditOrder(o.name)}
-                        role="button"
-                        tabIndex={0}
-                        title="Click to edit this order"
-                        className="group relative rounded-lg border border-gray-200 bg-white p-3 cursor-pointer hover:border-blue-400 hover:shadow-sm transition-all"
-                      >
-                        {editLoadingId === o.name && (
-                          <div className="absolute inset-0 bg-white/70 flex items-center justify-center rounded-lg z-10">
-                            <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
-                          </div>
-                        )}
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              {w.orders.length > 1 && (
-                                <span className="text-[10px] font-bold uppercase tracking-wide text-blue-700 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5">
-                                  Invoice {idx + 1} of {w.orders.length}
-                                </span>
-                              )}
-                              <span className="font-mono text-sm font-medium text-gray-800">
-                                {o.name}
-                              </span>
-                            </div>
-                            <div className="text-xs text-gray-500 mt-0.5">
-                              {o.order_type}
-                              {o.restaurant_table
-                                ? ` · Table ${o.restaurant_table}`
-                                : ''}
-                              {' · '}
-                              {o.customer_name || o.customer || 'Walk-in'}
-                            </div>
-                          </div>
-                          <div className="text-right shrink-0">
-                            <div className="font-bold text-gray-900">
-                              {formatCurrency(o.grand_total)}
-                            </div>
-                            <div className="text-[11px] text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 justify-end mt-0.5">
-                              <Edit className="w-3 h-3" /> Edit
-                            </div>
-                          </div>
+                  <button
+                    type="button"
+                    onClick={() => toggle(w)}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-100/70 transition-colors"
+                  >
+                    <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center shrink-0">
+                      <UserRound className="w-4 h-4 text-blue-700" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-semibold text-gray-900 truncate">
+                        {w.full_name}
+                      </div>
+                      {w.mobile_number && (
+                        <div className="text-xs text-gray-500 truncate">
+                          {w.mobile_number}
                         </div>
-                        {/* Items */}
-                        <ul className="mt-2 space-y-0.5 border-t border-gray-100 pt-2">
-                          {o.items.map((it, ii) => (
-                            <li
-                              key={ii}
-                              className="flex items-center justify-between text-xs text-gray-600"
+                      )}
+                    </div>
+                    <span
+                      className={cn(
+                        'text-xs font-semibold rounded-full px-2.5 py-1 shrink-0',
+                        w.orders.length > 0
+                          ? 'text-gray-600 bg-gray-100'
+                          : 'text-gray-400 bg-gray-50'
+                      )}
+                      title={`${w.orders.length} pending order${
+                        w.orders.length === 1 ? '' : 's'
+                      }`}
+                    >
+                      {w.orders.length}
+                    </span>
+                    {isCollapsed(w) ? (
+                      <ChevronRight className="w-4 h-4 text-gray-400 shrink-0" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
+                    )}
+                  </button>
+
+                  {!isCollapsed(w) &&
+                    (w.orders.length === 0 ? (
+                      <div
+                        className={cn(
+                          'mx-3 mb-3 rounded-lg border-2 border-dashed px-4 py-6 text-center text-sm transition-colors',
+                          isOver
+                            ? 'border-blue-400 text-blue-600 bg-blue-50/50'
+                            : 'border-gray-200 text-gray-400'
+                        )}
+                      >
+                        {isDropTarget
+                          ? 'Drop an order here'
+                          : 'No pending orders.'}
+                      </div>
+                    ) : (
+                      <div className="p-3 space-y-2.5 bg-gray-50/60">
+                        {w.orders.map((o, idx) => {
+                          const busy =
+                            editLoadingId === o.name ||
+                            reassigningId === o.name;
+                          const dragging = drag?.order.name === o.name;
+                          const justMoved = justMovedId === o.name;
+                          return (
+                            <div
+                              key={o.name}
+                              draggable={!busy}
+                              onDragStart={(e) => {
+                                e.dataTransfer.effectAllowed = 'move';
+                                e.dataTransfer.setData('text/plain', o.name);
+                                setDrag({ order: o, fromWaiter: w.name });
+                              }}
+                              onDragEnd={() => {
+                                setDrag(null);
+                                setDragOverWaiter(null);
+                              }}
+                              onClick={() => !dragging && handleEditOrder(o.name)}
+                              role="button"
+                              tabIndex={0}
+                              title="Drag to another waiter to reassign · click to edit"
+                              className={cn(
+                                'group relative rounded-lg border bg-white p-3 transition-all',
+                                'cursor-grab active:cursor-grabbing select-none',
+                                'hover:border-blue-400 hover:shadow-sm',
+                                dragging && 'opacity-40 scale-95',
+                                justMoved &&
+                                  'ring-2 ring-green-400 border-green-300',
+                                !dragging && !justMoved && 'border-gray-200'
+                              )}
                             >
-                              <span className="truncate">
-                                <span className="font-medium text-gray-800">
-                                  {it.qty}×
-                                </span>{' '}
-                                {it.item_name}
-                              </span>
-                              <span className="tabular-nums shrink-0 ml-2">
-                                {formatCurrency(it.amount)}
-                              </span>
-                            </li>
-                          ))}
-                          {o.items.length === 0 && (
-                            <li className="text-xs text-gray-400 italic flex items-center gap-1">
-                              <ClipboardList className="w-3 h-3" /> No items
-                            </li>
-                          )}
-                        </ul>
+                              {busy && (
+                                <div className="absolute inset-0 bg-white/70 flex items-center justify-center rounded-lg z-10">
+                                  <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+                                </div>
+                              )}
+                              <div className="flex items-start gap-2">
+                                <GripVertical className="w-4 h-4 text-gray-300 group-hover:text-gray-400 shrink-0 mt-0.5" />
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        {w.orders.length > 1 && (
+                                          <span className="text-[10px] font-bold uppercase tracking-wide text-blue-700 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5">
+                                            Invoice {idx + 1} of {w.orders.length}
+                                          </span>
+                                        )}
+                                        <span className="font-mono text-sm font-medium text-gray-800">
+                                          {o.name}
+                                        </span>
+                                      </div>
+                                      <div className="text-xs text-gray-500 mt-0.5">
+                                        {o.order_type}
+                                        {o.restaurant_table
+                                          ? ` · Table ${o.restaurant_table}`
+                                          : ''}
+                                        {' · '}
+                                        {o.customer_name ||
+                                          o.customer ||
+                                          'Walk-in'}
+                                      </div>
+                                    </div>
+                                    <div className="text-right shrink-0">
+                                      <div className="font-bold text-gray-900">
+                                        {formatCurrency(o.grand_total)}
+                                      </div>
+                                      <div className="text-[11px] text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 justify-end mt-0.5">
+                                        <Edit className="w-3 h-3" /> Edit
+                                      </div>
+                                    </div>
+                                  </div>
+                                  {/* Items */}
+                                  <ul className="mt-2 space-y-0.5 border-t border-gray-100 pt-2">
+                                    {o.items.map((it, ii) => (
+                                      <li
+                                        key={ii}
+                                        className="flex items-center justify-between text-xs text-gray-600"
+                                      >
+                                        <span className="truncate">
+                                          <span className="font-medium text-gray-800">
+                                            {it.qty}×
+                                          </span>{' '}
+                                          {it.item_name}
+                                        </span>
+                                        <span className="tabular-nums shrink-0 ml-2">
+                                          {formatCurrency(it.amount)}
+                                        </span>
+                                      </li>
+                                    ))}
+                                    {o.items.length === 0 && (
+                                      <li className="text-xs text-gray-400 italic flex items-center gap-1">
+                                        <ClipboardList className="w-3 h-3" /> No
+                                        items
+                                      </li>
+                                    )}
+                                  </ul>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     ))}
-                  </div>
-                ))}
-              </div>
-            ))}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

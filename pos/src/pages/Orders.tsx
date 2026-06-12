@@ -172,10 +172,10 @@ export default function Orders() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderSearchQuery]);
 
-  // Pending KOTs view never merges — drop out of merge mode if the cashier
-  // switches into it while selecting orders to merge.
+  // Merge is Draft-only — drop out of merge mode if the cashier switches to
+  // any other filter while selecting orders to merge.
   useEffect(() => {
-    if (selectedStatus === 'Pending KOTs' && mergeMode) {
+    if (selectedStatus !== 'Draft' && mergeMode) {
       exitMergeMode();
     }
   }, [selectedStatus, mergeMode, exitMergeMode]);
@@ -559,9 +559,9 @@ export default function Orders() {
               )}
             </div>
             <div className="flex items-center gap-2">
-              {/* Merging is disabled in the Pending KOTs view — held KOTs are
-                  only printed there, never merged. */}
-              {canMerge && selectedStatus !== 'Pending KOTs' && (
+              {/* Merge is only meaningful for Draft orders — hidden on every
+                  other filter (Paid, Cancelled, Unbilled, Pending KOTs, …). */}
+              {canMerge && selectedStatus === 'Draft' && (
                 <Button
                   onClick={() => enterMergeMode()}
                   variant="outline"

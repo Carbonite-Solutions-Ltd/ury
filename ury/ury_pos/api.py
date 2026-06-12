@@ -1195,12 +1195,65 @@ def create_waiter(full_name, mobile_number=None):
 
 
 @frappe.whitelist()
-def get_waiters_with_pending_orders():
+def reassign_order_waiter(invoice, waiter):
+    """Move a draft order to a different waiter — drag-and-drop on the
+    Waiters page (cashier picked the wrong waiter). Stamps
+    POS Invoice.custom_waiter. Only DRAFT (unpaid) orders can be
+    reassigned; a plain cashier can only re-home their OWN orders, captains/
+    managers/admins can re-home any. 2026-06-12.
+    """
+    if not invoice or not waiter:
+        frappe.throw(_("Order and waiter are both required."))
+    inv = frappe.db.get_value(
+        "POS Invoice",
+        invoice,
+        ["docstatus", "status", "owner", "custom_waiter"],
+        as_dict=True,
+    )
+    if not inv:
+        frappe.throw(
+            _("Order {0} not found.").format(invoice), title=_("Not Found")
+        )
+    if inv.docstatus != 0 or inv.status != "Draft":
+        frappe.throw(
+            _("Only unpaid (draft) orders can be moved to another waiter."),
+            title=_("Order Not Editable"),
+        )
+    if not frappe.db.exists("URY Waiter", waiter):
+        frappe.throw(
+            _("Waiter '{0}' not found.").format(waiter),
+            title=_("Invalid Waiter"),
+        )
+    roles = set(frappe.get_roles(frappe.session.user))
+    is_captain = frappe.session.user == "Administrator" or bool(
+        roles & {"System Manager", "URY Manager", "URY Captain"}
+    )
+    if not is_captain and inv.owner != frappe.session.user:
+        frappe.throw(
+            _("You can only move your own orders."),
+            title=_("Not Permitted"),
+        )
+    if inv.custom_waiter == waiter:
+        return {"invoice": invoice, "waiter": waiter, "changed": 0}
+    frappe.db.set_value(
+        "POS Invoice", invoice, "custom_waiter", waiter, update_modified=True
+    )
+    return {"invoice": invoice, "waiter": waiter, "changed": 1}
+
+
+@frappe.whitelist()
+def get_waiters_with_pending_orders(include_empty=0):
     """For the Waiters page: every active waiter plus their DRAFT (unpaid)
     POS Invoices that the CURRENT cashier rang, each with its items.
     Scoped to the session user (the cashier who rang the order) + branch.
     Orders charged-to-room (iHotel) are excluded — they aren't pending
-    payment. Returns [{name, full_name, mobile_number, orders: [...]}]."""
+    payment. Returns [{name, full_name, mobile_number, orders: [...]}].
+
+    `include_empty`: when truthy, ALSO return active waiters that have no
+    pending orders — needed so the drag-and-drop Waiters page can use every
+    waiter as a drop target (move a mis-assigned order to a waiter who has
+    no orders yet). Default 0 keeps the historical "only waiters with
+    pending orders" behavior."""
     branch = getBranch()
     waiters = frappe.get_all(
         "URY Waiter",
@@ -1236,7 +1289,9 @@ def get_waiters_with_pending_orders():
         )
         d["creation"] = str(d.get("creation") or "")
         by_waiter.setdefault(d["waiter"], []).append(d)
-    # Only surface waiters who actually have pending orders.
+    # Only surface waiters who actually have pending orders — unless
+    # include_empty is set (drag-and-drop needs every waiter as a target).
+    show_all = bool(int(include_empty or 0))
     return [
         {
             "name": w["name"],
@@ -1245,7 +1300,7 @@ def get_waiters_with_pending_orders():
             "orders": by_waiter.get(w["name"], []),
         }
         for w in waiters
-        if by_waiter.get(w["name"])
+        if show_all or by_waiter.get(w["name"])
     ]
 
 
