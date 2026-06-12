@@ -29,7 +29,7 @@ import { showToast } from './ui/toast';
 import { call } from '../lib/frappe-sdk';
 import { DEFAULT_PAYMENT_MODE } from '../data/order-types';
 import { chargeInvoiceToRoom } from '../lib/ihotel-api';
-import { printSplitReceipts } from '../lib/print';
+import { printSplitReceipts, printOrder } from '../lib/print';
 import ItemSplitFlow from './ItemSplitFlow';
 
 interface PaymentDialogProps {
@@ -468,6 +468,19 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
             title: 'Receipts not printed',
             description:
               'Payment went through, but the split receipts could not be printed. Reprint from the Orders page.',
+          });
+        }
+      } else if (storePosProfile) {
+        // Auto-print the bill on payment (single payer). A print failure
+        // must NOT undo the already-submitted payment.
+        try {
+          await printOrder({ orderId: invoice, posProfile: storePosProfile });
+        } catch (printErr) {
+          console.error('Bill print failed:', printErr);
+          showToast.error({
+            title: 'Bill not printed',
+            description:
+              'Payment went through, but the bill could not be printed. Reprint it from the Orders page.',
           });
         }
       }
