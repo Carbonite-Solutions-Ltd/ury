@@ -1,6 +1,11 @@
 import { Monitor, Smartphone } from 'lucide-react';
 
-const ScreenSizeDialog = () => {
+interface ScreenSizeDialogProps {
+  /** The admin-configured minimum width (px) this device fell short of. */
+  requiredWidth: number;
+}
+
+const ScreenSizeDialog = ({ requiredWidth }: ScreenSizeDialogProps) => {
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4 shadow-xl">
@@ -24,7 +29,10 @@ const ScreenSizeDialog = () => {
               This POS system is designed for desktop computers and tablets with larger screens.
             </p>
             <p className="text-sm">
-              Mobile support will be available in a future update. Please use a device with a screen width of 1024px or larger.
+              Please use a device with a screen width of {requiredWidth}px or
+              larger. Tip: if your screen is wide enough, reset browser zoom
+              (Ctrl/⌘ + 0) and maximize the window — zoom shrinks the reported
+              width.
             </p>
           </div>
 
@@ -34,7 +42,7 @@ const ScreenSizeDialog = () => {
               Current screen width: <span className="font-semibold text-gray-800">{window.innerWidth}px</span>
             </p>
             <p className="text-sm text-gray-600">
-              Required: <span className="font-semibold text-gray-800">1024px or larger</span>
+              Required: <span className="font-semibold text-gray-800">{requiredWidth}px or larger</span>
             </p>
           </div>
         </div>

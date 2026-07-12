@@ -1424,6 +1424,8 @@ def getPosProfile(terminal=None):
         ihotel_enabled = int(pos_profiles.get("custom_ihotel_enabled") or 0)
         ihotel_charge_type = pos_profiles.get("custom_ihotel_charge_type") or None
         shift_system_mode = pos_profiles.get("custom_shift_system_mode") or "Disabled"
+        # Minimum screen width (px) to use the POS. 0/unset = no restriction.
+        min_screen_width = int(pos_profiles.get("custom_min_screen_width") or 0)
         # Unified print routing (2026-04-16). Expose the new fields
         # so the React POS knows which print path to drive. The
         # resolver / routing logic all lives on the backend — the
@@ -1498,6 +1500,7 @@ def getPosProfile(terminal=None):
         "custom_max_invoice_transfers": max_invoice_transfers,
         "custom_use_waiter": use_waiter,
         "custom_max_bill_prints": max_bill_prints,
+        "custom_min_screen_width": min_screen_width,
         "custom_ihotel_enabled": ihotel_enabled,
         "custom_ihotel_charge_type": ihotel_charge_type,
         "custom_shift_system_mode": shift_system_mode,

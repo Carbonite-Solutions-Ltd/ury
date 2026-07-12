@@ -386,6 +386,15 @@ def get_custom_fields():
 				"translatable": 0,
 			},
 			{
+				"fieldname": "custom_min_screen_width",
+				"fieldtype": "Int",
+				"label": "Minimum Screen Width (px)",
+				"insert_after": "custom_use_pos_warehouse",
+				"non_negative": 1,
+				"description": "Smallest screen width (in pixels) allowed to use the POS. On a narrower screen the cashier sees a 'Desktop Only' notice. LEAVE BLANK or 0 for NO restriction — the POS then works at any screen size. Example: 1000. (Note: this is the browser's viewport width, which shrinks when the browser is zoomed in or not maximized.)",
+				"translatable": 0,
+			},
+			{
 				"fieldname": "restaurant_info",
 				"fieldtype": "Section Break",
 				"label": "Restaurant Info",

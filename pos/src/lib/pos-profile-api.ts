@@ -50,6 +50,8 @@ export interface PosProfileLimited {
   custom_use_waiter?: number;
   /** Total times a cashier may (re)print one bill. Default 3. */
   custom_max_bill_prints?: number;
+  /** Min screen width (px) to use the POS. 0/unset = no restriction. */
+  custom_min_screen_width?: number;
   /** iHotel integration master switch (per-profile). */
   custom_ihotel_enabled?: number;
   /** Default Charge Type written onto the iHotel Profile's folio row. */
@@ -175,6 +177,7 @@ export interface PosProfileCombined extends PosProfileFull {
   custom_restrict_returns_to_captain?: number;
   custom_enable_returns?: number;
   custom_max_invoice_transfers?: number;
+  custom_min_screen_width?: number;
   custom_ihotel_enabled?: number;
   custom_ihotel_charge_type?: string | null;
   custom_shift_system_mode?: 'Disabled' | 'URY Shift' | 'HRMS Shift Type';
@@ -215,6 +218,15 @@ export async function getPosProfileLimitedFields(
   const params: Record<string, string> = {};
   if (terminal) params.terminal = terminal;
   const res = await call.get('ury.ury_pos.api.getPosProfile', params);
+  // Cache the min-screen-width so ScreenSizeProvider (which runs ABOVE the
+  // auth/profile flow, before this resolves) can read it instantly on the
+  // next load. 0 / unset = no restriction. See ScreenSizeProvider.
+  try {
+    const minW = Number(res.message?.custom_min_screen_width) || 0;
+    localStorage.setItem('ury_min_screen_width', String(minW));
+  } catch {
+    // localStorage unavailable (private mode etc.) — gate just won't apply.
+  }
   return res.message;
 }
 
@@ -273,6 +285,7 @@ export async function getCombinedPosProfile(
     custom_max_invoice_transfers: limitedProfile.custom_max_invoice_transfers,
     custom_use_waiter: limitedProfile.custom_use_waiter,
     custom_max_bill_prints: limitedProfile.custom_max_bill_prints,
+    custom_min_screen_width: limitedProfile.custom_min_screen_width,
     custom_ihotel_enabled: limitedProfile.custom_ihotel_enabled,
     custom_ihotel_charge_type: limitedProfile.custom_ihotel_charge_type,
     custom_shift_system_mode: limitedProfile.custom_shift_system_mode,
