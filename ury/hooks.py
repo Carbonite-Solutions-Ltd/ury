@@ -51,6 +51,7 @@ page_js = {"point-of-sale": ["public/js/pos_extend.js"]}
 doctype_js = {
     "POS Profile": "public/js/pos_profile_geofence.js",
     "User": "public/js/user_biometric_enrollment.js",
+    "Item": "public/js/item_add_to_menu.js",
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
