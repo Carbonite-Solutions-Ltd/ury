@@ -33,7 +33,9 @@ const Sidebar = ({ disabled }: SidebarProps) => {
 
   return (
     <div className={cn(
-      "w-64 bg-white border-r border-gray-200 h-full flex flex-col",
+      // Desktop-only category rail. On narrower screens the categories
+      // render as a horizontal chip row in the POS page (see POS.tsx).
+      "hidden xl:flex w-64 bg-white border-r border-gray-200 h-full flex-col",
       disabled && "opacity-50 pointer-events-none"
     )}>
       {/* Categories List */}

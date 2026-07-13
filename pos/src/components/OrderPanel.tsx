@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Trash2, Edit, FrownIcon, Plus, Loader2, MessageSquare, Users } from 'lucide-react';
+import { Trash2, Edit, FrownIcon, Plus, Loader2, MessageSquare, Users, X } from 'lucide-react';
 import { usePOSStore } from '../store/pos-store';
 import { formatCurrency, cn, extractFrappeServerError } from '../lib/utils';
 import { canManageMenuPrices, isCaptainOrAbove } from '../lib/role-utils';
@@ -17,7 +17,14 @@ import { DINE_IN } from '../data/order-types';
 import WaiterSelectDialog from './WaiterSelectDialog';
 import type { Waiter } from '../lib/waiter-api';
 
-const OrderPanel = () => {
+interface OrderPanelProps {
+  /** < lg: whether the cart drawer is open. Ignored on lg+ (static column). */
+  mobileOpen?: boolean;
+  /** < lg: close the cart drawer. */
+  onCloseMobile?: () => void;
+}
+
+const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {}) => {
   const {
     activeOrders,
     removeFromOrder,
@@ -190,6 +197,9 @@ const OrderPanel = () => {
       resetOrderState();
       setNumberOfPeople(1);
       showToast.success(isUpdatingOrder ? 'Order updated successfully' : 'Order created successfully');
+      // On mobile the panel is a drawer — close it so the cashier lands
+      // back on the menu after ringing an order.
+      onCloseMobile?.();
     } catch (error) {
       console.error('Failed to sync order:', error);
 
@@ -264,7 +274,29 @@ const OrderPanel = () => {
     isOrderInteractionDisabled() || isSubmitting || shiftBlocked;
 
   return (
-    <div className="w-96 bg-white border-l border-gray-200 flex flex-col h-full shrink-0 z-10">
+    <div
+      className={cn(
+        'bg-white flex flex-col z-40',
+        // Desktop (lg+): static right column.
+        'lg:relative lg:w-96 lg:border-l lg:border-gray-200 lg:h-full lg:shrink-0 lg:z-10 lg:shadow-none lg:translate-x-0',
+        // Mobile / tablet-portrait (< lg): fixed slide-over drawer from the
+        // right, opened via the floating cart bar in POS.tsx.
+        'fixed inset-y-0 right-0 h-full w-full max-w-md shadow-2xl transition-transform duration-300 ease-in-out',
+        mobileOpen ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'
+      )}
+    >
+      {/* Mobile drawer header with a close button (hidden on lg+). */}
+      <div className="lg:hidden flex items-center justify-between px-4 py-3 border-b border-gray-200 flex-shrink-0">
+        <span className="text-base font-semibold text-gray-900">Order</span>
+        <button
+          type="button"
+          onClick={onCloseMobile}
+          aria-label="Close order panel"
+          className="inline-flex items-center justify-center h-9 w-9 rounded-md text-gray-500 hover:bg-gray-100"
+        >
+          <X className="w-5 h-5" />
+        </button>
+      </div>
       <div className="p-4 border-b border-gray-200 flex-shrink-0">
         <OrderTypeSelect disabled={isInteractionDisabled} />
         <div className="mt-3"><CustomerSelect disabled={isInteractionDisabled} /></div>
