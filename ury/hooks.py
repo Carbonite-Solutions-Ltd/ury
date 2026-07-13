@@ -406,6 +406,7 @@ fixtures = [
                     "URY Printer Settings-custom_terminal",
                     "POS Profile-custom_use_pos_warehouse",
                     "POS Profile-custom_min_screen_width",
+                    "Contact-is_billing_contact",
                     "POS Opening Entry-custom_ury_last_invoice",
                     "POS Opening Entry-custom_ury_last_aggregator_invoice",
                     "POS Profile-custom_reset_order_number_daily",

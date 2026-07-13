@@ -14,6 +14,26 @@ def before_uninstall():
 def get_custom_fields():
 	"""URY specific custom fields that need to be added to the masters in ERPNext"""
 	return {
+     	"Contact": [
+				{
+					# Compatibility shim: ERPNext's get_default_contact (party.py)
+					# still filters/orders by Contact.is_billing_contact, but this
+					# Frappe version dropped that column — so every POS Invoice save
+					# blew up with "Unknown column 'tabContact.is_billing_contact'".
+					# Re-add it as a hidden, read-only no-op Check so the ERPNext
+					# query resolves. See CLAUDE.md "Fixes log".
+					"fieldname": "is_billing_contact",
+					"fieldtype": "Check",
+					"label": "Is Billing Contact",
+					"insert_after": "is_primary_contact",
+					"default": "0",
+					"hidden": 1,
+					"read_only": 1,
+					"no_copy": 1,
+					"description": "Compatibility field re-added by ExPOS so ERPNext's get_default_contact query works (Frappe dropped this column from Contact).",
+					"translatable": 0,
+				},
+			],
      	"URY Printer Settings": [
 				{
 					"fieldname": "custom_terminal",

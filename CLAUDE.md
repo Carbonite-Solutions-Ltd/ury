@@ -156,6 +156,12 @@ No frontend test suites are configured. `pos/` has `yarn lint` (ESLint); the Vue
 
 ## Gotchas
 
+- **The React POS (`pos/`) is an installable PWA — ALWAYS consider it when changing the POS frontend (2026-07-13).** It ships a web app manifest ([pos/public/manifest.json](pos/public/manifest.json), `start_url`/`scope` = `/pos`, `display: standalone`), app icons ([pos/public/icons/](pos/public/icons/) — 192 / 512 / maskable-512 / apple-touch-180, all committed source, NOT the gitignored build output), PWA meta in [pos/index.html](pos/index.html), and a mobile/tablet install prompt ([pos/src/components/InstallPrompt.tsx](pos/src/components/InstallPrompt.tsx)). Implications for any POS frontend change:
+  - **Design for standalone + mobile/tablet.** When installed it runs full-screen with NO browser chrome (no address/back bar), so navigation must be reachable in-app (bottom nav, in-app back). Test at mobile/tablet widths, not just desktop.
+  - **Use `h-[100dvh]`, never `h-screen`, for the app shell / full-height layout** — `100vh` hides the bottom nav/cart behind the mobile browser's address bar. See [App.tsx](pos/src/App.tsx).
+  - **Assets are served under the Vite base `/assets/ury/pos/`.** Public files (`pos/public/*`) land there; reference PWA URLs absolutely (`/assets/ury/pos/...`). If you rename/move icons or the manifest, update index.html + the manifest.
+  - **Keep the manifest valid** (name, `start_url`/`scope` `/pos`, 192+512 icons). Use `manifest.json` (NOT `.webmanifest`) so Frappe/nginx serve it as JSON. PWA install only works over **HTTPS** (won't prompt on `http://localhost`).
+  - **No service worker yet** (so no offline). Adding one needs a Frappe route so the SW scope can cover `/pos` (assets are under `/assets/ury/pos/`) — see the 2026-07-13 PWA fixes log entry.
 - **Gitignored build outputs.** `ury/public/{pos,urypos,URYMosaic}` and `ury/www/{pos,urypos,URYMosaic}.html` are all gitignored. Don't edit them — they get overwritten by `yarn build`. Edit the source under `pos/src/`, `urypos/src/`, or `URYMosaic/src/` instead.
 - **Three frontends, one backend.** When changing a whitelisted API, check all three frontends for callers. They don't share a client — each has its own API layer.
 - **`pos/` has `main.tsx.backup` and `print.ts(.backup)` files in `src/lib/`.** Treat these as developer scratch; don't import from them.
@@ -190,6 +196,13 @@ Running record of bugs fixed and non-obvious traps discovered. Add new entries a
 - **Verification:**
 - **Notes / follow-ups:**
 -->
+
+### 2026-07-13 — Order save crashed: `Unknown column 'tabContact.is_billing_contact'`
+- **Symptom:** every order (`sync_order` → `invoice.save()`) 500'd with `MySQLdb.OperationalError (1054) Unknown column 'tabContact.is_billing_contact' in 'WHERE'`. Traceback ran through POS Invoice validate → `set_missing_lead_customer_details` → `_get_party_details` → `set_contact_details` → ERPNext's `get_default_contact`.
+- **Root cause (NOT in ExPOS).** `grep -r is_billing_contact apps/ury` → **zero matches**. The reference is in **ERPNext core** [party.py `get_default_contact`](apps/erpnext/erpnext/accounts/party.py#L1027) — it filters (`or_filters`) and `order_by`s on `Contact.is_billing_contact`, but this Frappe version dropped that column from the Contact doctype. Classic ERPNext↔Frappe version drift: ERPNext still queries a column Frappe removed. The user *thought* it was an ExPOS reference to deprecate — it isn't; we can't remove it without patching the ERPNext dependency.
+- **Fix (URY-owned, survives updates):** re-add `is_billing_contact` as a **hidden, read-only, no_copy Check (default 0)** custom field on **Contact**, so ERPNext's query finds the column again. All three sources (custom_field.json + [setup.py](ury/setup.py) `get_custom_fields()` new "Contact" key + [hooks.py](ury/hooks.py) fixtures `Contact-is_billing_contact`). `insert_after: is_primary_contact`. It's an inert no-op (always 0) — the column existing is the entire fix; a site that later gets a real `is_billing_contact` coexists fine.
+- **Why not monkeypatch `get_default_contact`?** Fragile (no clean boot hook, would shadow future ERPNext fixes). Re-adding the column is the standard, robust workaround for "dependency queries a column another app removed."
+- **Verified on dev:** `bench migrate` created the column (`frappe.db.has_column("Contact","is_billing_contact") == True`); `erpnext.accounts.party.get_default_contact("Customer","Ernest")` now returns `None` cleanly (no exception). `py_compile` + `json.tool` clean. Backend-only — **needs `bench migrate`** on live (then the order flow works). No `bench restart` strictly needed (schema only), but harmless.
 
 ### 2026-07-13 — POS mobile/tablet polish + installable PWA
 - **Context:** follow-up to the mobile/tablet responsive revamp (commit `756ad6c`). User feedback: menu cards too big (only 2 per row), the bottom nav + cart bar getting cut off, and wanted a floating cart icon instead of the full-width bar — plus make the POS an installable PWA that prompts to install on mobile/tablet.
