@@ -13,6 +13,7 @@ import AuthGuard from './components/AuthGuard';
 import POSOpeningProvider from './components/POSOpeningProvider';
 import ShiftHoursBanner from './components/ShiftHoursBanner';
 import ScreenSizeProvider from './components/ScreenSizeProvider';
+import InstallPrompt from './components/InstallPrompt';
 import { ToastProvider } from './components/ui/toast';
 import { usePOSStore } from './store/pos-store';
 import { useEffect, useState } from 'react';
@@ -277,11 +278,15 @@ function App() {
   return (
     <>
       <ToastProvider />
+      <InstallPrompt />
       <ScreenSizeProvider>
         <AuthGuard>
           <POSOpeningProvider>
             <Router basename="/pos">
-              <div className="flex flex-col h-screen bg-gray-100 font-inter">
+              {/* h-[100dvh] (dynamic viewport height) instead of h-screen so
+                  the bottom nav + cart aren't hidden behind the mobile
+                  browser's address bar. */}
+              <div className="flex flex-col h-[100dvh] bg-gray-100 font-inter">
                 {/* Shift banner sits inside the flex column so it
                     takes its natural height and the rest of the
                     layout shrinks to fit. Mounting it at the

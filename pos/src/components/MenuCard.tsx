@@ -25,13 +25,15 @@ const MenuCard: FC<MenuCardProps> = ({
   return (
     <div
       className={cn(
-        "bg-white rounded-lg shadow-sm overflow-hidden hover:shadow-md transition-shadow cursor-pointer h-56 flex flex-col",
+        // Compact on phones/small tablets (fits 3–4 per row), roomier on
+        // larger screens.
+        "bg-white rounded-lg shadow-sm overflow-hidden hover:shadow-md transition-shadow cursor-pointer flex flex-col h-40 sm:h-52 xl:h-56",
         disabled && "opacity-50 cursor-not-allowed pointer-events-none"
       )}
       onClick={disabled ? undefined : onClick}
     >
       {/* Image section - fixed height */}
-      <div className="h-24">
+      <div className="h-16 sm:h-24 shrink-0">
         {item_image ? (
           <img
             src={item_image}
@@ -58,24 +60,24 @@ const MenuCard: FC<MenuCardProps> = ({
       </div>
 
       {/* Content section - flex grow with fixed padding */}
-      <div className="flex-1 p-3 flex flex-col">
-        {/* Name section - fixed height for 2 lines */}
-        <div className="">
-          <h3 className="font-medium text-gray-900 text-sm leading-5 line-clamp-2" title={name}>
+      <div className="flex-1 min-h-0 p-2 sm:p-3 flex flex-col">
+        {/* Name section - up to 2 lines */}
+        <div>
+          <h3 className="font-medium text-gray-900 text-xs sm:text-sm leading-4 sm:leading-5 line-clamp-2" title={name}>
             {name}
           </h3>
         </div>
 
-        {/* Course section - fixed height for 1 line */}
-        <div className="h-5 mt-1">
+        {/* Course section - fixed height for 1 line (hidden on very small cards) */}
+        <div className="hidden sm:block h-5 mt-1">
           <p className="text-xs text-gray-500 truncate" title={course}>
             {course || ' '}
           </p>
         </div>
 
         {/* Price section - pushed to bottom */}
-        <div className="mt-auto pt-2">
-          <span className="text-sm font-semibold text-gray-900 tabular-nums">
+        <div className="mt-auto pt-1 sm:pt-2">
+          <span className="text-xs sm:text-sm font-semibold text-gray-900 tabular-nums">
             {formatCurrency(price)}
           </span>
         </div>
