@@ -1,11 +1,11 @@
 import React, { useState, useRef } from 'react';
-import { Star, TrendingUp, ShoppingCart, ChevronRight } from 'lucide-react';
+import { Star, TrendingUp, ShoppingCart } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import OrderPanel from '../components/OrderPanel';
 import ProductDialog from '../components/ProductDialog';
 import MenuList from '../components/MenuList';
 import { usePOSStore } from '../store/pos-store';
-import { cn, formatCurrency } from '../lib/utils';
+import { cn } from '../lib/utils';
 import { Spinner } from '../components/ui/spinner';
 import InitialLoader from '../components/InitialLoader';
 
@@ -29,10 +29,6 @@ export default function POS() {
   // < lg the cart is a slide-over drawer opened from the floating bar.
   const [cartOpen, setCartOpen] = useState(false);
   const cartCount = activeOrders.reduce((s, i) => s + (i.quantity || 0), 0);
-  const cartSubtotal = activeOrders.reduce(
-    (s, i) => s + (i.price || 0) * (i.quantity || 0),
-    0
-  );
   const clickTimerRef = useRef<NodeJS.Timeout | null>(null);
   const clickCountRef = useRef(0);
 
@@ -149,33 +145,25 @@ export default function POS() {
         </div>
 
         <MenuList onItemClick={handleItemClick} />
+      </div>
 
-        {/* Floating cart bar — only when the cart is a drawer (< lg). Opens
-            the OrderPanel slide-over. */}
+      {/* Floating cart button (FAB) — only when the cart is a drawer (< lg).
+          Sits above the bottom nav; the badge flags the item count. */}
+      {!cartOpen && (
         <button
           type="button"
           onClick={() => setCartOpen(true)}
-          className="lg:hidden shrink-0 flex items-center justify-between gap-3 px-4 py-3 bg-blue-600 text-white shadow-lg active:bg-blue-700"
+          aria-label={cartCount > 0 ? `View order, ${cartCount} items` : 'View order'}
+          className="lg:hidden fixed bottom-20 right-4 z-30 h-14 w-14 rounded-full bg-blue-600 text-white shadow-xl flex items-center justify-center active:bg-blue-700 active:scale-95 transition-transform"
         >
-          <span className="flex items-center gap-2 font-medium">
-            <span className="relative">
-              <ShoppingCart className="w-5 h-5" />
-              {cartCount > 0 && (
-                <span className="absolute -top-2 -right-2 bg-white text-blue-700 text-[10px] font-bold rounded-full h-4 min-w-[16px] px-1 flex items-center justify-center">
-                  {cartCount > 99 ? '99+' : cartCount}
-                </span>
-              )}
+          <ShoppingCart className="w-6 h-6" />
+          {cartCount > 0 && (
+            <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 rounded-full bg-red-500 text-white text-xs font-bold flex items-center justify-center border-2 border-white">
+              {cartCount > 99 ? '99+' : cartCount}
             </span>
-            {cartCount > 0
-              ? `${cartCount} item${cartCount === 1 ? '' : 's'}`
-              : 'View order'}
-          </span>
-          <span className="flex items-center gap-2 font-semibold">
-            {cartCount > 0 && <span>{formatCurrency(cartSubtotal)}</span>}
-            <ChevronRight className="w-5 h-5" />
-          </span>
+          )}
         </button>
-      </div>
+      )}
 
       {/* Backdrop for the mobile cart drawer. */}
       {cartOpen && (

@@ -3,8 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" href="/ury.ico" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- PWA: installable on tablet/mobile. Manifest + icons live under the
+         built public dir (served at /assets/ury/pos/). -->
+    <link rel="manifest" href="/assets/ury/pos/manifest.json" />
+    <meta name="theme-color" content="#2563eb" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="ExPOS" />
+    <link rel="apple-touch-icon" href="/assets/ury/pos/icons/apple-touch-icon.png" />
+
     <title>Ex POS</title>
   </head>
   <body>

@@ -89,7 +89,7 @@ const MenuList: React.FC<MenuListProps> = ({ onItemClick }) => {
           </div>
         ) : (
           <div className={cn(
-            "grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3",
+            "grid grid-cols-3 sm:grid-cols-4 xl:grid-cols-5 gap-2 sm:gap-3",
             isInteractionDisabled && "opacity-50 pointer-events-none"
           )}>
             {filteredItems.map((item) => (
