@@ -108,8 +108,8 @@ const Footer = () => {
       <NotificationToast notification={currentNotification} onClose={closeToast} />
       
       <div className="bg-white border-t border-gray-200 py-2 relative">
-        <nav className="max-w-screen-xl mx-auto px-4">
-          <div className="flex justify-center items-center gap-4">
+        <nav className="max-w-screen-xl mx-auto px-1 sm:px-4">
+          <div className="flex justify-around sm:justify-center items-center gap-1 sm:gap-4">
             {navItems.map((item) => (
               <NavLink
                 key={item.path}
@@ -124,7 +124,7 @@ const Footer = () => {
                 }}
                 className={({ isActive }) =>
                   cn(
-                    'flex flex-col items-center p-2 rounded-lg text-gray-700 hover:bg-gray-100 transition-colors relative',
+                    'flex flex-col items-center px-2 py-1.5 sm:p-2 rounded-lg text-gray-700 hover:bg-gray-100 transition-colors relative min-w-0',
                     isActive && 'text-blue-600'
                   )
                 }
