@@ -36,6 +36,7 @@ import {
   canReprintInvoice,
   canReturnOrders,
   isCaptainOrAbove,
+  isWaiterOnly,
 } from '../lib/role-utils';
 import {
   reversePosReturn,
@@ -193,6 +194,12 @@ export default function Orders() {
   );
 
   const canReprint = useMemo(() => canReprintInvoice(user), [user]);
+
+  // Waiter-only users get the read-only Orders view: they can open their own
+  // drafts to edit (the header Edit button stays), but do NO payments,
+  // printing or reprints — the cashier handles all of that. The whole
+  // Payment/Print action bar is hidden for them (2026-07-14).
+  const isWaiter = useMemo(() => isWaiterOnly(user), [user]);
 
   // Only captains / managers / admins may cancel an order — the X on a
   // draft is hidden for cashiers (2026-06-11).
@@ -940,9 +947,14 @@ export default function Orders() {
               <div className="flex items-center gap-2">
                 {/* Only show edit and cancel buttons for Draft, Unbilled, and
                     Recently Paid orders. In the "Pending KOTs" view the cashier
-                    only prints (which fires the held KOTs) — no edit/cancel. */}
-                {(selectedOrder.status === 'Draft' || selectedOrder.status === 'Unbilled' || selectedOrder.status === 'Recently Paid') &&
-                 selectedStatus !== 'Pending KOTs' && (
+                    only prints (which fires the held KOTs) — no edit/cancel.
+                    A waiter may only edit a Draft (before the cashier bills it);
+                    once billed/paid it's view-only for her (2026-07-14). */}
+                {((selectedOrder.status === 'Draft' ||
+                   (!isWaiter &&
+                     (selectedOrder.status === 'Unbilled' ||
+                      selectedOrder.status === 'Recently Paid'))) &&
+                 selectedStatus !== 'Pending KOTs') && (
                   <>
                     <button
                       type="button"
@@ -1168,7 +1180,31 @@ export default function Orders() {
             {/* Sticky Bottom Section - Single Row: Print | Payment | Total */}
             <div className="border-t border-gray-200 p-6 bg-gray-50 sticky bottom-0 left-0 right-0 z-10">
               <div className="flex items-center gap-3 w-full">
-                {isIncomingTransfer(selectedOrder) ? (
+                {isWaiter ? (
+                  /* Waiter-only view: no payment/print actions. Just show the
+                     order total + whether the cashier has been paid, so she
+                     knows to hand the bill over. She edits her drafts via the
+                     header Edit button (2026-07-14). */
+                  <>
+                    <div className="flex-1 text-sm font-medium min-w-0">
+                      {selectedOrder.status === 'Paid' ||
+                      selectedOrder.status === 'Consolidated' ? (
+                        <span className="inline-flex items-center gap-1.5 text-green-700">
+                          <CheckCircle className="w-4 h-4 shrink-0" />
+                          Paid
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 text-amber-700">
+                          <Clock className="w-4 h-4 shrink-0" />
+                          <span className="truncate">Pending — see the cashier to bill</span>
+                        </span>
+                      )}
+                    </div>
+                    <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
+                      {formatCurrency(getOrderTotal(selectedOrder))}
+                    </span>
+                  </>
+                ) : isIncomingTransfer(selectedOrder) ? (
                   <>
                     <Button
                       className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white"

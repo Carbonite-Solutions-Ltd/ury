@@ -5,7 +5,7 @@ import { Button } from './ui';
 import { getOrderStatusTypes, OrderStatusType } from '../data/order-types';
 import { usePOSStore } from '../store/pos-store';
 import { useRootStore } from '../store/root-store';
-import { canSeeAllTerminalOrders } from '../lib/role-utils';
+import { canSeeAllTerminalOrders, isWaiterOnly } from '../lib/role-utils';
 import { getPendingKotCount } from '../lib/invoice-api';
 import { getIncomingTransferCount } from '../lib/transfer-api';
 
@@ -47,12 +47,16 @@ const OrderStatusSidebar = ({
     fetchCashierUsers,
   } = useRootStore();
 
-  // Get the appropriate status types based on POS profile settings
+  const waiterMode = useMemo(() => isWaiterOnly(user), [user]);
+
+  // Get the appropriate status types based on POS profile settings.
+  // Waiters get the trimmed set (Draft / Unbilled / Paid).
   const statusTypes = getOrderStatusTypes(
     posProfile?.view_all_status,
     posProfile?.paid_limit,
     posProfile?.custom_ihotel_enabled,
-    posProfile?.custom_max_invoice_transfers
+    posProfile?.custom_max_invoice_transfers,
+    waiterMode
   );
 
   const showCashierFilter = useMemo(

@@ -20,7 +20,7 @@ import type { RootState } from '../store/root-store';
 import { logout } from '../lib/auth-api';
 import { showToast } from './ui/toast';
 import { clearSavedTerminal } from '../lib/terminal-api';
-import { canAccessDeskAndTerminalSwitch } from '../lib/role-utils';
+import { canAccessDeskAndTerminalSwitch, isWaiterOnly } from '../lib/role-utils';
 import { getCurrentPosOpenEntry } from '../lib/pos-opening-api';
 import POSClosingDialog from './POSClosingDialog';
 import { extractFrappeServerError } from '../lib/utils';
@@ -35,6 +35,8 @@ const Header = () => {
   const [endShiftLoading, setEndShiftLoading] = useState(false);
   const [showResetPin, setShowResetPin] = useState(false);
   const canSeeAdminActions = canAccessDeskAndTerminalSwitch(user);
+  // Waiter-only users don't manage shifts — the cashier opens/closes the day.
+  const waiterMode = isWaiterOnly(user);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const location = useLocation();
   const navigate = useNavigate();
@@ -308,20 +310,23 @@ const Header = () => {
                       </Button>
                     </>
                   )}
-                  {/* End Shift is visible to EVERYONE — cashiers need
-                      it to close their own day. Opens the in-POS
-                      closing dialog for the user's current open entry.
-                      See CLAUDE.md "Fixes log" 2026-04-09 for the
-                      in-POS closing flow. */}
-                  <Button
-                    variant="ghost"
-                    className="flex justify-start items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
-                    onClick={handleEndShift}
-                    disabled={endShiftLoading}
-                  >
-                    <DoorClosed className="w-4 h-4 mr-3" />
-                    {endShiftLoading ? 'Loading…' : 'End Shift'}
-                  </Button>
+                  {/* End Shift is visible to every billing user — cashiers
+                      need it to close their own day. Hidden for waiter-only
+                      users: the cashier opens/closes the shift, not the
+                      waiter (2026-07-14). Opens the in-POS closing dialog for
+                      the user's current open entry. See CLAUDE.md "Fixes log"
+                      2026-04-09 for the in-POS closing flow. */}
+                  {!waiterMode && (
+                    <Button
+                      variant="ghost"
+                      className="flex justify-start items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
+                      onClick={handleEndShift}
+                      disabled={endShiftLoading}
+                    >
+                      <DoorClosed className="w-4 h-4 mr-3" />
+                      {endShiftLoading ? 'Loading…' : 'End Shift'}
+                    </Button>
+                  )}
                   {/* Reset PIN — visible to every signed-in user; backend
                       friendly-rejects if they don't have an enrollment. */}
                   <Button

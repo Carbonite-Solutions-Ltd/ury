@@ -114,13 +114,34 @@ export const EXTENDED_ORDER_STATUS_TYPES = [
     }
 ];
 
+// Trimmed set for waiter-only users. A waiter places orders and hands them
+// to the cashier — she only cares about her Draft (still editable), Unbilled
+// (cashier is billing it) and Paid (done). The cashier-y filters (Pending
+// KOTs, Cancelled, Incoming Transfers, Room Charges, Consolidated) just
+// crowd her view (2026-07-14).
+export const WAITER_ORDER_STATUS_TYPES = [
+    { label: "Draft", value: "Draft" },
+    { label: "Unbilled", value: "Unbilled" },
+    { label: "Paid", value: "Paid" },
+];
+
 // Function to get order status types based on POS profile settings
 export const getOrderStatusTypes = (
     viewAllStatus?: number,
     paidLimit?: number,
     ihotelEnabled?: number,
-    maxTransfers?: number
+    maxTransfers?: number,
+    waiterMode?: boolean
 ) => {
+    // Waiter-only users get the trimmed set (+ Recently Paid when enabled).
+    if (waiterMode) {
+        const waiterTypes = [...WAITER_ORDER_STATUS_TYPES];
+        if (paidLimit && paidLimit > 0) {
+            waiterTypes.push(...RECENTLY_PAID_STATUS_TYPE);
+        }
+        return waiterTypes;
+    }
+
     let statusTypes = [...BASE_ORDER_STATUS_TYPES];
 
     // Add Recently Paid if paid_limit > 0
