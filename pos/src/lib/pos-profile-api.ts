@@ -1,5 +1,6 @@
 import { DOCTYPES } from '../data/doctypes';
 import { call, db } from './frappe-sdk';
+import type { Waiter } from './waiter-api';
 
 // Limited fields response
 export interface PosProfileLimited {
@@ -48,6 +49,12 @@ export interface PosProfileLimited {
   custom_max_invoice_transfers?: number;
   /** When 1, the POS pops a waiter picker at new-order creation. */
   custom_use_waiter?: number;
+  /**
+   * Set when the logged-in user is a self-serve waiter (URY Waiter role +
+   * linked URY Waiter). The POS then auto-assigns this waiter and hides the
+   * picker. Null for cashiers/captains/managers/admins (they pick).
+   */
+  self_waiter?: Waiter | null;
   /** Total times a cashier may (re)print one bill. Default 3. */
   custom_max_bill_prints?: number;
   /** Min screen width (px) to use the POS. 0/unset = no restriction. */
@@ -178,6 +185,7 @@ export interface PosProfileCombined extends PosProfileFull {
   custom_enable_returns?: number;
   custom_max_invoice_transfers?: number;
   custom_min_screen_width?: number;
+  self_waiter?: Waiter | null;
   custom_ihotel_enabled?: number;
   custom_ihotel_charge_type?: string | null;
   custom_shift_system_mode?: 'Disabled' | 'URY Shift' | 'HRMS Shift Type';
@@ -284,6 +292,7 @@ export async function getCombinedPosProfile(
     custom_enable_returns: limitedProfile.custom_enable_returns,
     custom_max_invoice_transfers: limitedProfile.custom_max_invoice_transfers,
     custom_use_waiter: limitedProfile.custom_use_waiter,
+    self_waiter: limitedProfile.self_waiter,
     custom_max_bill_prints: limitedProfile.custom_max_bill_prints,
     custom_min_screen_width: limitedProfile.custom_min_screen_width,
     custom_ihotel_enabled: limitedProfile.custom_ihotel_enabled,

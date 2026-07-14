@@ -147,10 +147,15 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
       }
 
       // Waiter gate: when the profile uses waiters, a NEW order must have a
-      // waiter. If none is picked yet, pop the picker and stop here — the
+      // waiter. Self-serve waiters (URY Waiter role + linked) are auto-
+      // assigned their own waiter (posProfile.self_waiter) — the picker
+      // never opens for them. Everyone else (cashier/captain/manager/admin)
+      // picks; if none is chosen yet, pop the picker and stop here — the
       // dialog re-calls handleSubmit with the chosen waiter. Updates skip
-      // this (the order already carries its waiter).
-      const orderWaiter = waiterOverride || selectedWaiter;
+      // this (the order already carries its waiter). The backend also
+      // FORCES the self-waiter in sync_order, so this can't be spoofed.
+      const orderWaiter =
+        waiterOverride || selectedWaiter || posProfile.self_waiter || undefined;
       if (useWaiter && !isUpdatingOrder && !orderWaiter?.name) {
         setShowWaiterDialog(true);
         return;
@@ -300,7 +305,17 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
       <div className="p-4 border-b border-gray-200 flex-shrink-0">
         <OrderTypeSelect disabled={isInteractionDisabled} />
         <div className="mt-3"><CustomerSelect disabled={isInteractionDisabled} /></div>
-        
+
+        {/* Self-serve waiter: locked to herself, no picker. */}
+        {useWaiter && posProfile?.self_waiter && (
+          <div className="mt-3 flex items-center gap-2 text-sm bg-blue-50 border border-blue-200 rounded-md px-3 py-2 text-blue-800">
+            <Users className="w-4 h-4 shrink-0" />
+            <span className="truncate">
+              Serving as <strong>{posProfile.self_waiter.full_name}</strong>
+            </span>
+          </div>
+        )}
+
         {/* Number of People Input - Only show for Dine In */}
         {selectedOrderType === DINE_IN && (
           <div className="mt-3">

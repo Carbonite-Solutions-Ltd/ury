@@ -1146,6 +1146,41 @@ def _resolve_terminal_bill_printer(pos_profile_doc, terminal):
 # Waiter feature (2026-06-10)
 # ---------------------------------------------------------------------------
 
+
+def _get_self_waiter_for_user(user=None):
+    """The URY Waiter this user rings orders AS, or None (2026-07-14).
+
+    A "self-serve waiter" is a NON-elevated user (not Administrator /
+    System Manager / URY Manager / URY Captain) who has the **URY Waiter**
+    role AND is linked to a URY Waiter record (`URY Waiter.user`). For such
+    a user the POS auto-assigns her own waiter to every order and hides the
+    picker. Cashiers, captains, managers and admins get None — they pick the
+    waiter as before. Returns {name, full_name, mobile_number} or None.
+    """
+    user = user or frappe.session.user
+    if user == "Administrator":
+        return None
+    roles = set(frappe.get_roles(user))
+    # Elevated roles always pick, even if somehow linked to a waiter.
+    if roles & {"System Manager", "URY Manager", "URY Captain"}:
+        return None
+    if "URY Waiter" not in roles:
+        return None
+    return frappe.db.get_value(
+        "URY Waiter",
+        {"user": user, "disabled": 0},
+        ["name", "full_name", "mobile_number"],
+        as_dict=True,
+    )
+
+
+@frappe.whitelist()
+def get_self_waiter():
+    """Whitelisted wrapper around _get_self_waiter_for_user for the session
+    user. Returns the linked waiter dict or None."""
+    return _get_self_waiter_for_user()
+
+
 @frappe.whitelist()
 def get_waiters(query=None):
     """Active URY Waiters for the order-time picker. Optional name/mobile
@@ -1499,6 +1534,10 @@ def getPosProfile(terminal=None):
         "custom_enable_returns": enable_returns,
         "custom_max_invoice_transfers": max_invoice_transfers,
         "custom_use_waiter": use_waiter,
+        # When the logged-in user is a self-serve waiter (URY Waiter role +
+        # linked URY Waiter, non-elevated), the POS auto-assigns her waiter
+        # and hides the picker. None for cashiers/captains/managers/admins.
+        "self_waiter": _get_self_waiter_for_user(),
         "custom_max_bill_prints": max_bill_prints,
         "custom_min_screen_width": min_screen_width,
         "custom_ihotel_enabled": ihotel_enabled,

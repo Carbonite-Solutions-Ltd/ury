@@ -49,7 +49,7 @@ except ImportError:
 # Role helpers
 # ---------------------------------------------------------------------------
 
-URY_LOGIN_ROLES = ("URY Cashier", "URY Captain", "URY Manager")
+URY_LOGIN_ROLES = ("URY Cashier", "URY Captain", "URY Manager", "URY Waiter")
 URY_ENROLLMENT_ADMIN_ROLES = ("System Manager", "URY Manager", "URY Captain")
 # Who shows up in the /pos login user-picker. Broader than URY_LOGIN_ROLES
 # (which gates PIN/biometric auth) so admins can sign in via password too.
@@ -59,6 +59,7 @@ URY_LOGIN_SEARCH_ROLES = (
 	"URY Cashier",
 	"URY Captain",
 	"URY Manager",
+	"URY Waiter",
 	"System Manager",
 )
 
@@ -652,7 +653,7 @@ def enroll_biometric(
 		frappe.throw(_("User {0} does not exist.").format(user), title=_("User Not Found"))
 	if not _user_has_ury_login_role(user):
 		frappe.throw(
-			_("User {0} does not have a URY login role. Assign URY Cashier / URY Captain / URY Manager first.").format(user),
+			_("User {0} does not have a URY login role. Assign URY Cashier / URY Captain / URY Manager / URY Waiter first.").format(user),
 			title=_("No URY Role"),
 		)
 	canonical_b64, length = _decode_and_validate_template(fingerprint_template_b64, settings)

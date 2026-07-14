@@ -9,6 +9,7 @@
  "field_order": [
   "full_name",
   "mobile_number",
+  "user",
   "column_break_1",
   "disabled"
  ],
@@ -29,6 +30,15 @@
    "options": "Phone"
   },
   {
+   "description": "Link this waiter to a login User (must have the 'URY Waiter' role). When that user rings an order, it's auto-assigned to this waiter and they can't pick another. Leave blank for waiters who don't log in themselves.",
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "User",
+   "options": "User",
+   "unique": 1
+  },
+  {
    "fieldname": "column_break_1",
    "fieldtype": "Column Break"
   },
@@ -40,7 +50,7 @@
   }
  ],
  "links": [],
- "modified": "2026-06-10 12:00:00.000000",
+ "modified": "2026-07-14 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "URY",
  "name": "URY Waiter",
@@ -81,6 +91,11 @@
    "role": "URY Cashier",
    "select": 1,
    "write": 0
+  },
+  {
+   "read": 1,
+   "role": "URY Waiter",
+   "select": 1
   }
  ],
  "sort_field": "modified",
