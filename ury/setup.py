@@ -467,7 +467,7 @@ def get_custom_fields():
 				"insert_after": "qz_print",
 				"label": "QZ Host",
 				"default": "localhost",
-				"description": "QZ Tray websocket host. Almost always 'localhost' — QZ Tray runs on the cashier's machine and the browser connects over localhost. Only change this for the rare case of QZ Tray running on a different machine on the same LAN.",
+				"description": "QZ Tray websocket host. Leave as 'localhost' when QZ Tray runs on the cashier's own PC (the usual desktop setup). Set this to the LAN IP of a machine running QZ Tray as a 'print server' (e.g. 192.168.1.50) so tablets — which can't run QZ Tray themselves — can print to a networked printer. Both the bill and the KOTs are sent to this host. A non-localhost host connects over secure WSS (port 8181), which needs QZ Tray's certificate trusted on the tablet.",
 				"translatable": 0,
 			},
 			# Shift hours / shift system fields. Same dual-source-of-truth

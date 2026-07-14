@@ -3079,12 +3079,18 @@ def get_latest_kot():
         profile_row = frappe.db.get_value(
             "POS Profile",
             pos_profile,
-            ["qz_print", "custom_print_mode"],
+            ["qz_print", "custom_print_mode", "qz_host"],
             as_dict=True,
         ) or {}
         legacy_qz = int(profile_row.get("qz_print") or 0) == 1
         new_mode = profile_row.get("custom_print_mode") or ""
         new_qz = new_mode == "QZ Tray"
+        # QZ websocket host. Empty ⇒ localhost (cashier's own machine).
+        # A remote value = the LAN "print server" gateway so tablets that
+        # can't run QZ themselves still reach a physical printer. The
+        # frontend passes this to printKotWithQz so KOTs go to the same
+        # gateway as the bill (2026-07-14).
+        qz_host_val = profile_row.get("qz_host") or "localhost"
 
         if not legacy_qz and not new_qz:
             return {
@@ -3164,6 +3170,7 @@ def get_latest_kot():
                     "kot_printed": kot_rows[0].kot_printed,
                     "production_unit_mode": 1,
                     "print_jobs": jobs,
+                    "qz_host": qz_host_val,
                 }
             return {
                 "debug": f"pu_mode_{reason}",
@@ -3280,6 +3287,7 @@ def get_latest_kot():
                     "pos_profile": pos_profile,
                     "kot_printed": kot_rows[0].kot_printed,
                     "print_jobs": print_jobs,
+                    "qz_host": qz_host_val,
                 }
             # Plan was empty — fall through to legacy so we still
             # print SOMETHING during the migration window.
@@ -3307,6 +3315,7 @@ def get_latest_kot():
             "pos_profile": pos_profile,
             "kot_printed": kot_rows[0].kot_printed,
             "printers": printer_settings,
+            "qz_host": qz_host_val,
         }
 
     except Exception as e:
@@ -3384,6 +3393,14 @@ def print_pending_kots_for_invoice(invoice):
     order_type = invoice_row.order_type
     invoice_terminal = invoice_row.custom_terminal
 
+    # QZ websocket host for this profile. Empty ⇒ localhost. A remote value
+    # is the LAN print-server gateway (so tablets can print). The frontend
+    # passes this to printKotWithQz so held KOTs fire to the same gateway as
+    # the bill (2026-07-14).
+    qz_host_val = (
+        frappe.db.get_value("POS Profile", pos_profile, "qz_host") or "localhost"
+    )
+
     kds_mode = (
         frappe.db.get_value(
             "POS Profile", pos_profile, "custom_kds_routing_mode"
@@ -3438,6 +3455,7 @@ def print_pending_kots_for_invoice(invoice):
             "invoice": invoice,
             "print_jobs": pu_print_jobs,
             "production_unit_mode": 1,
+            "qz_host": qz_host_val,
         }
 
     # Find every un-fully-printed KOT for this invoice. kot_printed=0
@@ -3542,7 +3560,7 @@ def print_pending_kots_for_invoice(invoice):
                 }
             )
 
-    return {"invoice": invoice, "print_jobs": print_jobs}
+    return {"invoice": invoice, "print_jobs": print_jobs, "qz_host": qz_host_val}
 
 
 @frappe.whitelist()
