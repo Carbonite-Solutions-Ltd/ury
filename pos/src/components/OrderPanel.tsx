@@ -280,6 +280,7 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
 
   return (
     <div
+      data-cart-target
       className={cn(
         'bg-white flex flex-col z-40',
         // Desktop (lg+): static right column.

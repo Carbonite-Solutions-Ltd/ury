@@ -8,7 +8,7 @@ interface MenuCardProps {
   item_image: string | null;
   course?: string;
   item: string;
-  onClick?: () => void;
+  onClick?: (el: HTMLElement) => void;
   disabled?: boolean;
 }
 
@@ -25,15 +25,16 @@ const MenuCard: FC<MenuCardProps> = ({
   return (
     <div
       className={cn(
-        // Compact on phones/small tablets (fits 3–4 per row), roomier on
-        // larger screens.
-        "bg-white rounded-lg shadow-sm overflow-hidden hover:shadow-md transition-shadow cursor-pointer flex flex-col h-40 sm:h-52 xl:h-56",
+        // Compact so more fit per row (4 on phones, 5 on tablets, 6 on
+        // landscape/desktop — see MenuList grid). active:scale gives a
+        // tactile press feel alongside the fly-to-cart animation.
+        "bg-white rounded-lg shadow-sm overflow-hidden hover:shadow-md transition-transform cursor-pointer flex flex-col h-36 sm:h-44 xl:h-48 active:scale-95",
         disabled && "opacity-50 cursor-not-allowed pointer-events-none"
       )}
-      onClick={disabled ? undefined : onClick}
+      onClick={disabled ? undefined : (e) => onClick?.(e.currentTarget as HTMLElement)}
     >
       {/* Image section - fixed height */}
-      <div className="h-16 sm:h-24 shrink-0">
+      <div className="h-14 sm:h-20 shrink-0">
         {item_image ? (
           <img
             src={item_image}

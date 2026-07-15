@@ -8,6 +8,7 @@ import { usePOSStore } from '../store/pos-store';
 import { cn } from '../lib/utils';
 import { Spinner } from '../components/ui/spinner';
 import InitialLoader from '../components/InitialLoader';
+import { flyToCart } from '../lib/fly-to-cart';
 
 export default function POS() {
   const {
@@ -31,20 +32,24 @@ export default function POS() {
   const cartCount = activeOrders.reduce((s, i) => s + (i.quantity || 0), 0);
   const clickTimerRef = useRef<NodeJS.Timeout | null>(null);
   const clickCountRef = useRef(0);
+  // The tapped card element, used as the fly-to-cart animation source.
+  const lastCardElRef = useRef<HTMLElement | null>(null);
 
-  const handleItemClick = (item: any) => {
+  const handleItemClick = (item: any, el?: HTMLElement) => {
     if (isMenuInteractionDisabled()) return;
-    
+
+    if (el) lastCardElRef.current = el;
     clickCountRef.current += 1;
-    
+
     if (clickTimerRef.current) {
       clearTimeout(clickTimerRef.current);
     }
 
     clickTimerRef.current = setTimeout(() => {
       if (clickCountRef.current === 1) {
-        // Single click - add to cart
+        // Single click - add to cart, with a fly-to-cart swish + haptic tap.
         addToOrder({ ...item, quantity: 1 });
+        flyToCart(lastCardElRef.current);
       } else if (clickCountRef.current === 2) {
         // Double click - open dialog
         setSelectedItem(item);
@@ -152,6 +157,7 @@ export default function POS() {
       {!cartOpen && (
         <button
           type="button"
+          data-cart-target
           onClick={() => setCartOpen(true)}
           aria-label={cartCount > 0 ? `View order, ${cartCount} items` : 'View order'}
           className="lg:hidden fixed bottom-20 right-4 z-30 h-14 w-14 rounded-full bg-blue-600 text-white shadow-xl flex items-center justify-center active:bg-blue-700 active:scale-95 transition-transform"
