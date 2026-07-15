@@ -5,7 +5,7 @@ import { Spinner } from './ui/spinner';
 import { cn } from '../lib/utils';
 
 interface MenuListProps {
-  onItemClick: (item: any) => void;
+  onItemClick: (item: any, el?: HTMLElement) => void;
 }
 
 const MenuList: React.FC<MenuListProps> = ({ onItemClick }) => {
@@ -89,7 +89,7 @@ const MenuList: React.FC<MenuListProps> = ({ onItemClick }) => {
           </div>
         ) : (
           <div className={cn(
-            "grid grid-cols-3 sm:grid-cols-4 xl:grid-cols-5 gap-2 sm:gap-3",
+            "grid grid-cols-4 sm:grid-cols-5 lg:grid-cols-6 gap-2 sm:gap-3",
             isInteractionDisabled && "opacity-50 pointer-events-none"
           )}>
             {filteredItems.map((item) => (
@@ -101,7 +101,7 @@ const MenuList: React.FC<MenuListProps> = ({ onItemClick }) => {
                 item_image={item.image}
                 course={item.course}
                 item={item.item}
-                onClick={() => onItemClick(item)}
+                onClick={(el) => onItemClick(item, el)}
                 disabled={isInteractionDisabled}
               />
             ))}
