@@ -46,6 +46,14 @@ export const getUserRoles = async (
 
 export const logout = async () => {
   try {
+    // Clear the in-progress cart so the next user on a shared terminal
+    // doesn't inherit it (sessionStorage persists across the login
+    // reload otherwise). 2026-07-15.
+    try {
+      sessionStorage.removeItem('ury_pos_cart');
+    } catch {
+      /* ignore */
+    }
     return auth.logout();
   }catch(e){
     console.error('Error logging out:', e);

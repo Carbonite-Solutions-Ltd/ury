@@ -310,8 +310,24 @@ def _resolve_orders_scope(terminal, cashier):
         requesting_user == "Administrator" or bool(requesting_roles & captain_roles)
     )
 
-    # Default and the silent-downgrade fallback.
-    mine_clause = ("owner = %s", [requesting_user])
+    # NOTE: every clause returned here is FULLY qualified with the `pi.`
+    # table alias (the callers splice `scope_clause` directly, no prefix)
+    # so the waiter branch below can use a parenthesised OR without the
+    # `pi.(...)` splice breaking. 2026-07-15.
+
+    # Waiter-only users (self-serve waiters) see orders they placed
+    # themselves (owner) AND orders a cashier rang on their behalf
+    # (custom_waiter = their waiter record). So a cashier-for-waiter
+    # order shows in BOTH the cashier's list (owner) and the waiter's
+    # (custom_waiter). Non-waiters get None here. 2026-07-15.
+    self_waiter = _get_self_waiter_for_user(requesting_user)
+    if self_waiter:
+        mine_clause = (
+            "(pi.owner = %s OR pi.custom_waiter = %s)",
+            [requesting_user, self_waiter["name"]],
+        )
+    else:
+        mine_clause = ("pi.owner = %s", [requesting_user])
 
     if not cashier or cashier == "mine":
         return mine_clause
@@ -334,7 +350,7 @@ def _resolve_orders_scope(terminal, cashier):
         if not cashier_user_ids:
             return mine_clause
         placeholders = ", ".join(["%s"] * len(cashier_user_ids))
-        return (f"owner IN ({placeholders})", cashier_user_ids)
+        return (f"pi.owner IN ({placeholders})", cashier_user_ids)
 
     # Specific user — verify they're a real cashier on this branch
     # before honouring the request. Anything else downgrades to mine.
@@ -350,7 +366,7 @@ def _resolve_orders_scope(terminal, cashier):
     }
     if cashier not in cashier_user_ids:
         return mine_clause
-    return ("owner = %s", [cashier])
+    return ("pi.owner = %s", [cashier])
 
 
 def _get_cashier_users_on_branch(branch_name):
@@ -820,7 +836,7 @@ def getPosInvoice(
         params.append(posting_date)
 
     scope_clause, scope_params = _resolve_orders_scope(terminal, cashier)
-    where_parts.append(f"pi.{scope_clause}")
+    where_parts.append(scope_clause)
     params.extend(scope_params)
 
     where_sql = " AND ".join(where_parts)
@@ -957,7 +973,7 @@ def searchPosInvoice(
         params.append(posting_date)
 
     scope_clause, scope_params = _resolve_orders_scope(terminal, cashier)
-    where_parts.append(f"pi.{scope_clause}")
+    where_parts.append(scope_clause)
     params.extend(scope_params)
 
     # Search across name / customer / mobile_number.
@@ -3604,7 +3620,7 @@ def get_pending_kot_count(terminal=None, posting_date=None, cashier=None):
 
     # Scope to the cashier who rang the order (mine / all / specific).
     scope_clause, scope_params = _resolve_orders_scope(terminal, cashier)
-    where_parts.append(f"pi.{scope_clause}")
+    where_parts.append(scope_clause)
     params.extend(scope_params)
 
     where_parts.append(
@@ -3669,12 +3685,27 @@ def test_get_kots():
 
 @frappe.whitelist()
 def get_kitchen_notifications():
-    """Get kitchen order status notifications for the current user"""
+    """Get kitchen order status notifications for the current user.
+
+    Scope matches the Orders "My Orders" list: a plain user sees their
+    own served orders (owner); a self-serve waiter ALSO sees orders a
+    cashier rang on her behalf (custom_waiter = her waiter record), so
+    the served alert reaches her whether she or the cashier placed the
+    order. 2026-07-15.
+    """
     try:
         user = frappe.session.user
-        
+
+        self_waiter = _get_self_waiter_for_user(user)
+        if self_waiter:
+            owner_clause = "(pi.owner = %s OR pi.custom_waiter = %s)"
+            owner_params = [user, self_waiter["name"]]
+        else:
+            owner_clause = "pi.owner = %s"
+            owner_params = [user]
+
         # Get POS Invoices with custom_order_status = 'Served' AND custom_clear_from_notification = 0
-        notifications = frappe.db.sql("""
+        notifications = frappe.db.sql(f"""
             SELECT 
                 pi.name as invoice,
                 pi.customer_name,
@@ -3697,12 +3728,12 @@ def get_kitchen_notifications():
             LEFT JOIN `tabURY KOT Items` ki ON ki.parent = k.name
             WHERE pi.custom_order_status = 'Served'
             AND (pi.custom_clear_from_notification IS NULL OR pi.custom_clear_from_notification = 0)
-            AND pi.owner = %s
+            AND {owner_clause}
             AND pi.posting_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
             GROUP BY pi.name
             ORDER BY k.creation DESC
             LIMIT 50
-        """, (user,), as_dict=True)
+        """, owner_params, as_dict=True)
         
         return notifications
         
