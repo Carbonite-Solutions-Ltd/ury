@@ -39,6 +39,9 @@ const Footer = () => {
   // paths don't double-alert. 2026-07-15.
   const seenServedRef = useRef<Set<string>>(new Set());
   const notifInitRef = useRef(false);
+  // Mirror of notificationCount for the recurring-reminder interval (avoids
+  // a stale closure). 2026-07-16.
+  const notifCountRef = useRef(0);
 
   const alertServed = (data: any) => {
     setCurrentNotification(data);
@@ -82,6 +85,26 @@ const Footer = () => {
       window.removeEventListener('pointerdown', prime);
       window.removeEventListener('keydown', prime);
     };
+  }, []);
+
+  // Keep the ref in sync so the recurring reminder reads the live count.
+  useEffect(() => {
+    notifCountRef.current = notificationCount;
+  }, [notificationCount]);
+
+  // Recurring reminder: while there are un-served kitchen notifications,
+  // re-ring the sound + vibration every 60s until the user clears them
+  // (taps "Served" on the Alerts page → the count drops to 0 and this
+  // stops on the next tick). Runs globally so the reminder follows the
+  // user wherever they are in the POS. 2026-07-16.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (notifCountRef.current > 0) {
+        playAlertSound();
+        vibrateAlert();
+      }
+    }, 60000);
+    return () => clearInterval(id);
   }, []);
 
   // Waiter pending-order badge — only when the profile uses waiters.
