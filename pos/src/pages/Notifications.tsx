@@ -124,13 +124,13 @@ export default function Notifications() {
       });
       
       // Remove from local state
-      setKitchenNotifications(prev => 
+      setKitchenNotifications(prev =>
         prev.filter(n => n.invoice !== invoiceName)
       );
-      
-      showToast.success('Notification cleared');
+
+      showToast.success('Marked as served');
     } catch (err) {
-      showToast.error('Failed to clear notification');
+      showToast.error('Failed to mark as served');
     }
   };
 
@@ -386,15 +386,6 @@ export default function Notifications() {
                   onTouchStart={(e) => handleTouchStart(e, notification.invoice)}
                 >
                   <CardContent className="p-4">
-                    {/* Close Button */}
-                    <button
-                      onClick={() => clearNotification(notification.invoice)}
-                      className="absolute top-3 right-3 p-1.5 rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
-                      aria-label="Clear notification"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-
                     <div className="flex items-start gap-3">
                       {/* Status Icon */}
                       <div className="flex-shrink-0 w-10 h-10 rounded-full bg-green-100 flex items-center justify-center">
@@ -402,7 +393,7 @@ export default function Notifications() {
                       </div>
 
                       {/* Content */}
-                      <div className="flex-1 min-w-0 pr-6">
+                      <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
                           <h3 className="text-base font-semibold text-gray-900">
                             {notification.invoice}
@@ -444,6 +435,21 @@ export default function Notifications() {
                           </span>
                         </div>
                       </div>
+                    </div>
+
+                    {/* Served action — replaces the old X close icon. Marks
+                        the order served + clears it from the list, which
+                        drops the notification count and stops the recurring
+                        every-minute reminder once the list is empty.
+                        2026-07-16. */}
+                    <div className="mt-3 flex justify-end">
+                      <button
+                        onClick={() => clearNotification(notification.invoice)}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-green-600 text-white text-sm font-semibold hover:bg-green-700 active:bg-green-800 transition-colors"
+                      >
+                        <CheckCircle className="w-4 h-4" />
+                        Served
+                      </button>
                     </div>
                   </CardContent>
                 </Card>
