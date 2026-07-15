@@ -285,7 +285,7 @@ def getModeOfPayment():
         )
     return modeOfPayments
 
-def _resolve_orders_scope(terminal, cashier):
+def _resolve_orders_scope(terminal, cashier, self_waiter=None):
     """Translate the requested cashier-scope into an SQL `owner` clause.
 
     The frontend sends one of three values for ``cashier``:
@@ -320,7 +320,10 @@ def _resolve_orders_scope(terminal, cashier):
     # (custom_waiter = their waiter record). So a cashier-for-waiter
     # order shows in BOTH the cashier's list (owner) and the waiter's
     # (custom_waiter). Non-waiters get None here. 2026-07-15.
-    self_waiter = _get_self_waiter_for_user(requesting_user)
+    # The caller may pass a precomputed self_waiter to avoid a second
+    # lookup (getPosInvoice needs it for the terminal-skip decision too).
+    if self_waiter is None:
+        self_waiter = _get_self_waiter_for_user(requesting_user)
     if self_waiter:
         mine_clause = (
             "(pi.owner = %s OR pi.custom_waiter = %s)",
@@ -768,6 +771,14 @@ def getPosInvoice(
     limit = int(limit) + 1
     limit_start = int(limit_start)
 
+    # A self-serve waiter's orders span terminals — she rings some on her
+    # own tablet and a cashier rings others for her on a till — so the
+    # per-terminal filter must NOT apply to her, or she'd only ever see
+    # the subset placed on her own device. Also used for the scope clause
+    # (owner OR custom_waiter). 2026-07-15.
+    session_waiter = _get_self_waiter_for_user()
+    is_waiter = bool(session_waiter)
+
     # Map UI status → DB status + extra WHERE clause for the special
     # Draft/Unbilled splits that ride on the same `Draft` docstatus.
     # Charged-to-room drafts are EXCLUDED from Draft/Unbilled and get
@@ -792,6 +803,16 @@ def getPosInvoice(
             "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)",
         ),
         "Recently Paid": ("Paid", ""),
+        # "Pending" = every unpaid draft (take-away AND dine-in table),
+        # unlike "Draft"/"Unbilled" which split on invoice_printed +
+        # restaurant_table. Used for the waiter's My Orders view: a
+        # waiter doesn't bill, so the printed/unbilled distinction is
+        # meaningless to her — she just wants "not yet paid" vs "paid".
+        # 2026-07-15.
+        "Pending": (
+            "Draft",
+            "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)",
+        ),
         "Room Charges": (
             "Draft",
             "AND pi.custom_charge_to_room = 1",
@@ -818,7 +839,7 @@ def getPosInvoice(
         "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')"
     )
 
-    if terminal:
+    if terminal and not is_waiter:
         # Defensive null fallback: orders that pre-date the
         # custom_terminal field (or that somehow slipped through
         # without a terminal stamp) still show up on every terminal of
@@ -826,7 +847,8 @@ def getPosInvoice(
         # bounded — an Accra user never sees Tamale orders. Without
         # this fallback, historical orders disappear from the Orders
         # page entirely once per-terminal scoping is enabled. See
-        # CLAUDE.md "Fixes log" 2026-04-09.
+        # CLAUDE.md "Fixes log" 2026-04-09. Waiters are exempt (their
+        # orders span terminals — see above).
         where_parts.append(
             "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
         )
@@ -835,7 +857,9 @@ def getPosInvoice(
         where_parts.append("pi.posting_date = %s")
         params.append(posting_date)
 
-    scope_clause, scope_params = _resolve_orders_scope(terminal, cashier)
+    scope_clause, scope_params = _resolve_orders_scope(
+        terminal, cashier, self_waiter=session_waiter
+    )
     where_parts.append(scope_clause)
     params.extend(scope_params)
 
@@ -915,11 +939,19 @@ def searchPosInvoice(
     branch = getBranch()
     query_str = f"%{query.lower()}%"
 
+    # Waiters are exempt from the per-terminal filter (their orders span
+    # terminals). Same rationale as getPosInvoice. 2026-07-15.
+    session_waiter = _get_self_waiter_for_user()
+    is_waiter = bool(session_waiter)
+
     db_status = "Paid" if status == "Recently Paid" else status
     # Room Charges is a Draft-level pseudo-status; map it to Draft for
     # the DB query and let the extra WHERE clause filter by the custom
     # charge_to_room flag. See CLAUDE.md "Fixes log" 2026-04-12.
     if status == "Room Charges":
+        db_status = "Draft"
+    # "Pending" = all unpaid drafts (waiter My Orders). See getPosInvoice.
+    if status == "Pending":
         db_status = "Draft"
     # Pending KOTs is also a Draft-level pseudo-status — docstatus=0
     # with at least one un-printed URY KOT child. See Phase B of the
@@ -961,9 +993,9 @@ def searchPosInvoice(
             ")"
         )
 
-    if terminal:
+    if terminal and not is_waiter:
         # Same defensive null fallback as getPosInvoice — see
-        # CLAUDE.md "Fixes log" 2026-04-09.
+        # CLAUDE.md "Fixes log" 2026-04-09. Waiters exempt (2026-07-15).
         where_parts.append(
             "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
         )
@@ -972,7 +1004,9 @@ def searchPosInvoice(
         where_parts.append("pi.posting_date = %s")
         params.append(posting_date)
 
-    scope_clause, scope_params = _resolve_orders_scope(terminal, cashier)
+    scope_clause, scope_params = _resolve_orders_scope(
+        terminal, cashier, self_waiter=session_waiter
+    )
     where_parts.append(scope_clause)
     params.extend(scope_params)
 

@@ -50,7 +50,7 @@ const OrderStatusSidebar = ({
   const waiterMode = useMemo(() => isWaiterOnly(user), [user]);
 
   // Get the appropriate status types based on POS profile settings.
-  // Waiters get the trimmed set (Draft / Unbilled / Paid).
+  // Waiters get the trimmed set (Pending / Paid).
   const statusTypes = getOrderStatusTypes(
     posProfile?.view_all_status,
     posProfile?.paid_limit,
@@ -58,6 +58,18 @@ const OrderStatusSidebar = ({
     posProfile?.custom_max_invoice_transfers,
     waiterMode
   );
+
+  // The global default status is "Draft", which a waiter's trimmed set
+  // doesn't include — so on first load a waiter would land on an empty
+  // filter. Snap her to the first available status (Pending) when the
+  // current one isn't in her list. 2026-07-15.
+  useEffect(() => {
+    if (statusTypes.length === 0) return;
+    const values = statusTypes.map((s) => s.value);
+    if (!values.includes(selectedStatus)) {
+      setSelectedStatus(statusTypes[0].value as OrderStatusType);
+    }
+  }, [statusTypes, selectedStatus, setSelectedStatus]);
 
   const showCashierFilter = useMemo(
     () => canSeeAllTerminalOrders(user),
