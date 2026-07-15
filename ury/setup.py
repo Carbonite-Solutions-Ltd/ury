@@ -221,6 +221,17 @@ def get_custom_fields():
 					"depends_on": "eval:doc.custom_charge_to_room",
 					"description": "iHotel Profile the folio charge was written onto.",
 				},
+				# Optional transaction / reference id for non-cash payments
+				# (card, mobile money, bank transfer). Entered by the cashier
+				# in the Payment dialog when a non-cash mode is used. 2026-07-16.
+				{
+					"fieldname": "custom_transaction_id",
+					"fieldtype": "Data",
+					"insert_after": "custom_ihotel_profile",
+					"label": "Transaction ID",
+					"in_standard_filter": 1,
+					"description": "Reference / transaction id for a non-cash payment (card, mobile money, bank transfer). Optional, entered by the cashier at payment time.",
+				},
 				# Invoice-transfer workflow (2026-06-05). Denormalized flag
 				# on the draft so the Orders page can cheaply filter
 				# "Pending Incoming" transfers. Written only inside a

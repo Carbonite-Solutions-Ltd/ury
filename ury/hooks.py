@@ -416,6 +416,7 @@ fixtures = [
                     "POS Invoice-custom_transfer_status",
                     "POS Invoice-custom_waiter",
                     "POS Invoice-custom_print_count",
+                    "POS Invoice-custom_transaction_id",
                     "URY Menu Course-custom_serving_priority",
                     "URY Menu Course-custom_indicate_in_kds",
                     "URY Menu Course-custom_department",

@@ -141,6 +141,11 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
   // names so the JSX below stays the same.
   const splitEnabled = paymentMode === 'split';
 
+  // Optional transaction / reference id for non-cash payments (card, MOMO,
+  // bank transfer, etc.). Shown only when a non-cash mode is being paid.
+  // 2026-07-16.
+  const [transactionId, setTransactionId] = useState('');
+
   // Single-payer state (existing behavior, driven by mode-keyed inputs).
   const [paymentInputs, setPaymentInputs] = useState<{ [mode: string]: string }>({});
 
@@ -391,6 +396,17 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
     [outgoingPayments]
   );
 
+  // Any non-cash payment in the current tender? Drives the optional
+  // Transaction ID field (single + value-split both flow through
+  // make_invoice). 2026-07-16.
+  const hasNonCashPayment = useMemo(
+    () =>
+      outgoingPayments.some(
+        (p) => (p.mode_of_payment || '').trim().toLowerCase() !== 'cash'
+      ),
+    [outgoingPayments]
+  );
+
   // Customer dual-screen: push amount due / collected / change to the display
   // bridge while this dialog is open (no DOM scraping). 2026-06-11.
   const changeDue = Math.max(0, Math.round((outgoingTotal - finalTotal) * 100) / 100);
@@ -455,6 +471,8 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
         payments: outgoingPayments,
         pos_profile: posProfile,
         table,
+        // Only meaningful for non-cash tenders; blank/null otherwise.
+        transaction_id: hasNonCashPayment ? transactionId.trim() || null : null,
       });
       showToast.success('Payment successful');
 
@@ -996,6 +1014,27 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
                   )}
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Optional transaction / reference id — shown only when a
+              non-cash mode is being paid. 2026-07-16. */}
+          {paymentMode !== 'room' && hasNonCashPayment && (
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Transaction ID{' '}
+                <span className="text-gray-400 font-normal">(optional)</span>
+              </label>
+              <Input
+                type="text"
+                value={transactionId}
+                onChange={(e) => setTransactionId(e.target.value)}
+                placeholder="e.g. MoMo / card / transfer reference"
+                disabled={isProcessing}
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Reference for the non-cash payment (card, mobile money, transfer…).
+              </p>
             </div>
           )}
         </div>

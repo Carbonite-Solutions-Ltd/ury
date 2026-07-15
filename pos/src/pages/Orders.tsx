@@ -14,6 +14,7 @@ import {
   Undo2,
   RotateCcw,
   BedDouble,
+  ArrowLeft,
 } from 'lucide-react';
 import { Badge, Button, Card, CardContent } from '../components/ui';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../components/ui/dialog';
@@ -503,7 +504,7 @@ export default function Orders() {
   }
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-full overflow-hidden relative">
       {/* Left Sidebar - Order Types */}
       <OrderStatusSidebar
         selectedStatus={selectedStatus}
@@ -918,8 +919,23 @@ export default function Orders() {
         </div>
       </div>
 
-      {/* Right Section - Order Details */}
-      <div className="w-96 bg-white border-l border-gray-200 flex flex-col h-full shrink-0 z-10">
+      {/* Right Section - Order Details.
+          On lg+ it's a static third column. Below lg (portrait tablet /
+          phone) that fixed w-96 column ate the width and the order cards
+          didn't show — so there it becomes a slide-in overlay that only
+          covers the screen when an order is selected. 2026-07-16. */}
+      <div
+        className={cn(
+          'bg-white border-l border-gray-200 flex flex-col h-full z-20',
+          // lg+: static column, always visible
+          'lg:static lg:w-96 lg:shrink-0 lg:translate-x-0 lg:shadow-none',
+          // < lg: overlay from the right (absolute, so the parent's
+          // overflow-hidden clips it off-screen — no body scroll); off-
+          // screen unless an order is selected
+          'absolute inset-y-0 right-0 w-full sm:max-w-md shrink-0 transition-transform duration-200',
+          selectedOrder ? 'translate-x-0 shadow-2xl' : 'translate-x-full lg:translate-x-0'
+        )}
+      >
         {!selectedOrder ? (
           <div className="text-center h-full flex flex-col items-center justify-center text-gray-500 p-6">
             <p className="text-lg font-medium mb-2">Select an order to view details</p>
@@ -938,12 +954,23 @@ export default function Orders() {
           <>
             {/* Fixed Header */}
             <div className="sticky top-0 left-0 right-0 z-20 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between min-h-[64px]">
-              <h2
-                className="text-xl font-semibold text-gray-900 truncate max-w-[10rem]"
-                title={selectedOrder.name}
-              >
-                {selectedOrder.name}
-              </h2>
+              <div className="flex items-center gap-2 min-w-0">
+                {/* Back to the list — only on the < lg overlay. */}
+                <button
+                  type="button"
+                  className="lg:hidden inline-flex items-center justify-center rounded-md p-2 -ml-2 text-gray-600 hover:bg-gray-100"
+                  aria-label="Back to orders"
+                  onClick={clearSelectedOrder}
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2
+                  className="text-xl font-semibold text-gray-900 truncate max-w-[10rem]"
+                  title={selectedOrder.name}
+                >
+                  {selectedOrder.name}
+                </h2>
+              </div>
               <div className="flex items-center gap-2">
                 {/* Only show edit and cancel buttons for Draft, Unbilled, and
                     Recently Paid orders. In the "Pending KOTs" view the cashier
