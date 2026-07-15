@@ -1,70 +1,63 @@
 // Audible + haptic alert for the "food ready" (order served) notification.
 //
-// Sound: a Web Audio "ding-ding" beep. Self-contained — the old code
-// pointed `new Audio()` at `/assets/frappe/sounds/notification.mp3`, which
-// does NOT exist in Frappe (the sounds folder has chime/alert/etc. but no
-// notification.mp3), so the play() silently 404'd and no sound ever
-// played. A generated tone has no asset dependency and can't 404.
+// Sound: plays a bundled audio FILE via `new Audio(url).play()` — the exact
+// pattern the KDS (URYMosaic kot.vue) uses, which is known to work. An
+// earlier attempt used a Web Audio oscillator beep; it didn't reliably play
+// on the waiter's tablet, so we switched to a real file. The file ships in
+// pos/public/sounds and is served under the Vite base at
+// /assets/ury/pos/sounds/order-ready.wav (can't 404 — it's part of the
+// build, unlike the old /assets/frappe/sounds/notification.mp3 which never
+// existed).
 //
-// Browsers block audio until the user has interacted with the page, so the
-// AudioContext is created lazily and ALSO primed on the first user gesture
-// (see primeAlertAudio + the Footer's gesture listener).
+// Browsers block audio until the user has interacted with the page, so we
+// "unlock" it on the first user gesture by playing it muted once (see
+// primeAlertAudio + the Footer's gesture listener). After that, later
+// programmatic plays are allowed.
 //
 // Vibration: navigator.vibrate works on Android Chrome (the tablets/phones
 // where waiters run the PWA). iOS Safari has NO vibration API, so it's a
-// silent no-op there — there is nothing we can do about that on iOS.
-// 2026-07-15.
+// silent no-op there — nothing we can do about that on iPad. 2026-07-15.
 
-let audioCtx: AudioContext | null = null;
+const SOUND_URL = '/assets/ury/pos/sounds/order-ready.wav';
+// Frappe ships this one (unlike notification.mp3); used only if the bundled
+// file somehow fails to load.
+const FALLBACK_URL = '/assets/frappe/sounds/chime.mp3';
 
-const getCtx = (): AudioContext | null => {
-  try {
-    if (!audioCtx) {
-      const Ctor =
-        window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (!Ctor) return null;
-      audioCtx = new Ctor();
-    }
-    return audioCtx;
-  } catch {
-    return null;
-  }
-};
+let unlocked = false;
 
-/** Unlock the AudioContext. Call once from a user gesture (pointer/keydown). */
+/** Unlock audio on a user gesture (play once muted). Call from pointer/keydown. */
 export const primeAlertAudio = (): void => {
-  const ctx = getCtx();
-  if (ctx && ctx.state === 'suspended') {
-    ctx.resume().catch(() => {});
+  if (unlocked) return;
+  try {
+    const a = new Audio(SOUND_URL);
+    a.muted = true;
+    a
+      .play()
+      .then(() => {
+        a.pause();
+        a.currentTime = 0;
+        unlocked = true;
+      })
+      .catch(() => {
+        /* still blocked — will retry on the next gesture */
+      });
+  } catch {
+    /* ignore */
   }
 };
 
-/** Play a short two-tone "ding-ding" alert. */
+/** Play the "food ready" alert sound at full volume. */
 export const playAlertSound = (): void => {
-  const ctx = getCtx();
-  if (!ctx) {
-    // Fallback to an mp3 that DOES exist in Frappe, if WebAudio is absent.
-    try {
-      new Audio('/assets/frappe/sounds/chime.mp3').play().catch(() => {});
-    } catch {
-      /* ignore */
-    }
-    return;
-  }
-  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
   try {
-    const now = ctx.currentTime;
-    [0, 0.18].forEach((offset, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = i === 0 ? 880 : 1108;
-      gain.gain.setValueAtTime(0.0001, now + offset);
-      gain.gain.exponentialRampToValueAtTime(0.35, now + offset + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.16);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(now + offset);
-      osc.stop(now + offset + 0.18);
+    const a = new Audio(SOUND_URL);
+    a.volume = 1;
+    a.play().catch(() => {
+      // Bundled file blocked/missing — try a Frappe sound that exists.
+      try {
+        new Audio(FALLBACK_URL).play().catch(() => {});
+      } catch {
+        /* ignore */
+      }
     });
   } catch {
     /* ignore */

@@ -65,9 +65,14 @@ def getRestaurantMenu(pos_profile, room=None, order_type=None):
     user_role = frappe.get_roles()
     pos_profile = frappe.get_doc("POS Profile", pos_profile)
 
+    # A self-serve waiter isn't in role_allowed_for_billing, but she DOES
+    # place orders and so needs the same order-type-wise / room-wise menu
+    # resolution as a cashier — otherwise she falls through to the
+    # restaurant's default active_menu, which is unset on restaurants that
+    # use per-order-type menus, and the menu fails to load. 2026-07-15.
     cashier = any(
         role.role in user_role for role in pos_profile.role_allowed_for_billing
-    )
+    ) or bool(_get_self_waiter_for_user())
     branch_name = getBranch()
 
     restaurant = frappe.db.get_value(

@@ -516,25 +516,39 @@ def get_restaurant_and_menu_name(table):
     if not table:
         frappe.throw(_("Please select a table"))
 
-    restaurant, branch, room = frappe.get_value(
+    restaurant, branch, room, is_take_away = frappe.get_value(
         "URY Table",
         table,
-        ["restaurant", "branch", "restaurant_room"],
-    )
-    room_wise_menu = frappe.db.get_value(
-        "URY Restaurant",
-        restaurant,
-        "room_wise_menu",
+        ["restaurant", "branch", "restaurant_room", "is_take_away"],
     )
 
-    if not room_wise_menu:
-        menu = frappe.db.get_value("URY Restaurant", restaurant, "active_menu")
-    else:
+    rest = frappe.db.get_value(
+        "URY Restaurant",
+        restaurant,
+        ["room_wise_menu", "order_type_wise_menu", "active_menu"],
+        as_dict=True,
+    ) or {}
+
+    # Resolve the menu with the full fallback chain so a restaurant set up
+    # with ANY menu mode works: room-wise → order-type-wise → default
+    # active_menu. Previously this only checked room-wise / active_menu,
+    # so a dine-in table order on a restaurant that uses per-order-type
+    # menus (no default active_menu) threw "Please set an active menu".
+    # That's the path a waiter hits ringing on tables. 2026-07-15.
+    menu = None
+    if rest.get("room_wise_menu") and room:
         menu = frappe.db.get_value(
-            "Menu for Room",
-            {"parent": restaurant, "room": room},
+            "Menu for Room", {"parent": restaurant, "room": room}, "menu"
+        )
+    if not menu and rest.get("order_type_wise_menu"):
+        order_type = "Take Away" if is_take_away == 1 else "Dine In"
+        menu = frappe.db.get_value(
+            "Order Type Menu",
+            {"parent": restaurant, "order_type": order_type},
             "menu",
         )
+    if not menu:
+        menu = rest.get("active_menu")
 
     if not menu:
         frappe.throw(

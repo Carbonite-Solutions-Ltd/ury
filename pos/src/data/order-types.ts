@@ -117,11 +117,14 @@ export const EXTENDED_ORDER_STATUS_TYPES = [
 // Trimmed set for waiter-only users. A waiter places orders and hands them
 // to the cashier — she doesn't bill, so the Draft-vs-Unbilled split (which
 // hinges on "has the bill been printed") is meaningless to her. She just
-// wants "Pending" (everything unpaid, take-away AND dine-in table) and
-// "Paid" (done). The cashier-y filters (Pending KOTs, Cancelled, Incoming
-// Transfers, Room Charges, Consolidated) just crowd her view (2026-07-15).
+// wants her open orders and her paid orders. Labelled "Draft" (what she
+// calls the orders she's placed) but backed by the "Pending" bucket, which
+// shows EVERY unpaid draft — take-away AND dine-in table (the plain "Draft"
+// bucket hides dine-in orders under "Unbilled"). The cashier-y filters
+// (Pending KOTs, Cancelled, Transfers, Room Charges, Consolidated) are
+// hidden to keep her view uncluttered. 2026-07-15.
 export const WAITER_ORDER_STATUS_TYPES = [
-    { label: "Pending", value: "Pending" },
+    { label: "Draft", value: "Pending" },
     { label: "Paid", value: "Paid" },
 ];
 
