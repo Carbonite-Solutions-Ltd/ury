@@ -62,6 +62,11 @@ READ_ONLY_DOCTYPES = [
     "Company",
     "Customer Group",
     "Territory",
+    # Account (2026-07-15). Ringing an order (sync_order → POS Invoice
+    # validate) reads income / tax accounts, so a user with ONLY a URY
+    # role (no ERPNext Accounts/Sales role) hit "user does not have access
+    # to select/read this account". Read+select unblocks order placement.
+    "Account",
     # Shift system (added 2026-04-14). Cashiers need read access to
     # see their own assigned shift in the React POS banner. Captains
     # and Managers get write access via the captain extras list below.

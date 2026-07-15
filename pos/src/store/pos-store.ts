@@ -213,20 +213,79 @@ const calculateItemPrice = (item: OrderItem): number => {
   return basePrice + addonsTotal;
 };
 
+// ── In-progress cart persistence ───────────────────────────────────
+// Keep the cart the user is building across a page RELOAD so items don't
+// vanish before they're placed (the waiter's complaint, 2026-07-15).
+// sessionStorage — NOT localStorage — so it survives a reload but auto-
+// clears when the tab/app closes, and is explicitly cleared on logout
+// (auth-api) so a shared terminal doesn't bleed one user's cart into the
+// next. The whole order context is snapshotted (not just items) so the
+// restored state is identical to the pre-reload state — a table/update
+// order keeps its orderId + table so the next "Order" click still
+// UPDATES the same draft instead of creating a duplicate.
+export const CART_SESSION_KEY = 'ury_pos_cart';
+
+interface PersistedCart {
+  activeOrders: OrderItem[];
+  selectedOrderType: OrderType;
+  selectedCustomer: Customer | null;
+  selectedWaiter: Waiter | null;
+  selectedTable: string | null;
+  selectedRoom: string | null;
+  orderComment: string;
+  isUpdatingOrder: boolean;
+  orderId: string | null;
+  cartId: string | null;
+  lockedItemQtys: Record<string, number>;
+  hotelRoom: string | null;
+  ihotelProfile: string | null;
+}
+
+const restoreCart = (): Partial<PersistedCart> => {
+  try {
+    const raw = sessionStorage.getItem(CART_SESSION_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as PersistedCart;
+    // Only restore when there's an actual cart to restore.
+    if (
+      !parsed ||
+      !Array.isArray(parsed.activeOrders) ||
+      parsed.activeOrders.length === 0
+    ) {
+      return {};
+    }
+    return parsed;
+  } catch {
+    return {};
+  }
+};
+
+export const clearPersistedCart = (): void => {
+  try {
+    sessionStorage.removeItem(CART_SESSION_KEY);
+  } catch {
+    /* sessionStorage unavailable — ignore */
+  }
+};
+
+const restoredCart = restoreCart();
+
 export const usePOSStore = create<POSStore>((set, get) => ({
   menuItems: [],
   categories: [],
-  activeOrders: [],
+  // Order-context fields seed from the persisted cart (if any) so a
+  // reload keeps the in-progress order. See CART_SESSION_KEY above.
+  activeOrders: restoredCart.activeOrders ?? [],
   selectedCategory: '',
-  selectedTable: null,
-  selectedRoom: null,
+  selectedTable: restoredCart.selectedTable ?? null,
+  selectedRoom: restoredCart.selectedRoom ?? null,
   searchQuery: '',
-  selectedCustomer: null,
-  selectedWaiter: null,
-  selectedOrderType: DEFAULT_ORDER_TYPE as OrderType,
+  selectedCustomer: restoredCart.selectedCustomer ?? null,
+  selectedWaiter: restoredCart.selectedWaiter ?? null,
+  selectedOrderType: restoredCart.selectedOrderType ?? (DEFAULT_ORDER_TYPE as OrderType),
   quickFilter: "all",
   selectedItem: null,
-  cartId: null,
+  cartId: restoredCart.cartId ?? null,
   loading: false,
   menuLoading: false,
   orderLoading: false,
@@ -242,18 +301,18 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   currencySymbol: storage.getItem('currencySymbol') || null,
   tableOrder: null,
   isInitializing: true,
-  isUpdatingOrder: false,
-  lockedItemQtys: {},
-  orderId: null,
-  orderComment: '',
+  isUpdatingOrder: restoredCart.isUpdatingOrder ?? false,
+  lockedItemQtys: restoredCart.lockedItemQtys ?? {},
+  orderId: restoredCart.orderId ?? null,
+  orderComment: restoredCart.orderComment ?? '',
   terminalName: null,
   terminalDescription: null,
   terminalBranch: null,
   terminalPosProfile: null,
   shiftExpired: false,
   shiftBlocked: false,
-  hotelRoom: null,
-  ihotelProfile: null,
+  hotelRoom: restoredCart.hotelRoom ?? null,
+  ihotelProfile: restoredCart.ihotelProfile ?? null,
 
   setHotelRoom: (room, profile) => {
     set({ hotelRoom: room, ihotelProfile: profile });
@@ -298,7 +357,9 @@ export const usePOSStore = create<POSStore>((set, get) => ({
       // branch 'X'..." See CLAUDE.md "Fixes log" 2026-04-08.
       set({
         isInitializing: false,
-        selectedCustomer: {
+        // Default to Cash Customer, but keep a customer restored from a
+        // persisted cart on reload (see CART_SESSION_KEY).
+        selectedCustomer: get().selectedCustomer || {
           id: 'Cash Customer',
           name: 'Cash Customer',
           phone: '',
@@ -838,4 +899,45 @@ export const usePOSStore = create<POSStore>((set, get) => ({
     const state = get();
     return state.orderLoading;
   }
-})); 
+}));
+
+// Persist the in-progress cart to sessionStorage on every change so a
+// page reload restores it (see CART_SESSION_KEY). Centralised here via a
+// store subscription so no cart-mutating action can forget to save. The
+// serialization guard avoids redundant writes on unrelated state changes
+// (menu loads, loading flags, etc.). When the cart empties, the key is
+// removed — so resetOrderState / clearOrder / setSelectedOrderType clear
+// the persisted cart for free. 2026-07-15.
+let lastCartSerialized = '';
+usePOSStore.subscribe((state) => {
+  try {
+    if (!state.activeOrders || state.activeOrders.length === 0) {
+      if (lastCartSerialized !== '') {
+        clearPersistedCart();
+        lastCartSerialized = '';
+      }
+      return;
+    }
+    const snapshot: PersistedCart = {
+      activeOrders: state.activeOrders,
+      selectedOrderType: state.selectedOrderType,
+      selectedCustomer: state.selectedCustomer,
+      selectedWaiter: state.selectedWaiter,
+      selectedTable: state.selectedTable,
+      selectedRoom: state.selectedRoom,
+      orderComment: state.orderComment,
+      isUpdatingOrder: state.isUpdatingOrder,
+      orderId: state.orderId,
+      cartId: state.cartId,
+      lockedItemQtys: state.lockedItemQtys,
+      hotelRoom: state.hotelRoom,
+      ihotelProfile: state.ihotelProfile,
+    };
+    const serialized = JSON.stringify(snapshot);
+    if (serialized === lastCartSerialized) return;
+    lastCartSerialized = serialized;
+    sessionStorage.setItem(CART_SESSION_KEY, serialized);
+  } catch {
+    /* sessionStorage unavailable — ignore */
+  }
+});

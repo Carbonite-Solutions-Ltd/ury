@@ -67,20 +67,37 @@ const Footer = () => {
 
   const handleNewNotification = (data: any) => {
     console.log('🔔 New order served notification:', data);
-    
+
     // Show toast notification
     setCurrentNotification(data);
-    
+
     // Increment count
     setNotificationCount(prev => prev + 1);
-    
-    // Play notification sound (optional)
+
+    // Alert the cashier/waiter: sound + vibration. On a tablet the
+    // vibration is the reliable signal (the device may be muted or in a
+    // pocket); sound is best-effort (autoplay is allowed once the user
+    // has interacted with the POS, which they always have by this point).
     playNotificationSound();
+    vibrateDevice();
   };
 
   const playNotificationSound = () => {
     const audio = new Audio('/assets/frappe/sounds/notification.mp3');
     audio.play().catch(err => console.log('Audio play failed:', err));
+  };
+
+  const vibrateDevice = () => {
+    // navigator.vibrate is a no-op / undefined on desktop + iOS Safari,
+    // but works on Android Chrome tablets/phones where waiters run the
+    // PWA. Guard so we never throw on unsupported platforms.
+    try {
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        navigator.vibrate([250, 120, 250]);
+      }
+    } catch {
+      /* vibration not supported — ignore */
+    }
   };
 
   const fetchNotificationCount = async () => {

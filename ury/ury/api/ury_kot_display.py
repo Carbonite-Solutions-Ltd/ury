@@ -24,9 +24,26 @@ def serve_kot(name, time):
         invoice = frappe.db.get_value("URY KOT", name, "invoice")
         
         if invoice and frappe.db.exists("POS Invoice", invoice):
-            # Get invoice owner to send notification to specific user
-            invoice_owner = frappe.db.get_value("POS Invoice", invoice, "owner")
-            
+            # Get invoice owner + waiter so the "served" alert reaches
+            # everyone who owns the order: the user who rang it (owner)
+            # AND the waiter it was rung for (custom_waiter → linked
+            # User). When a cashier rings on a waiter's behalf, owner is
+            # the cashier and custom_waiter is the waiter — both must be
+            # notified. 2026-07-15.
+            invoice_row = frappe.db.get_value(
+                "POS Invoice",
+                invoice,
+                ["owner", "custom_waiter"],
+                as_dict=True,
+            ) or {}
+            invoice_owner = invoice_row.get("owner")
+            waiter_record = invoice_row.get("custom_waiter")
+            waiter_user = (
+                frappe.db.get_value("URY Waiter", waiter_record, "user")
+                if waiter_record
+                else None
+            )
+
             # Update POS Invoice custom_order_status to Served
             frappe.db.set_value(
                 "POS Invoice",
@@ -58,12 +75,20 @@ def serve_kot(name, time):
             """, (invoice,), as_dict=True)
             
             if notification_data:
-                # Publish realtime notification to specific user
-                frappe.publish_realtime(
-                    event="order_served_notification",
-                    message=notification_data[0],
-                    user=invoice_owner
-                )
+                # Publish to the owner AND (when different) the waiter's
+                # linked user, so both the cashier who rang it and the
+                # waiter it was rung for get the served alert in real time.
+                recipients = set()
+                if invoice_owner:
+                    recipients.add(invoice_owner)
+                if waiter_user:
+                    recipients.add(waiter_user)
+                for recipient in recipients:
+                    frappe.publish_realtime(
+                        event="order_served_notification",
+                        message=notification_data[0],
+                        user=recipient,
+                    )
             
             frappe.logger().info(f"Updated POS Invoice {invoice} to Served from KOT {name}")
         
