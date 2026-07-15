@@ -1,58 +1,76 @@
 // Audible + haptic alert for the "food ready" (order served) notification.
 //
-// Sound: plays a bundled audio FILE via `new Audio(url).play()` — the exact
-// pattern the KDS (URYMosaic kot.vue) uses, which is known to work. An
-// earlier attempt used a Web Audio oscillator beep; it didn't reliably play
-// on the waiter's tablet, so we switched to a real file. The file ships in
-// pos/public/sounds and is served under the Vite base at
-// /assets/ury/pos/sounds/order-ready.wav (can't 404 — it's part of the
-// build, unlike the old /assets/frappe/sounds/notification.mp3 which never
-// existed).
+// Sound: plays a bundled audio FILE via a SINGLE persistent <audio> element
+// unlocked on the first user gesture. The important detail (why the earlier
+// attempt failed on Android): a *fresh* `new Audio()` created inside a
+// socket/interval callback is NOT unlocked even if the user tapped earlier —
+// mobile browsers unlock the specific element that played during a gesture.
+// So we keep ONE element, unlock it once (play it at ~0 volume on the first
+// pointer/keydown), and replay that same element for every alert.
 //
-// Browsers block audio until the user has interacted with the page, so we
-// "unlock" it on the first user gesture by playing it muted once (see
-// primeAlertAudio + the Footer's gesture listener). After that, later
-// programmatic plays are allowed.
+// The file ships in pos/public/sounds and is served under the Vite base at
+// /assets/ury/pos/sounds/order-ready.wav (part of the build — can't 404).
 //
-// Vibration: navigator.vibrate works on Android Chrome (the tablets/phones
-// where waiters run the PWA). iOS Safari has NO vibration API, so it's a
-// silent no-op there — nothing we can do about that on iPad. 2026-07-15.
+// Vibration: navigator.vibrate works on Android Chrome (the tablets where
+// waiters run the PWA) as long as the page has been interacted with. iOS
+// Safari has NO vibration API — silent no-op there.
+//
+// NOTE: this only fires while the PWA is OPEN and reasonably active. A phone
+// that's asleep / the app closed needs Web Push + a service worker (OS-level
+// notification) — a separate, larger feature. 2026-07-15.
 
 const SOUND_URL = '/assets/ury/pos/sounds/order-ready.wav';
-// Frappe ships this one (unlike notification.mp3); used only if the bundled
-// file somehow fails to load.
 const FALLBACK_URL = '/assets/frappe/sounds/chime.mp3';
 
+let audioEl: HTMLAudioElement | null = null;
 let unlocked = false;
 
-/** Unlock audio on a user gesture (play once muted). Call from pointer/keydown. */
+const getEl = (): HTMLAudioElement | null => {
+  try {
+    if (!audioEl) {
+      audioEl = new Audio(SOUND_URL);
+      audioEl.preload = 'auto';
+    }
+    return audioEl;
+  } catch {
+    return null;
+  }
+};
+
+/** Unlock the persistent audio element. Call from a user gesture. */
 export const primeAlertAudio = (): void => {
   if (unlocked) return;
+  const el = getEl();
+  if (!el) return;
+  const prevVol = el.volume;
   try {
-    const a = new Audio(SOUND_URL);
-    a.muted = true;
-    a
+    el.volume = 0.01;
+    el
       .play()
       .then(() => {
-        a.pause();
-        a.currentTime = 0;
+        el.pause();
+        el.currentTime = 0;
+        el.volume = prevVol;
         unlocked = true;
       })
       .catch(() => {
-        /* still blocked — will retry on the next gesture */
+        el.volume = prevVol;
       });
   } catch {
-    /* ignore */
+    el.volume = prevVol;
   }
 };
 
 /** Play the "food ready" alert sound at full volume. */
 export const playAlertSound = (): void => {
+  const el = getEl();
+  if (!el) return;
   try {
-    const a = new Audio(SOUND_URL);
-    a.volume = 1;
-    a.play().catch(() => {
-      // Bundled file blocked/missing — try a Frappe sound that exists.
+    el.currentTime = 0;
+    el.volume = 1;
+    el.play().catch(() => {
+      // The persistent element was blocked (e.g. never unlocked) — try a
+      // one-off Frappe sound that exists as a last resort.
       try {
         new Audio(FALLBACK_URL).play().catch(() => {});
       } catch {

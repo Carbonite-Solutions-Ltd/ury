@@ -7,7 +7,7 @@ import {
   Users,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { call } from '../lib/frappe-sdk';
 import NotificationToast from './NotificationToast';
 import { BarChart3 } from 'lucide-react';
@@ -31,6 +31,21 @@ const Footer = () => {
   const user = useRootStore((state: RootState) => state.user);
   const waiterMode = isWaiterOnly(user);
 
+  // Poll-based served-order detection. The KDS triggers its sound off a
+  // poll like this; we do the same so the alert doesn't depend on the
+  // realtime socket (which can be flaky in the PWA). Tracks the served
+  // invoices seen so far; a genuinely NEW one (after the first poll) fires
+  // sound + vibration. The realtime handler shares this set so the two
+  // paths don't double-alert. 2026-07-15.
+  const seenServedRef = useRef<Set<string>>(new Set());
+  const notifInitRef = useRef(false);
+
+  const alertServed = (data: any) => {
+    setCurrentNotification(data);
+    playAlertSound();
+    vibrateAlert();
+  };
+
   const fetchWaiterPendingCount = async () => {
     setWaiterPendingCount(await getWaiterPendingOrderCount());
   };
@@ -39,8 +54,9 @@ const Footer = () => {
     // Fetch notification count on mount
     fetchNotificationCount();
 
-    // Poll for updates every 30 seconds as backup
-    const interval = setInterval(fetchNotificationCount, 30000);
+    // Poll every 15s. Doubles as the served-order sound trigger (KDS-style)
+    // so the alert survives a flaky realtime socket. 2026-07-15.
+    const interval = setInterval(fetchNotificationCount, 15000);
 
     // Listen for realtime notifications
     if (socket) {
@@ -81,24 +97,31 @@ const Footer = () => {
 
   const handleNewNotification = (data: any) => {
     console.log('🔔 New order served notification:', data);
-
-    // Show toast notification
-    setCurrentNotification(data);
-
-    // Increment count
+    // Dedup with the poll: skip if we've already alerted for this order.
+    if (data?.invoice && seenServedRef.current.has(data.invoice)) return;
+    if (data?.invoice) seenServedRef.current.add(data.invoice);
     setNotificationCount(prev => prev + 1);
-
-    // Alert the cashier/waiter: a generated beep (no missing-asset 404)
-    // + vibration on Android. See lib/alert-feedback.
-    playAlertSound();
-    vibrateAlert();
+    alertServed(data);
   };
 
   const fetchNotificationCount = async () => {
     try {
       const response = await call.get('ury.ury_pos.api.get_kitchen_notifications');
-      const notifications = response.message || [];
+      const notifications = (response.message || []) as any[];
       setNotificationCount(notifications.length);
+
+      // Fallback trigger (KDS-style): if a served order appears that we
+      // hadn't seen on the previous poll, alert. Skipped on the very first
+      // poll so we don't blast for every pre-existing served order at load.
+      const currentIds = new Set(notifications.map((n) => n.invoice));
+      if (notifInitRef.current) {
+        const fresh = notifications.find(
+          (n) => n.invoice && !seenServedRef.current.has(n.invoice)
+        );
+        if (fresh) alertServed(fresh);
+      }
+      seenServedRef.current = currentIds;
+      notifInitRef.current = true;
     } catch (error) {
       console.error('Failed to fetch notification count:', error);
     }
