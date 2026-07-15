@@ -624,7 +624,7 @@ def cancel_order(invoice_id, reason):
 
 # Method for URY POS
 @frappe.whitelist()
-def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDiscount=None, table=None, invoice=None):
+def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDiscount=None, table=None, invoice=None, transaction_id=None):
     order_type = invoice_name = frappe.get_value("POS Invoice", invoice, "order_type")
     invoice = get_order_invoice(table, invoice, order_type, "Payments")
 
@@ -648,6 +648,10 @@ def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDisc
         invoice.append(
             "payments", dict(mode_of_payment=d["mode_of_payment"], amount=d["amount"])
         )
+
+    # Optional transaction / reference id for non-cash payments (2026-07-16).
+    if transaction_id:
+        invoice.custom_transaction_id = transaction_id
 
     # Don't set owner - it's a read-only field set at document creation
     # invoice.owner = owner  # REMOVE THIS LINE
