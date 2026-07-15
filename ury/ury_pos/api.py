@@ -819,17 +819,26 @@ def getPosInvoice(
     50-line SQL blocks into one builder. See CLAUDE.md "Fixes log"
     2026-04-09.
     """
-    branch = getBranch()
     limit = int(limit) + 1
     limit_start = int(limit_start)
 
-    # A self-serve waiter's orders span terminals — she rings some on her
-    # own tablet and a cashier rings others for her on a till — so the
-    # per-terminal filter must NOT apply to her, or she'd only ever see
-    # the subset placed on her own device. Also used for the scope clause
-    # (owner OR custom_waiter). 2026-07-15.
+    # A self-serve waiter's orders are already scoped to HER (owner OR
+    # custom_waiter). They get their branch + terminal stamp from the table
+    # / till she rang on, which need NOT match her own URY User branch — so
+    # branch/terminal-filtering her was HIDING her own orders (the admin's
+    # "waiter:" filter worked because it uses the admin's branch, where the
+    # orders actually live). Skip both filters for a waiter, and don't
+    # hard-fail if she isn't linked to a branch. 2026-07-15.
     session_waiter = _get_self_waiter_for_user()
     is_waiter = bool(session_waiter)
+
+    if is_waiter:
+        try:
+            branch = getBranch()
+        except Exception:
+            branch = None
+    else:
+        branch = getBranch()
 
     # Map UI status → DB status + extra WHERE clause for the special
     # Draft/Unbilled splits that ride on the same `Draft` docstatus.
@@ -882,8 +891,11 @@ def getPosInvoice(
     }
     db_status, extra_where = status_map.get(status, (status, ""))
 
-    where_parts = ["pi.branch = %s", "pi.status = %s"]
-    params = [branch, db_status]
+    where_parts = ["pi.status = %s"]
+    params = [db_status]
+    if branch and not is_waiter:
+        where_parts.insert(0, "pi.branch = %s")
+        params.insert(0, branch)
 
     # Hide invoices that have been merged into another. The master
     # remains visible; only the dormant sources are filtered out.
@@ -988,13 +1000,21 @@ def searchPosInvoice(
     if not query:
         return {"data": [], "next": False}
 
-    branch = getBranch()
     query_str = f"%{query.lower()}%"
 
-    # Waiters are exempt from the per-terminal filter (their orders span
-    # terminals). Same rationale as getPosInvoice. 2026-07-15.
+    # Waiters are exempt from the branch + terminal filters (their orders
+    # are stamped from the table/till they rang on, not their own URY User
+    # branch). Same rationale as getPosInvoice. 2026-07-15.
     session_waiter = _get_self_waiter_for_user()
     is_waiter = bool(session_waiter)
+
+    if is_waiter:
+        try:
+            branch = getBranch()
+        except Exception:
+            branch = None
+    else:
+        branch = getBranch()
 
     db_status = "Paid" if status == "Recently Paid" else status
     # Room Charges is a Draft-level pseudo-status; map it to Draft for
@@ -1010,8 +1030,11 @@ def searchPosInvoice(
     # 2026-04-16 print revamp.
     if status == "Pending KOTs":
         db_status = "Draft"
-    where_parts = ["pi.branch = %s", "pi.status = %s"]
-    params = [branch, db_status]
+    where_parts = ["pi.status = %s"]
+    params = [db_status]
+    if branch and not is_waiter:
+        where_parts.insert(0, "pi.branch = %s")
+        params.insert(0, branch)
 
     # Hide merged-source invoices from search results too — same rule
     # as getPosInvoice.
