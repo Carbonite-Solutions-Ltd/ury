@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Clock,
   User,
@@ -15,6 +15,7 @@ import {
   RotateCcw,
   BedDouble,
   ArrowLeft,
+  Menu,
 } from 'lucide-react';
 import { Badge, Button, Card, CardContent } from '../components/ui';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../components/ui/dialog';
@@ -195,6 +196,10 @@ export default function Orders() {
   );
 
   const canReprint = useMemo(() => canReprintInvoice(user), [user]);
+
+  // Order-status filter sidebar is a slide-in drawer on < lg (opened by the
+  // burger icon in the toolbar); a static column on lg+. 2026-07-16.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Waiter-only users get the read-only Orders view: they can open their own
   // drafts to edit (the header Edit button stays), but do NO payments,
@@ -505,11 +510,24 @@ export default function Orders() {
 
   return (
     <div className="flex h-full overflow-hidden relative">
-      {/* Left Sidebar - Order Types */}
+      {/* Backdrop for the < lg filter drawer. */}
+      {sidebarOpen && (
+        <div
+          className="lg:hidden absolute inset-0 bg-black/40 z-30"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+      {/* Left Sidebar - Order Types (drawer on < lg, static column on lg+) */}
       <OrderStatusSidebar
         selectedStatus={selectedStatus}
-        setSelectedStatus={setSelectedStatus}
+        // Selecting a filter closes the drawer (no-op on lg+).
+        setSelectedStatus={(s) => {
+          setSelectedStatus(s);
+          setSidebarOpen(false);
+        }}
         refreshVersion={pendingKotRefreshVersion}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
       />
 
       {/* Middle Section - Order list / cards */}
@@ -558,13 +576,24 @@ export default function Orders() {
           </div>
         ) : (
           <div className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between shrink-0">
-            <div className="text-xs text-gray-500">
-              {orders.length > 0 && (
-                <span>
-                  Showing <span className="font-medium text-gray-700">{orders.length}</span>{' '}
-                  {orders.length === 1 ? 'order' : 'orders'}
-                </span>
-              )}
+            <div className="flex items-center gap-2">
+              {/* Burger — opens the filter drawer on < lg. */}
+              <button
+                type="button"
+                aria-label="Open filters"
+                onClick={() => setSidebarOpen(true)}
+                className="lg:hidden inline-flex items-center justify-center rounded-md p-1.5 -ml-1.5 text-gray-600 hover:bg-gray-100"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+              <div className="text-xs text-gray-500">
+                {orders.length > 0 && (
+                  <span>
+                    Showing <span className="font-medium text-gray-700">{orders.length}</span>{' '}
+                    {orders.length === 1 ? 'order' : 'orders'}
+                  </span>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-2">
               {/* Merge is only meaningful for Draft orders — hidden on every
@@ -758,7 +787,7 @@ export default function Orders() {
               </table>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-w-screen-xl mx-auto">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 max-w-screen-xl mx-auto">
               {orders.map((order, idx) => {
                 const mergeable = isOrderMergeable(order);
                 const isSelectedForMerge = mergeMode && mergeSelection.includes(order.name);
@@ -781,7 +810,7 @@ export default function Orders() {
                         <CheckCircle className="w-4 h-4" />
                       </div>
                     )}
-                    <div className="p-3 bg-gray-50 border-b">
+                    <div className="p-2.5 bg-gray-50 border-b">
                       <h3 className="font-medium text-gray-900 text-sm truncate" title={order.name}>
                         {order.name}
                       </h3>
@@ -853,7 +882,7 @@ export default function Orders() {
                     </div>
 
                     {/* Content section - matches MenuCard padding and structure */}
-                    <div className="flex-1 p-3 flex flex-col">
+                    <div className="flex-1 p-2.5 flex flex-col">
                       <div>
                         <p className="text-sm text-gray-900">
                           {order.customer_name || order.customer}

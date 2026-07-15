@@ -593,7 +593,7 @@ const TableView = () => {
               <p>No tables found for this room</p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 sm:gap-3">
               {tablesToDisplay.map((table, idx) => {
                 const isOccupied = table.occupied === 1;
                 const isMerged =
@@ -643,7 +643,7 @@ const TableView = () => {
                       handleNavigateToPOS(table.name);
                     }}
                     className={cn(
-                      'relative bg-white rounded-lg border-2 p-4 transition-all flex flex-col justify-between gap-y-4',
+                      'relative bg-white rounded-lg border-2 p-2.5 sm:p-3 transition-all flex flex-col justify-between gap-y-2',
                       mergeMode &&
                         mergeableInMergeMode &&
                         `ury-wobble ury-wobble-d${idx % 6} cursor-pointer`,
@@ -673,12 +673,12 @@ const TableView = () => {
                       </div>
                     )}
                     <div>
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
                           <TableShapeIcon
                             shape={table.table_shape || 'Rectangle'}
                           />
-                          <span className="font-semibold text-lg text-gray-900">
+                          <span className="font-semibold text-sm sm:text-base text-gray-900 truncate">
                             {table.name}
                           </span>
                         </div>
@@ -701,10 +701,10 @@ const TableView = () => {
                         </div>
                       </div>
 
-                      <div className="space-y-2 text-sm text-gray-700">
+                      <div className="space-y-1 text-xs text-gray-700">
                         <div className="flex items-center justify-between">
                           <span className="font-medium">Room</span>
-                          <span>{table.restaurant_room}</span>
+                          <span className="truncate ml-1">{table.restaurant_room}</span>
                         </div>
                         {isOccupied && (
                           <div className="flex items-center justify-between">
@@ -732,10 +732,10 @@ const TableView = () => {
                     </div>
 
                     {!mergeMode && isOccupied ? (
-                      <div className="flex gap-2 pt-3 mt-3 border-t border-amber-200 flex-wrap">
+                      <div className="flex gap-1.5 pt-2 mt-2 border-t border-amber-200 flex-wrap">
                         <button
                           onClick={(event) => handlePreviewTable(table, event)}
-                          className="flex-1 flex items-center justify-center gap-2 py-2 text-xs font-semibold rounded bg-white hover:bg-amber-100 transition"
+                          className="flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-semibold rounded bg-white hover:bg-amber-100 transition"
                         >
                           <Eye className="w-3 h-3" />
                           Preview
@@ -743,7 +743,7 @@ const TableView = () => {
                         <button
                           onClick={(event) => handlePrintTable(table, event)}
                           disabled={printingTable === table.name}
-                          className="flex-1 flex items-center justify-center gap-2 py-2 text-xs font-semibold rounded bg-white hover:bg-amber-100 transition disabled:opacity-60 disabled:cursor-not-allowed"
+                          className="flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-semibold rounded bg-white hover:bg-amber-100 transition disabled:opacity-60 disabled:cursor-not-allowed"
                         >
                           {printingTable === table.name ? (
                             <>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Calendar, FileText, Users } from 'lucide-react';
+import { Calendar, FileText, Users, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Button } from './ui';
 import { getOrderStatusTypes, OrderStatusType } from '../data/order-types';
@@ -22,6 +22,10 @@ interface OrderStatusSidebarProps {
    * stale for longer than a small window.
    */
   refreshVersion?: number;
+  /** Drawer state on < lg (below lg it's a slide-in drawer; lg+ static). */
+  open?: boolean;
+  /** Close the drawer (< lg). */
+  onClose?: () => void;
 }
 
 const todayIso = (): string => {
@@ -34,6 +38,8 @@ const OrderStatusSidebar = ({
   selectedStatus,
   setSelectedStatus,
   refreshVersion,
+  open = false,
+  onClose,
 }: OrderStatusSidebarProps) => {
   const { posProfile, terminalName } = usePOSStore();
   const {
@@ -125,10 +131,30 @@ const OrderStatusSidebar = ({
   return (
     <div
       className={cn(
-        'w-64 bg-white border-r border-gray-200 h-full flex flex-col',
+        'bg-white border-r border-gray-200 h-full flex flex-col z-40',
+        // lg+: static left column, always visible.
+        'lg:static lg:w-64 lg:translate-x-0 lg:shadow-none',
+        // < lg: slide-in drawer from the left (absolute, so it stays inside
+        // the Orders area and the parent's overflow-hidden clips it when
+        // closed), toggled by the burger icon.
+        'absolute inset-y-0 left-0 w-72 max-w-[80vw] transition-transform duration-200',
+        open ? 'translate-x-0 shadow-2xl' : '-translate-x-full lg:translate-x-0',
         disabled && 'opacity-50 pointer-events-none'
       )}
     >
+      {/* Drawer header with a close button — only on the < lg drawer. */}
+      <div className="lg:hidden flex items-center justify-between px-4 py-3 border-b border-gray-200 shrink-0">
+        <span className="text-sm font-semibold text-gray-900">Filters</span>
+        <button
+          type="button"
+          aria-label="Close filters"
+          onClick={onClose}
+          className="inline-flex items-center justify-center rounded-md p-2 -mr-2 text-gray-600 hover:bg-gray-100"
+        >
+          <X className="w-5 h-5" />
+        </button>
+      </div>
+
       <nav className="flex-1 p-6 overflow-y-auto space-y-4">
         {/* ───── Order Status ─────
             No card wrapper here (unlike the other sections) so the full
