@@ -40,7 +40,7 @@ export const DINE_IN="Dine In"
 export const DEFAULT_ORDER_TYPE="Take Away"
 export const DEFAULT_PAYMENT_MODE="Cash"
 
-export type OrderStatusType = "Draft" | "Unbilled" | "Recently Paid" | "Paid" | "Consolidated" | "Return" | "Room Charges" | "Pending KOTs" | "Incoming Transfers" | "Cancelled";
+export type OrderStatusType = "Draft" | "Unbilled" | "Recently Paid" | "Paid" | "Consolidated" | "Return" | "Room Charges" | "Pending KOTs" | "Incoming Transfers" | "Cancelled" | "Pending";
 
 // Base status types that are always available.
 // "Paid" was moved out of EXTENDED_ORDER_STATUS_TYPES on 2026-04-09
@@ -115,13 +115,13 @@ export const EXTENDED_ORDER_STATUS_TYPES = [
 ];
 
 // Trimmed set for waiter-only users. A waiter places orders and hands them
-// to the cashier — she only cares about her Draft (still editable), Unbilled
-// (cashier is billing it) and Paid (done). The cashier-y filters (Pending
-// KOTs, Cancelled, Incoming Transfers, Room Charges, Consolidated) just
-// crowd her view (2026-07-14).
+// to the cashier — she doesn't bill, so the Draft-vs-Unbilled split (which
+// hinges on "has the bill been printed") is meaningless to her. She just
+// wants "Pending" (everything unpaid, take-away AND dine-in table) and
+// "Paid" (done). The cashier-y filters (Pending KOTs, Cancelled, Incoming
+// Transfers, Room Charges, Consolidated) just crowd her view (2026-07-15).
 export const WAITER_ORDER_STATUS_TYPES = [
-    { label: "Draft", value: "Draft" },
-    { label: "Unbilled", value: "Unbilled" },
+    { label: "Pending", value: "Pending" },
     { label: "Paid", value: "Paid" },
 ];
 

@@ -16,6 +16,7 @@ import { usePOSStore } from '../store/pos-store';
 import { useRootStore } from '../store/root-store';
 import type { RootState } from '../store/root-store';
 import { isWaiterOnly } from '../lib/role-utils';
+import { primeAlertAudio, playAlertSound, vibrateAlert } from '../lib/alert-feedback';
 
 // @ts-ignore
 const socket = window.frappe?.socketio || null;
@@ -54,6 +55,19 @@ const Footer = () => {
     };
   }, []);
 
+  // Unlock the audio alert on the first user interaction. Browsers block
+  // audio until the user has gestured; priming here means the served-order
+  // beep actually plays when it fires later. 2026-07-15.
+  useEffect(() => {
+    const prime = () => primeAlertAudio();
+    window.addEventListener('pointerdown', prime, { once: true });
+    window.addEventListener('keydown', prime, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', prime);
+      window.removeEventListener('keydown', prime);
+    };
+  }, []);
+
   // Waiter pending-order badge — only when the profile uses waiters.
   useEffect(() => {
     if (!useWaiter) {
@@ -74,30 +88,10 @@ const Footer = () => {
     // Increment count
     setNotificationCount(prev => prev + 1);
 
-    // Alert the cashier/waiter: sound + vibration. On a tablet the
-    // vibration is the reliable signal (the device may be muted or in a
-    // pocket); sound is best-effort (autoplay is allowed once the user
-    // has interacted with the POS, which they always have by this point).
-    playNotificationSound();
-    vibrateDevice();
-  };
-
-  const playNotificationSound = () => {
-    const audio = new Audio('/assets/frappe/sounds/notification.mp3');
-    audio.play().catch(err => console.log('Audio play failed:', err));
-  };
-
-  const vibrateDevice = () => {
-    // navigator.vibrate is a no-op / undefined on desktop + iOS Safari,
-    // but works on Android Chrome tablets/phones where waiters run the
-    // PWA. Guard so we never throw on unsupported platforms.
-    try {
-      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-        navigator.vibrate([250, 120, 250]);
-      }
-    } catch {
-      /* vibration not supported — ignore */
-    }
+    // Alert the cashier/waiter: a generated beep (no missing-asset 404)
+    // + vibration on Android. See lib/alert-feedback.
+    playAlertSound();
+    vibrateAlert();
   };
 
   const fetchNotificationCount = async () => {
