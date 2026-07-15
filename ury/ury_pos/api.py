@@ -344,6 +344,17 @@ def _resolve_orders_scope(terminal, cashier, self_waiter=None):
         # Cashier requested a wider scope they aren't allowed to see.
         return mine_clause
 
+    # Filter by a specific WAITER. The dropdown sends "waiter:<record>" so
+    # we can tell it apart from a cashier user id. A waiter's orders are
+    # keyed by custom_waiter (set on BOTH her self-placed orders and orders
+    # a cashier rang for her), so this shows everything she served. Captain-
+    # only (we're past the is_captain gate). 2026-07-15.
+    if isinstance(cashier, str) and cashier.startswith("waiter:"):
+        waiter_name = cashier.split(":", 1)[1]
+        if not waiter_name:
+            return mine_clause
+        return ("pi.custom_waiter = %s", [waiter_name])
+
     if cashier == "all":
         if not terminal:
             return mine_clause
@@ -355,10 +366,18 @@ def _resolve_orders_scope(terminal, cashier, self_waiter=None):
         cashier_user_ids = [
             c["user"] for c in _get_cashier_users_on_branch(terminal_branch)
         ]
+        # "All" now means all staff, not just cashiers: include every order
+        # that has a waiter assigned (self-placed by a waiter OR rung for
+        # her by a cashier) alongside the cashiers' own orders. Waiters ring
+        # orders now, so excluding them made "All" hide real activity.
+        # 2026-07-15.
         if not cashier_user_ids:
-            return mine_clause
+            return ("pi.custom_waiter IS NOT NULL", [])
         placeholders = ", ".join(["%s"] * len(cashier_user_ids))
-        return (f"pi.owner IN ({placeholders})", cashier_user_ids)
+        return (
+            f"(pi.owner IN ({placeholders}) OR pi.custom_waiter IS NOT NULL)",
+            cashier_user_ids,
+        )
 
     # Specific user — verify they're a real cashier on this branch
     # before honouring the request. Anything else downgrades to mine.
@@ -408,10 +427,15 @@ def _get_cashier_users_on_branch(branch_name):
 
 @frappe.whitelist()
 def get_cashier_users_for_terminal(terminal):
-    """Return the list of cashier users on this terminal's branch, for
-    the captain's "Cashier" filter dropdown on the Orders page.
+    """Return the staff options for the captain's "Cashier" filter dropdown
+    on the Orders page: cashier users on this terminal's branch PLUS every
+    active waiter (waiters ring orders now too).
 
-    Each row: ``{user, full_name}``. Sorted by full_name.
+    Each row: ``{user, full_name, kind}`` where ``kind`` is ``"cashier"`` or
+    ``"waiter"``. For a waiter the ``user`` value is ``"waiter:<record>"`` —
+    the token the scope resolver decodes to filter by ``custom_waiter``. For
+    a cashier it's the plain user id (filtered by ``owner``). Sorted with
+    cashiers first, then waiters, each by full_name. 2026-07-15.
     """
     if not terminal:
         return []
@@ -422,7 +446,30 @@ def get_cashier_users_for_terminal(terminal):
     if not terminal_branch:
         return []
 
-    return _get_cashier_users_on_branch(terminal_branch)
+    rows = [
+        {"user": c["user"], "full_name": c["full_name"], "kind": "cashier"}
+        for c in _get_cashier_users_on_branch(terminal_branch)
+    ]
+
+    # URY Waiter has no branch link, so list every active waiter — the
+    # orders query is already branch-scoped, so a waiter with no orders on
+    # this branch simply returns nothing when selected.
+    waiters = frappe.get_all(
+        "URY Waiter",
+        filters={"disabled": 0},
+        fields=["name", "full_name"],
+        order_by="full_name asc",
+    )
+    rows += [
+        {
+            "user": f"waiter:{w['name']}",
+            "full_name": w["full_name"] or w["name"],
+            "kind": "waiter",
+        }
+        for w in waiters
+    ]
+
+    return rows
 
 
 # ───────────────────────────────────────────────────────────────────

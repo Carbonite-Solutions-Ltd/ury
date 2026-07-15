@@ -256,14 +256,27 @@ const OrderStatusSidebar = ({
                 className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 appearance-none cursor-pointer"
               >
                 <option value="mine">My Orders</option>
-                <option value="all">All Cashiers</option>
-                {cashierUsers.length > 0 && (
+                <option value="all">All Staff</option>
+                {cashierUsers.some((u) => u.kind !== 'waiter') && (
                   <optgroup label="Pick a Cashier">
-                    {cashierUsers.map((u) => (
-                      <option key={u.user} value={u.user}>
-                        {u.full_name || u.user}
-                      </option>
-                    ))}
+                    {cashierUsers
+                      .filter((u) => u.kind !== 'waiter')
+                      .map((u) => (
+                        <option key={u.user} value={u.user}>
+                          {u.full_name || u.user}
+                        </option>
+                      ))}
+                  </optgroup>
+                )}
+                {cashierUsers.some((u) => u.kind === 'waiter') && (
+                  <optgroup label="Pick a Waiter">
+                    {cashierUsers
+                      .filter((u) => u.kind === 'waiter')
+                      .map((u) => (
+                        <option key={u.user} value={u.user}>
+                          {u.full_name || u.user}
+                        </option>
+                      ))}
                   </optgroup>
                 )}
               </select>

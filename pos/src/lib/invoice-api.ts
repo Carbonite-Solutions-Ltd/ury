@@ -69,8 +69,11 @@ export interface POSInvoice {
 }
 
 export interface CashierUser {
+  /** Cashier: the user id (filtered by owner). Waiter: "waiter:<record>". */
   user: string;
   full_name: string;
+  /** "cashier" or "waiter" — drives the dropdown grouping. */
+  kind?: 'cashier' | 'waiter';
 }
 
 /**
