@@ -467,7 +467,7 @@ def get_custom_fields():
 				"insert_after": "qz_print",
 				"label": "QZ Host",
 				"default": "localhost",
-				"description": "QZ Tray websocket host. Almost always 'localhost' — QZ Tray runs on the cashier's machine and the browser connects over localhost. Only change this for the rare case of QZ Tray running on a different machine on the same LAN.",
+				"description": "QZ Tray websocket host. Leave as 'localhost' when QZ Tray runs on the cashier's own PC (the usual desktop setup). Set this to the LAN IP of a machine running QZ Tray as a 'print server' (e.g. 192.168.1.50) so tablets — which can't run QZ Tray themselves — can print to a networked printer. Both the bill and the KOTs are sent to this host. A non-localhost host connects over secure WSS (port 8181), which needs QZ Tray's certificate trusted on the tablet.",
 				"translatable": 0,
 			},
 			# Shift hours / shift system fields. Same dual-source-of-truth
@@ -481,7 +481,7 @@ def get_custom_fields():
 				"label": "Shift System Mode",
 				"default": "Disabled",
 				"options": "Disabled\nURY Shift\nHRMS Shift Type",
-				"description": "How to gate POS Opening Entry creation. \"Disabled\" falls back to the legacy Shift Length (Hours) reminder. \"URY Shift\" uses URY Shift Assignment + URY Shift records to enforce a per-user start/end window. \"HRMS Shift Type\" uses ERPNext HRMS Shift Type + Shift Assignment via the Employee linked to the user (requires hrms app installed).",
+				"description": "How to gate POS Opening Entry creation. \"Disabled\" falls back to the legacy Shift Length (Hours) reminder. \"ExPOS Shift\" uses ExPOS Shift Assignment + ExPOS Shift records to enforce a per-user start/end window. \"HRMS Shift Type\" uses ERPNext HRMS Shift Type + Shift Assignment via the Employee linked to the user (requires hrms app installed).",
 			},
 			{
 				"fieldname": "custom_shift_hours",
@@ -491,7 +491,7 @@ def get_custom_fields():
 				"default": "0",
 				"non_negative": 1,
 				"depends_on": "eval:!doc.custom_shift_system_mode || doc.custom_shift_system_mode == 'Disabled'",
-				"description": "Legacy mode only. Length of a single shift in hours. Hidden when Shift System Mode is set to URY Shift or HRMS Shift Type.",
+				"description": "Legacy mode only. Length of a single shift in hours. Hidden when Shift System Mode is set to ExPOS Shift or HRMS Shift Type.",
 			},
 			{
 				"fieldname": "custom_block_orders_after_shift_end",
@@ -513,7 +513,7 @@ def get_custom_fields():
 				"insert_after": "custom_block_orders_after_shift_end",
 				"label": "Restrict Merge Orders to Captain",
 				"default": "0",
-				"description": "When checked, only URY Captain / URY Manager / Administrator users can merge orders on this terminal.",
+				"description": "When checked, only ExPOS Captain / ExPOS Manager / Administrator users can merge orders on this terminal.",
 			},
 			# Per-profile escape hatch for the "no stock in warehouse"
 			# blocker on Payment. When checked, the on_update hook walks
@@ -540,7 +540,7 @@ def get_custom_fields():
 				"insert_after": "custom_allow_negative_stock_on_menu_items",
 				"label": "Restrict Returns to Captain",
 				"default": "1",
-				"description": "When checked (default), only URY Captain / URY Manager / Administrator users can issue returns from the Orders page right panel. Flip to OFF to let cashiers return their own orders too.",
+				"description": "When checked (default), only ExPOS Captain / ExPOS Manager / Administrator users can issue returns from the Orders page right panel. Flip to OFF to let cashiers return their own orders too.",
 			},
 			# Returns master switch (2026-06-05). OFF by default - the
 			# Return Orders feature is hidden everywhere and the backend
@@ -575,7 +575,7 @@ def get_custom_fields():
 				"insert_after": "custom_max_invoice_transfers",
 				"label": "Use Waiter",
 				"default": "0",
-				"description": "When ON, the POS asks the cashier to pick a waiter (URY Waiter) when creating a new order. The waiter is stamped on the order and shown on the Waiters page.",
+				"description": "When ON, the POS asks the cashier to pick a waiter (ExPOS Waiter) when creating a new order. The waiter is stamped on the order and shown on the Waiters page.",
 			},
 			# Bill reprint cap (2026-06-10). Total times a CASHIER can print
 			# one bill. Captains/Managers/Admins are unlimited.
@@ -696,7 +696,7 @@ def get_custom_fields():
 				"fieldname": "custom_kot_naming_series",
 				"fieldtype": "Data",
 				"insert_after": "custom_kot_settings",
-				"label": "URY KOT Naming Series",
+				"label": "ExPOS KOT Naming Series",
 				"default": "KOT-.YYYY.-.####",
 				"description": "Frappe naming-series pattern for auto-generated KOT docs. Default produces KOT-2026-0001, KOT-2026-0002, etc.",
 			},
@@ -749,7 +749,7 @@ def get_custom_fields():
 				"label": "Kitchen KOT Printer",
 				"options": "URY Printer",
 				"depends_on": "eval:doc.custom_print_mode != 'Disabled' && doc.custom_kds_routing_mode != 'URY Production Unit'",
-				"description": "The printer in the kitchen (food KOT target). Falls back to Bill when empty. Hidden in URY Production Unit mode — routing is set on each URY Production Unit's Printers table instead.",
+				"description": "The printer in the kitchen (food KOT target). Falls back to Bill when empty. Hidden in ExPOS Production Unit mode — routing is set on each ExPOS Production Unit's Printers table instead.",
 			},
 			{
 				"fieldname": "custom_bar_kot_printer",
@@ -758,7 +758,7 @@ def get_custom_fields():
 				"label": "Bar KOT Printer",
 				"options": "URY Printer",
 				"depends_on": "eval:doc.custom_print_mode != 'Disabled' && doc.custom_kds_routing_mode != 'URY Production Unit'",
-				"description": "The printer at the bar (drinks KOT target). Falls back to Kitchen, then Bill. Hidden in URY Production Unit mode.",
+				"description": "The printer at the bar (drinks KOT target). Falls back to Kitchen, then Bill. Hidden in ExPOS Production Unit mode.",
 			},
 			{
 				"fieldname": "custom_parcel_kot_printer",
@@ -767,7 +767,7 @@ def get_custom_fields():
 				"label": "Parcel KOT Printer",
 				"options": "URY Printer",
 				"depends_on": "eval:doc.custom_print_mode != 'Disabled' && doc.custom_kds_routing_mode != 'URY Production Unit'",
-				"description": "The printer for parcel/takeaway KOTs. Falls back to Kitchen. Hidden in URY Production Unit mode.",
+				"description": "The printer for parcel/takeaway KOTs. Falls back to Kitchen. Hidden in ExPOS Production Unit mode.",
 			},
 			{
 				"fieldname": "custom_drinks_kot_route",
@@ -777,7 +777,7 @@ def get_custom_fields():
 				"options": "Bar\nKitchen\nBill",
 				"default": "Bar",
 				"depends_on": "eval:doc.custom_print_mode != 'Disabled' && doc.custom_kds_routing_mode != 'URY Production Unit'",
-				"description": "Where drinks-department KOTs print. Drinks items are detected via URY Menu Course's Department. Hidden in URY Production Unit mode.",
+				"description": "Where drinks-department KOTs print. Drinks items are detected via ExPOS Menu Course's Department. Hidden in ExPOS Production Unit mode.",
 			},
 			{
 				"fieldname": "custom_food_kot_route",
@@ -787,7 +787,7 @@ def get_custom_fields():
 				"options": "Kitchen\nBar\nBill",
 				"default": "Kitchen",
 				"depends_on": "eval:doc.custom_print_mode != 'Disabled' && doc.custom_kds_routing_mode != 'URY Production Unit'",
-				"description": "Where food-department KOTs print. Defaults to Kitchen. Hidden in URY Production Unit mode.",
+				"description": "Where food-department KOTs print. Defaults to Kitchen. Hidden in ExPOS Production Unit mode.",
 			},
 			{
 				"fieldname": "custom_takeaway_kot_route",
@@ -797,7 +797,7 @@ def get_custom_fields():
 				"options": "Parcel\nKitchen",
 				"default": "Parcel",
 				"depends_on": "eval:doc.custom_print_mode != 'Disabled' && doc.custom_kds_routing_mode != 'URY Production Unit'",
-				"description": "Where parcel/takeaway KOTs print. Fallback to Kitchen if the Parcel printer is empty. Hidden in URY Production Unit mode.",
+				"description": "Where parcel/takeaway KOTs print. Fallback to Kitchen if the Parcel printer is empty. Hidden in ExPOS Production Unit mode.",
 			},
 			{
 				"fieldname": "custom_print_fallback_mode",
@@ -816,7 +816,7 @@ def get_custom_fields():
 				"label": "Auto-print Drinks KOT on Order",
 				"default": "0",
 				"depends_on": "eval:doc.custom_print_mode != 'Disabled' && doc.custom_kds_routing_mode != 'URY Production Unit'",
-				"description": "When off (default), Drinks KOTs are held until the cashier prints the bill at payment time. When on, drinks auto-print at order time like food. Hidden in URY Production Unit mode.",
+				"description": "When off (default), Drinks KOTs are held until the cashier prints the bill at payment time. When on, drinks auto-print at order time like food. Hidden in ExPOS Production Unit mode.",
 			},
 			{
 				"fieldname": "custom_kds_routing_mode",
@@ -826,7 +826,7 @@ def get_custom_fields():
 				"options": "Menu Course\nURY Production Unit",
 				"default": "Menu Course",
 				"depends_on": "eval:doc.custom_print_mode != 'Disabled'",
-				"description": "Controls how URYMosaic groups KOTs into screens. Menu Course (default): one KOT per order, split by item course department; KDS URL is /URYMosaic/Food|Drinks|Other|All. URY Production Unit: legacy multi-KOT-per-order flow split by Production Unit; KDS URL is /URYMosaic/<production-name>.",
+				"description": "Controls how URYMosaic groups KOTs into screens. Menu Course (default): one KOT per order, split by item course department; KDS URL is /URYMosaic/Food|Drinks|Other|All. ExPOS Production Unit: legacy multi-KOT-per-order flow split by Production Unit; KDS URL is /URYMosaic/<production-name>.",
 			},
 			{
 				"fieldname": "custom_service_policy_time",

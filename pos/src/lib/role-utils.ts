@@ -200,6 +200,25 @@ export const canSplitOrders = (user: User | null): boolean => {
 };
 
 /**
+ * Whether the current user is a "waiter only" — a URY Waiter who isn't an
+ * elevated user (Administrator / System Manager / URY Manager / URY Captain).
+ * These users get the SIMPLIFIED POS: they place orders + see their own
+ * orders/tables, but do no payments, invoicing, printing or shift close
+ * (the cashier does all that). 2026-07-14.
+ *
+ * Matches the backend self-waiter gate (`_get_self_waiter_for_user`): the
+ * URY Waiter role + not elevated. A user who is ALSO a cashier is still
+ * treated as a waiter here — don't give the waiter role to a cashier.
+ */
+export const isWaiterOnly = (user: User | null): boolean => {
+  if (!user || !user.roles) return false;
+  if (user.name === 'Administrator') return false;
+  const elevated = ['System Manager', 'URY Manager', 'URY Captain'];
+  if (user.roles.some((role) => elevated.includes(role))) return false;
+  return user.roles.includes('URY Waiter');
+};
+
+/**
  * Captain / Manager / Admin tier. The canonical "elevated user" check
  * used for order-lifecycle actions a plain cashier shouldn't have:
  *   - Cancelling an order (the X on a draft) — 2026-06-11.

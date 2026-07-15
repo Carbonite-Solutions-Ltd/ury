@@ -1146,6 +1146,41 @@ def _resolve_terminal_bill_printer(pos_profile_doc, terminal):
 # Waiter feature (2026-06-10)
 # ---------------------------------------------------------------------------
 
+
+def _get_self_waiter_for_user(user=None):
+    """The URY Waiter this user rings orders AS, or None (2026-07-14).
+
+    A "self-serve waiter" is a NON-elevated user (not Administrator /
+    System Manager / URY Manager / URY Captain) who has the **URY Waiter**
+    role AND is linked to a URY Waiter record (`URY Waiter.user`). For such
+    a user the POS auto-assigns her own waiter to every order and hides the
+    picker. Cashiers, captains, managers and admins get None — they pick the
+    waiter as before. Returns {name, full_name, mobile_number} or None.
+    """
+    user = user or frappe.session.user
+    if user == "Administrator":
+        return None
+    roles = set(frappe.get_roles(user))
+    # Elevated roles always pick, even if somehow linked to a waiter.
+    if roles & {"System Manager", "URY Manager", "URY Captain"}:
+        return None
+    if "URY Waiter" not in roles:
+        return None
+    return frappe.db.get_value(
+        "URY Waiter",
+        {"user": user, "disabled": 0},
+        ["name", "full_name", "mobile_number"],
+        as_dict=True,
+    )
+
+
+@frappe.whitelist()
+def get_self_waiter():
+    """Whitelisted wrapper around _get_self_waiter_for_user for the session
+    user. Returns the linked waiter dict or None."""
+    return _get_self_waiter_for_user()
+
+
 @frappe.whitelist()
 def get_waiters(query=None):
     """Active URY Waiters for the order-time picker. Optional name/mobile
@@ -1499,6 +1534,10 @@ def getPosProfile(terminal=None):
         "custom_enable_returns": enable_returns,
         "custom_max_invoice_transfers": max_invoice_transfers,
         "custom_use_waiter": use_waiter,
+        # When the logged-in user is a self-serve waiter (URY Waiter role +
+        # linked URY Waiter, non-elevated), the POS auto-assigns her waiter
+        # and hides the picker. None for cashiers/captains/managers/admins.
+        "self_waiter": _get_self_waiter_for_user(),
         "custom_max_bill_prints": max_bill_prints,
         "custom_min_screen_width": min_screen_width,
         "custom_ihotel_enabled": ihotel_enabled,
@@ -3040,12 +3079,18 @@ def get_latest_kot():
         profile_row = frappe.db.get_value(
             "POS Profile",
             pos_profile,
-            ["qz_print", "custom_print_mode"],
+            ["qz_print", "custom_print_mode", "qz_host"],
             as_dict=True,
         ) or {}
         legacy_qz = int(profile_row.get("qz_print") or 0) == 1
         new_mode = profile_row.get("custom_print_mode") or ""
         new_qz = new_mode == "QZ Tray"
+        # QZ websocket host. Empty ⇒ localhost (cashier's own machine).
+        # A remote value = the LAN "print server" gateway so tablets that
+        # can't run QZ themselves still reach a physical printer. The
+        # frontend passes this to printKotWithQz so KOTs go to the same
+        # gateway as the bill (2026-07-14).
+        qz_host_val = profile_row.get("qz_host") or "localhost"
 
         if not legacy_qz and not new_qz:
             return {
@@ -3125,6 +3170,7 @@ def get_latest_kot():
                     "kot_printed": kot_rows[0].kot_printed,
                     "production_unit_mode": 1,
                     "print_jobs": jobs,
+                    "qz_host": qz_host_val,
                 }
             return {
                 "debug": f"pu_mode_{reason}",
@@ -3241,6 +3287,7 @@ def get_latest_kot():
                     "pos_profile": pos_profile,
                     "kot_printed": kot_rows[0].kot_printed,
                     "print_jobs": print_jobs,
+                    "qz_host": qz_host_val,
                 }
             # Plan was empty — fall through to legacy so we still
             # print SOMETHING during the migration window.
@@ -3268,6 +3315,7 @@ def get_latest_kot():
             "pos_profile": pos_profile,
             "kot_printed": kot_rows[0].kot_printed,
             "printers": printer_settings,
+            "qz_host": qz_host_val,
         }
 
     except Exception as e:
@@ -3345,6 +3393,14 @@ def print_pending_kots_for_invoice(invoice):
     order_type = invoice_row.order_type
     invoice_terminal = invoice_row.custom_terminal
 
+    # QZ websocket host for this profile. Empty ⇒ localhost. A remote value
+    # is the LAN print-server gateway (so tablets can print). The frontend
+    # passes this to printKotWithQz so held KOTs fire to the same gateway as
+    # the bill (2026-07-14).
+    qz_host_val = (
+        frappe.db.get_value("POS Profile", pos_profile, "qz_host") or "localhost"
+    )
+
     kds_mode = (
         frappe.db.get_value(
             "POS Profile", pos_profile, "custom_kds_routing_mode"
@@ -3399,6 +3455,7 @@ def print_pending_kots_for_invoice(invoice):
             "invoice": invoice,
             "print_jobs": pu_print_jobs,
             "production_unit_mode": 1,
+            "qz_host": qz_host_val,
         }
 
     # Find every un-fully-printed KOT for this invoice. kot_printed=0
@@ -3503,7 +3560,7 @@ def print_pending_kots_for_invoice(invoice):
                 }
             )
 
-    return {"invoice": invoice, "print_jobs": print_jobs}
+    return {"invoice": invoice, "print_jobs": print_jobs, "qz_host": qz_host_val}
 
 
 @frappe.whitelist()

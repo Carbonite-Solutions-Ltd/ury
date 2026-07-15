@@ -1,13 +1,32 @@
 import qz from './qz-init';
 import axios from 'axios';
 
+/**
+ * Whether to open the QZ websocket over WSS (secure, port 8181) vs WS
+ * (insecure, port 8182).
+ *
+ * localhost / 127.0.0.1 → insecure WS is fine: loopback is exempt from
+ * the browser's mixed-content block, so `ws://localhost` works even when
+ * the POS page is served over HTTPS (today's desktop behaviour).
+ *
+ * A REMOTE host (the LAN "print server" gateway that lets tablets print
+ * without running QZ themselves) → MUST use WSS. From an HTTPS POS page,
+ * `ws://<gateway-ip>` is mixed content and browsers silently block it, so
+ * only `wss://<gateway-ip>:8181` connects. That in turn needs QZ Tray's
+ * TLS cert trusted on the tablet (see CLAUDE.md QZ tablet-printing notes).
+ */
+function qzUsesSecure(host: string): boolean {
+  const h = (host || '').trim().toLowerCase();
+  return !(h === '' || h === 'localhost' || h === '127.0.0.1');
+}
+
 export async function loadQzPrinter(host: string): Promise<void> {
   qz.security.setCertificatePromise((resolve: (data: string) => void, reject: (err?: string) => void) => {
     axios.get('/assets/ury/pos/assets/ury/files/cert.pem')
       .then(({ data }) => resolve(data))
       .catch((err) => reject('Error fetching certificate: ' + String(err)));
   });
-  
+
   // Bypass signature - return empty string
   qz.security.setSignaturePromise((toSign: string) => {
     return (resolve: (sig: string) => void) => {
@@ -15,9 +34,11 @@ export async function loadQzPrinter(host: string): Promise<void> {
       resolve('');
     };
   });
-  
+
   if (!qz.websocket.isActive()) {
-    await qz.websocket.connect({ host, usingSecure: false });
+    const usingSecure = qzUsesSecure(host);
+    console.log(`🔌 QZ connect host=${host || 'localhost'} secure=${usingSecure}`);
+    await qz.websocket.connect({ host: host || 'localhost', usingSecure });
   }
 }
 
@@ -67,9 +88,11 @@ export async function printWithQz(
   }
 }
 
-export async function printKotWithQz(printerName: string, htmlToPrint: string): Promise<void> {
-  const host = 'localhost';
-  
+export async function printKotWithQz(
+  printerName: string,
+  htmlToPrint: string,
+  host: string = 'localhost',
+): Promise<void> {
   const printing = async () => {
     console.log(`🖨️ Printing to specific printer: ${printerName}`);
     

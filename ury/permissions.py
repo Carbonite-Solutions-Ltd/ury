@@ -79,6 +79,11 @@ READ_ONLY_DOCTYPES = [
     # ISSOnline URL.
     "URY Biometric Settings",
     "URY Biometric Enrollment",
+    # Waiter self-service (2026-07-14). All URY roles read waiter records
+    # (the picker + self-waiter resolution). The URY Waiter role gets the
+    # full POS baseline below so a waiter can log in and ring her own
+    # orders.
+    "URY Waiter",
 ]
 
 # Doctypes the POS creates / updates / submits. Each entry includes the
@@ -195,7 +200,9 @@ CAPTAIN_EXTRA_WRITE_DOCTYPES: list[tuple[str, dict]] = [
     ),
 ]
 
-ROLES = ("URY Cashier", "URY Captain", "URY Manager")
+# URY Waiter is a self-serve waiter who logs in and rings her own orders —
+# she needs the same POS baseline as a cashier (create POS Invoice etc.).
+ROLES = ("URY Cashier", "URY Captain", "URY Manager", "URY Waiter")
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -210,6 +217,12 @@ def ensure_role_permissions():
     """
     inserted = 0
     skipped = 0
+
+    # Ensure the URY roles exist before wiring perms. Fixtures only import
+    # on install, not migrate, so a role added in a newer release (e.g.
+    # URY Waiter) won't exist on an already-installed site otherwise.
+    for role in ROLES:
+        _ensure_role_exists(role)
 
     for role in ROLES:
         for doctype in READ_ONLY_DOCTYPES:
@@ -244,6 +257,18 @@ def ensure_role_permissions():
 # ───────────────────────────────────────────────────────────────────
 # Internals
 # ───────────────────────────────────────────────────────────────────
+
+
+def _ensure_role_exists(role_name: str) -> None:
+    """Create a URY Role if it doesn't already exist. Idempotent."""
+    if frappe.db.exists("Role", role_name):
+        return
+    doc = frappe.get_doc(
+        {"doctype": "Role", "role_name": role_name, "desk_access": 1}
+    )
+    doc.flags.ignore_permissions = True
+    doc.insert()
+    print(f"[URY perms] created role: {role_name}")
 
 
 def _ensure_perm(

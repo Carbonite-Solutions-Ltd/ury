@@ -13,6 +13,9 @@ import NotificationToast from './NotificationToast';
 import { BarChart3 } from 'lucide-react';
 import { getWaiterPendingOrderCount } from '../lib/waiter-api';
 import { usePOSStore } from '../store/pos-store';
+import { useRootStore } from '../store/root-store';
+import type { RootState } from '../store/root-store';
+import { isWaiterOnly } from '../lib/role-utils';
 
 // @ts-ignore
 const socket = window.frappe?.socketio || null;
@@ -23,6 +26,9 @@ const Footer = () => {
   const [currentNotification, setCurrentNotification] = useState<any>(null);
   // The Waiters tab only exists when the POS Profile uses waiters.
   const useWaiter = usePOSStore((s) => s.posProfile?.custom_use_waiter === 1);
+  // A waiter-only user gets a trimmed nav (no Reports / Waiters).
+  const user = useRootStore((state: RootState) => state.user);
+  const waiterMode = isWaiterOnly(user);
 
   const fetchWaiterPendingCount = async () => {
     setWaiterPendingCount(await getWaiterPendingOrderCount());
@@ -91,17 +97,25 @@ const Footer = () => {
     setCurrentNotification(null);
   };
 
-  const navItems = [
-  { icon: LayoutGrid, label: 'POS', path: '/' },
-  { icon: Table, label: 'Table', path: '/table' },
-  { icon: ClipboardList, label: 'Orders', path: '/orders' },
-  ...(useWaiter
-    ? [{ icon: Users, label: 'Waiters', path: '/waiters', badge: waiterPendingCount }]
-    : []),
-  { icon: BarChart3, label: 'Reports', path: '/reports' },
-  { icon: Bell, label: 'Alerts', path: '/notifications', badge: notificationCount },
-
-];
+  // Waiter-only users get a focused 4-tab nav: place orders, tables, their
+  // own orders, and kitchen alerts. Everyone else sees the full cashier nav.
+  const navItems = waiterMode
+    ? [
+        { icon: LayoutGrid, label: 'POS', path: '/' },
+        { icon: Table, label: 'Tables', path: '/table' },
+        { icon: ClipboardList, label: 'My Orders', path: '/orders' },
+        { icon: Bell, label: 'Alerts', path: '/notifications', badge: notificationCount },
+      ]
+    : [
+        { icon: LayoutGrid, label: 'POS', path: '/' },
+        { icon: Table, label: 'Table', path: '/table' },
+        { icon: ClipboardList, label: 'Orders', path: '/orders' },
+        ...(useWaiter
+          ? [{ icon: Users, label: 'Waiters', path: '/waiters', badge: waiterPendingCount }]
+          : []),
+        { icon: BarChart3, label: 'Reports', path: '/reports' },
+        { icon: Bell, label: 'Alerts', path: '/notifications', badge: notificationCount },
+      ];
 
   return (
     <>

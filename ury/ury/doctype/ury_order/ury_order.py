@@ -308,6 +308,15 @@ def sync_order(
     _apply_pos_profile_taxes(invoice, pos_profile)
     invoice.cashier = cashier
     invoice.waiter = waiter
+    # Self-serve waiter (2026-07-14): if the ringing user is a URY Waiter
+    # linked to a URY Waiter record, force HER waiter regardless of what the
+    # client sent — she can't ring orders for anyone else. Non-waiters
+    # (cashier/captain/manager/admin) get None here and keep the picked one.
+    from ury.ury_pos.api import _get_self_waiter_for_user
+
+    _self_waiter = _get_self_waiter_for_user()
+    if _self_waiter:
+        selected_waiter = _self_waiter.get("name")
     # Waiter feature (2026-06-10): the picked URY Waiter. Only stamp it when
     # supplied (use_waiter on + first-order pick); never clear an existing
     # waiter on a later update where the frontend doesn't send one.

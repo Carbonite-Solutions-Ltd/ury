@@ -33,10 +33,15 @@ async function checkForNewKots() {
       print_jobs,
       kot_printed,
       production_unit_mode,
+      qz_host,
     } = result.message as {
       kot_name?: string;
       pos_profile?: string;
       kot_printed?: number;
+      // QZ websocket host for this profile. Empty/absent ⇒ localhost.
+      // A remote value routes KOTs to the LAN print-server gateway so
+      // tablets (which can't run QZ) still reach a printer (2026-07-14).
+      qz_host?: string;
       // Set to 1 when the POS Profile's KDS routing mode is
       // "URY Production Unit". In that case each print_job's
       // `department` field is the production name (not Food/Drinks/
@@ -85,7 +90,7 @@ async function checkForNewKots() {
           console.log(
             `🖨️ Printing ${isPuMode ? 'PU ' : ''}${job.department} KOT ${kot_name} to ${job.printer}`,
           );
-          await printKotWithQz(job.printer, job.html);
+          await printKotWithQz(job.printer, job.html, qz_host);
           console.log(
             `✅ ${job.department} KOT printed to ${job.printer}`,
           );
@@ -126,8 +131,9 @@ async function checkForNewKots() {
         // Fetch KOT HTML (legacy path renders the full KOT per printer)
         const html = await getKotPrintHtml(kot_name, printFormat);
 
-        // Print with QZ to specific printer
-        await printKotWithQz(printerName, html);
+        // Print with QZ to specific printer (via the profile's qz_host
+        // gateway when set, else localhost).
+        await printKotWithQz(printerName, html, qz_host);
 
         console.log(`✅ KOT printed to ${printerName}`);
 
@@ -263,6 +269,9 @@ export async function firePendingKotsForInvoice(
     // name, not a course department — there's no partial-fire tracking, so
     // we mark the WHOLE KOT printed after firing (not per-department).
     const isPuMode = result?.message?.production_unit_mode === 1;
+    // QZ gateway host for this profile (empty ⇒ localhost). Routes held
+    // KOTs to the same print-server the bill uses (2026-07-14).
+    const qzHost = result?.message?.qz_host as string | undefined;
     const print_jobs = result?.message?.print_jobs as
       | Array<{
           printer: string;
@@ -286,7 +295,7 @@ export async function firePendingKotsForInvoice(
         console.log(
           `🖨️ Firing pending ${job.department} KOT ${job.kot_name} to ${job.printer} (invoice ${invoice})`,
         );
-        await printKotWithQz(job.printer, job.html);
+        await printKotWithQz(job.printer, job.html, qzHost);
         console.log(
           `✅ Pending ${job.department} KOT printed to ${job.printer}`,
         );

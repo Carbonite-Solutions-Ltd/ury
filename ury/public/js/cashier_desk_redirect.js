@@ -29,9 +29,11 @@
 	var hasElevated = elevated.some(function (role) {
 		return frappe.user.has_role(role);
 	});
-	var isCashier = frappe.user.has_role("URY Cashier");
+	// POS-only roles (cashier + self-serve waiter) get bounced to /pos.
+	var isPosOnly =
+		frappe.user.has_role("URY Cashier") || frappe.user.has_role("URY Waiter");
 
-	if (isCashier && !hasElevated) {
+	if (isPosOnly && !hasElevated) {
 		// Replace (not assign) so the desk doesn't sit in browser history.
 		window.location.replace("/pos");
 	}

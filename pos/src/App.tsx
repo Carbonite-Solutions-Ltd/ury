@@ -10,6 +10,7 @@ import Notifications from './pages/Notifications';
 import BiometricEnrollment from './pages/BiometricEnrollment';
 import BiometricLogin from './pages/BiometricLogin';
 import AuthGuard from './components/AuthGuard';
+import RequireNotWaiter from './components/RequireNotWaiter';
 import POSOpeningProvider from './components/POSOpeningProvider';
 import ShiftHoursBanner from './components/ShiftHoursBanner';
 import ScreenSizeProvider from './components/ScreenSizeProvider';
@@ -300,8 +301,22 @@ function App() {
                     <Route path="/" element={<POS />} />
                     <Route path="/orders" element={<Orders />} />
                     <Route path="/table" element={<Table />} />
-                    <Route path="/waiters" element={<Waiters />} />
-                    <Route path="/reports" element={<Reports />} />
+                    <Route
+                      path="/waiters"
+                      element={
+                        <RequireNotWaiter>
+                          <Waiters />
+                        </RequireNotWaiter>
+                      }
+                    />
+                    <Route
+                      path="/reports"
+                      element={
+                        <RequireNotWaiter>
+                          <Reports />
+                        </RequireNotWaiter>
+                      }
+                    />
                     <Route path="/notifications" element={<Notifications />} />
                     <Route path="/biometric-enrollment" element={<BiometricEnrollment />} />
                   </Routes>
