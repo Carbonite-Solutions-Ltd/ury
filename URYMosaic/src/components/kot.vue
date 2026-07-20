@@ -1,34 +1,10 @@
 <template>
-  <div class="mx-auto p-6 mb-16 relative">
-    <!-- Active / Served toggle (2026-07-16). "Served" lets the kitchen undo
-         a mistaken serve; it lists the most recently served first. -->
-    <div class="mb-4 flex items-center gap-2">
-      <button
-        type="button"
-        @click="showActive"
-        :class="[
-          'px-4 py-2 rounded-full font-semibold transition',
-          viewMode === 'active'
-            ? 'bg-gray-900 text-white shadow'
-            : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50',
-        ]"
-      >
-        Active orders
-      </button>
-      <button
-        type="button"
-        @click="showServed"
-        :class="[
-          'px-4 py-2 rounded-full font-semibold transition',
-          viewMode === 'served'
-            ? 'bg-gray-900 text-white shadow'
-            : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50',
-        ]"
-      >
-        Served
-      </button>
-    </div>
+  <!-- Single root on purpose: masonryLoading() uses this.$el.querySelector,
+       and a multi-root (fragment) component would make $el a comment node. -->
+  <div>
+    <Header :view-mode="viewMode" @set-view="onSetView" />
 
+    <div class="mx-auto p-4 mb-16 relative">
     <!-- Served list + reinstate (2026-07-16) -->
     <div v-if="viewMode === 'served'" class="max-w-3xl">
       <p v-if="servedLoading" class="text-gray-600">Loading served orders…</p>
@@ -439,6 +415,7 @@
     >
       {{ statusMessage }}
     </div>
+    </div>
   </div>
 </template>
 
@@ -446,6 +423,7 @@
 import { FrappeApp } from "frappe-js-sdk";
 import Masonry from "masonry-layout";
 import io from "socket.io-client";
+import Header from "./Header.vue";
 
 let host = window.location.hostname;
 let port = window.location.port;
@@ -494,6 +472,7 @@ initializeSocket(); // Initialize the socket after fetching the site name
 const frappe = new FrappeApp(url);
 export default {
   // inject: ["$auth", "$socket"],
+  components: { Header },
   data() {
     return {
       kot: [],
@@ -551,11 +530,17 @@ export default {
         /* ignore */
       }
     },
-    /** Should we ring at all? `custom_kot_alert` is the admin's mute switch;
-     *  an UNSET value (never configured) still rings, so the default bell
-     *  works out of the box. Explicit 0 stays silent. */
+    /** Always ring on a new order (2026-07-16).
+     *
+     *  This used to gate on `custom_kot_alert`, which sounded reasonable but
+     *  is a **Check** field — so it's ALWAYS 0 or 1, never null. There is no
+     *  "unset" state to fall back on, which meant every site that hadn't
+     *  explicitly ticked it sat at 0 and got no sound at all. The bell is
+     *  meant to be the out-of-the-box default, so it always rings; the POS
+     *  Profile's `custom_kot_alert_sound` overrides WHICH sound plays, not
+     *  whether it plays. */
     shouldRing() {
-      return this.audio_alert !== 0;
+      return true;
     },
     auth() {
       return new Promise((resolve, reject) => {
@@ -681,6 +666,11 @@ export default {
     },
 
     // --- Served orders + reinstate (2026-07-16) ------------------------
+    /** Navbar toggle handler (Header emits 'set-view'). */
+    onSetView(mode) {
+      if (mode === "served") this.showServed();
+      else this.showActive();
+    },
     async showServed() {
       this.viewMode = "served";
       this.servedLoading = true;
