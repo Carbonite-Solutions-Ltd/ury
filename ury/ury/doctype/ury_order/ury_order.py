@@ -306,7 +306,6 @@ def sync_order(
     # Pull the tax template + tax category from the POS Profile (if set
     # there) onto the draft at creation time. See _apply_pos_profile_taxes.
     _apply_pos_profile_taxes(invoice, pos_profile)
-    invoice.cashier = cashier
     invoice.waiter = waiter
     # Self-serve waiter (2026-07-14): if the ringing user is a URY Waiter
     # linked to a URY Waiter record, force HER waiter regardless of what the
@@ -317,6 +316,13 @@ def sync_order(
     _self_waiter = _get_self_waiter_for_user()
     if _self_waiter:
         selected_waiter = _self_waiter.get("name")
+    # Cashier attribution (2026-07-16): a self-serve waiter must NOT be
+    # recorded as the cashier — she only PLACES the order. The cashier field
+    # ("who took the sale") is stamped when a real cashier PRINTS/bills it
+    # (qz_print_update). So only stamp it here for a non-waiter; on a waiter's
+    # order it stays blank until a cashier bills it.
+    if not _self_waiter:
+        invoice.cashier = cashier
     # Waiter feature (2026-06-10): the picked URY Waiter. Only stamp it when
     # supplied (use_waiter on + first-order pick); never clear an existing
     # waiter on a later update where the frontend doesn't send one.

@@ -291,14 +291,22 @@ def qz_print_update(invoice):
         current_count = (
             frappe.db.get_value("POS Invoice", invoice, "custom_print_count") or 0
         )
+        printed_values = {
+            "invoice_printed": 1,
+            "custom_print_count": int(current_count) + 1,
+        }
+        # Cashier attribution (2026-07-16): whoever PRINTS/bills the order is
+        # the cashier who "took the sale" — stamp them here (unless a
+        # self-serve waiter somehow triggered the print; she's never the
+        # cashier). This is how a waiter-placed order gets attributed to the
+        # cashier who processed it, and how the cashier's Daily Sales pick it
+        # up (get_daily_sales scopes by owner OR cashier).
+        from ury.ury_pos.api import _get_self_waiter_for_user
+
+        if not _get_self_waiter_for_user():
+            printed_values["cashier"] = frappe.session.user
         frappe.db.set_value(
-            "POS Invoice",
-            invoice,
-            {
-                "invoice_printed": 1,
-                "custom_print_count": int(current_count) + 1,
-            },
-            update_modified=False,
+            "POS Invoice", invoice, printed_values, update_modified=False
         )
         frappe.db.commit()
     except Exception:

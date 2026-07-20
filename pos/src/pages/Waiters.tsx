@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Users,
   RefreshCw,
-  Edit,
+  Receipt,
   Loader2,
   UserRound,
   ClipboardList,
@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { Input } from '../components/ui/input';
 import { usePOSStore } from '../store/pos-store';
+import { useRootStore } from '../store/root-store';
 import {
   getWaitersWithPendingOrders,
   reassignOrderWaiter,
@@ -51,6 +52,7 @@ const moveOrderLocally = (
 const Waiters = () => {
   const navigate = useNavigate();
   const posStore = usePOSStore();
+  const openOrderByName = useRootStore((s) => s.openOrderByName);
   const [waiters, setWaiters] = useState<WaiterWithOrders[]>([]);
   const [loading, setLoading] = useState(true);
   const [editLoadingId, setEditLoadingId] = useState<string | null>(null);
@@ -90,57 +92,18 @@ const Waiters = () => {
     load();
   }, []);
 
-  // Open a waiter's order in the POS for editing. Mirrors Orders.tsx
-  // handleEditOrder — fetch the order, hydrate the POS store, navigate home.
-  const handleEditOrder = async (orderName: string) => {
+  // Cashier clicks a waiter's order → open it on the Orders page (ready to
+  // print + take payment), rather than hydrating it into the POS for editing.
+  // The Waiters page is cashier/captain-only (waiters can't reach it), so
+  // this is always the cashier flow. 2026-07-16.
+  const handleOpenInOrders = async (orderName: string) => {
     setEditLoadingId(orderName);
     try {
-      const res = await fetch(
-        `/api/method/frappe.client.get?doctype=POS+Invoice&name=${encodeURIComponent(
-          orderName
-        )}`
-      );
-      if (!res.ok) throw new Error('Failed to fetch order details');
-      const data = await res.json();
-      const order = data.message;
-      posStore.resetOrderState();
-      posStore.setSelectedOrderType(order.order_type);
-      posStore.setOrderForUpdate(order.name);
-      if (order.restaurant_table) {
-        posStore.setSelectedTable(
-          order.restaurant_table,
-          order.custom_restaurant_room || null,
-          true
-        );
-      }
-      posStore.setSelectedCustomer({
-        id: order.customer,
-        name: order.customer_name,
-        phone: order.mobile_number,
-      });
-      const items = (order.items || []).map((item: any) => ({
-        id: item.item_code,
-        name: item.item_name,
-        price: item.rate,
-        quantity: item.qty,
-        amount: item.amount,
-        image: item.image || null,
-        uniqueId: item.name,
-        item: item.item_code,
-        item_name: item.item_name,
-        item_image: null,
-        course: '',
-        description: item.description || '',
-        special_dish: 0,
-        tax_rate: 0,
-      }));
-      for (const cartItem of items) {
-        await posStore.addToOrder(cartItem);
-      }
-      navigate('/');
+      await openOrderByName(orderName);
+      navigate('/orders');
     } catch (err) {
       showToast.error(
-        err instanceof Error ? err.message : 'Failed to edit order'
+        err instanceof Error ? err.message : 'Failed to open order'
       );
     } finally {
       setEditLoadingId(null);
@@ -362,10 +325,10 @@ const Waiters = () => {
                                 setDrag(null);
                                 setDragOverWaiter(null);
                               }}
-                              onClick={() => !dragging && handleEditOrder(o.name)}
+                              onClick={() => !dragging && handleOpenInOrders(o.name)}
                               role="button"
                               tabIndex={0}
-                              title="Drag to another waiter to reassign · click to edit"
+                              title="Drag to another waiter to reassign · click to open, print & take payment"
                               className={cn(
                                 'group relative rounded-lg border bg-white p-3 transition-all',
                                 'cursor-grab active:cursor-grabbing select-none',
@@ -412,7 +375,7 @@ const Waiters = () => {
                                         {formatCurrency(o.grand_total)}
                                       </div>
                                       <div className="text-[11px] text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 justify-end mt-0.5">
-                                        <Edit className="w-3 h-3" /> Edit
+                                        <Receipt className="w-3 h-3" /> Open &amp; pay
                                       </div>
                                     </div>
                                   </div>
