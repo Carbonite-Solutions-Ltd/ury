@@ -1,19 +1,18 @@
 <template>
-	<Header/>
- 	<div class="bg-slate-300 min-h-screen"><KOT /></div>
+	<!-- Header is rendered inside KOT (2026-07-16) so the navbar's
+	     Active/Served toggle can drive KOT's viewMode directly, instead of
+	     lifting that state up through App just to hand it back down. -->
+	<div class="bg-slate-300 min-h-screen"><KOT /></div>
 </template>
 
 <script>
 import KOT from './components/kot.vue';
-import Header from "./components/Header.vue";
 
 export default {
-	
+
 	name: "app",
 	components: {
 		KOT,
-		Header,
 	},
 };
 </script>
-
