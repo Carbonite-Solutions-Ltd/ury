@@ -149,6 +149,10 @@ export interface OrdersActions {
   goToPreviousPage: () => Promise<void>;
   setSelectedStatus: (status: OrderStatusType) => Promise<void>;
   selectOrder: (order: POSInvoice) => Promise<void>;
+  /** Open a specific invoice on the Orders page by name (from the Waiters
+   *  page): pre-search + pre-select so the cashier lands on it, ready to
+   *  print / take payment. */
+  openOrderByName: (name: string) => Promise<void>;
   clearSelectedOrder: () => void;
   setOrderSearchQuery: (query: string) => void;
   setSelectedDate: (date: string) => Promise<void>;
@@ -377,6 +381,59 @@ export const createOrdersSlice: StateCreator<
       set({
         selectedOrderError: error instanceof Error ? error.message : 'Failed to fetch order details',
         selectedOrderLoading: false,
+      });
+    }
+  },
+
+  openOrderByName: async (name) => {
+    // Pre-search + today so the Orders list contains the target row and the
+    // filters don't hide it (all Waiters-page orders are drafts). Then fetch
+    // the doc and pre-select it so the right panel is already open when the
+    // Orders page mounts. 2026-07-16.
+    set({
+      orderSearchQuery: name,
+      selectedStatus: 'Draft',
+      selectedDate: todayIso(),
+    });
+    try {
+      const res = await fetch(
+        `/api/method/frappe.client.get?doctype=POS+Invoice&name=${encodeURIComponent(
+          name
+        )}`
+      );
+      if (!res.ok) throw new Error('Failed to load order');
+      const doc = (await res.json()).message;
+      const order = {
+        name: doc.name,
+        status: doc.status,
+        grand_total: doc.grand_total,
+        net_total: doc.net_total,
+        rounded_total: doc.rounded_total,
+        total_taxes_and_charges: doc.total_taxes_and_charges,
+        invoice_printed: doc.invoice_printed,
+        restaurant_table: doc.restaurant_table,
+        customer: doc.customer,
+        customer_name: doc.customer_name,
+        mobile_number: doc.mobile_number,
+        posting_date: doc.posting_date,
+        posting_time: doc.posting_time,
+        order_type: doc.order_type,
+        cashier: doc.cashier,
+        waiter: doc.waiter,
+        custom_order_status: doc.custom_order_status,
+        custom_terminal: doc.custom_terminal,
+        owner: doc.owner,
+        custom_waiter: doc.custom_waiter,
+        custom_charge_to_room: doc.custom_charge_to_room,
+        custom_hotel_room: doc.custom_hotel_room,
+        custom_ihotel_profile: doc.custom_ihotel_profile,
+        custom_print_count: doc.custom_print_count,
+      } as POSInvoice;
+      await get().selectOrder(order);
+    } catch (error) {
+      set({
+        selectedOrderError:
+          error instanceof Error ? error.message : 'Failed to open order',
       });
     }
   },

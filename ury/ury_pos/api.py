@@ -1619,6 +1619,12 @@ def getPosProfile(terminal=None):
         # See CLAUDE.md "Fixes log" 2026-04-08.
         cashier = frappe.session.user
         owner = frappe.session.user
+        # A self-serve waiter is NOT the cashier — she only places orders.
+        # Don't hand her id back as `cashier` (sync_order also guards this
+        # server-side). The cashier is stamped when a real cashier prints/
+        # bills the order. 2026-07-16.
+        if _get_self_waiter_for_user():
+            cashier = None
 
         qz_print = pos_profiles.qz_print
         print_type = None
@@ -4084,11 +4090,11 @@ def get_daily_sales(date=None):
             FROM `tabPOS Invoice` pi
             LEFT JOIN `tabPOS Invoice Item` ii ON ii.parent = pi.name
             WHERE pi.posting_date = %s
-            AND pi.owner = %s
+            AND (pi.owner = %s OR pi.cashier = %s)
             AND pi.docstatus = 1
             GROUP BY pi.name
             ORDER BY pi.posting_time DESC
-        """, (date, user), as_dict=True)
+        """, (date, user, user), as_dict=True)
 
         # Attach the line items per invoice (for the "Itemized" view +
         # itemized print). One query for all of the day's invoices,
@@ -4123,11 +4129,11 @@ def get_daily_sales(date=None):
             FROM `tabPOS Invoice` pi
             JOIN `tabSales Invoice Payment` p ON p.parent = pi.name
             WHERE pi.posting_date = %s
-            AND pi.owner = %s
+            AND (pi.owner = %s OR pi.cashier = %s)
             AND pi.docstatus = 1
             GROUP BY p.mode_of_payment
             ORDER BY total_amount DESC
-        """, (date, user), as_dict=True)
+        """, (date, user, user), as_dict=True)
         
         return {
             "invoices": invoices,
