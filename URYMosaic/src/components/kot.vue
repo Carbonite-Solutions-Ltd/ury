@@ -116,10 +116,18 @@
       <div v-for="kot in this.kot" :key="kot.name">
         <div
           :class="[kot.color]"
-          class="inline-block shadow-lg gap-4 p-3 rounded-2xl w-90 h-auto masonry-item"
+          class="relative inline-block shadow-lg gap-4 p-3 rounded-2xl w-90 h-auto masonry-item"
           style="margin-top: 28px"
           v-if="!kot.showDiv && kot.production === production"
         >
+          <!-- Protruding order-number badge (2026-07-16). Sits half outside
+               the top edge so the number is the first thing a cook sees when
+               scanning the board. The card's 28px top margin leaves room. -->
+          <div
+            class="absolute -top-4 left-1/2 -translate-x-1/2 z-20 rounded-full bg-gray-900 text-white border-4 border-white shadow-lg px-4 py-1 text-xl font-extrabold leading-none whitespace-nowrap"
+          >
+            #{{ orderLabel(kot) }}
+          </div>
           <div class="w-64 check">
             <div
               :class="[{ hidden: !kot.isRotated }]"
@@ -170,8 +178,7 @@
                   </span><br v-if="kot.is_aggregator"/>
                   <span class="text-sm font-medium text-[#6B7280]">Order</span>
                   <span class="text-black-500 ml-2 font-semibold"
-                    >{{ this.daily_order_number ? kot.order_no : kot.invoice.slice(-4) }}
-                    
+                    >{{ orderLabel(kot) }}
                   </span>
                   <span
                     class="text-black-500 ml-2 font-semibold"
@@ -533,6 +540,15 @@ export default {
         })
         .catch((error) => console.error(error));
     },
+    /** Order number shown on the card + the protruding badge. Uses the
+     *  daily order number when the profile enables it, else the last 4 of
+     *  the invoice name. 2026-07-16. */
+    orderLabel(kot) {
+      return this.daily_order_number
+        ? kot.order_no
+        : (kot.invoice || "").slice(-4);
+    },
+
     // --- Kitchen -> waiter change request (2026-07-16) -----------------
     openChangeRequest(kot) {
       this.changeKot = kot;
