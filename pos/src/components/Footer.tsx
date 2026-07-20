@@ -17,6 +17,7 @@ import { useRootStore } from '../store/root-store';
 import type { RootState } from '../store/root-store';
 import { isWaiterOnly } from '../lib/role-utils';
 import { primeAlertAudio, playAlertSound, vibrateAlert } from '../lib/alert-feedback';
+import { getKitchenChangeRequests } from '../lib/kitchen-change-api';
 
 // @ts-ignore
 const socket = window.frappe?.socketio || null;
@@ -43,10 +44,15 @@ const Footer = () => {
   // a stale closure). 2026-07-16.
   const notifCountRef = useRef(0);
 
-  const alertServed = (data: any) => {
-    setCurrentNotification(data);
+  /** Sound + haptic only (used for held-order alerts, which have no toast). */
+  const ring = () => {
     playAlertSound();
     vibrateAlert();
+  };
+
+  const alertServed = (data: any) => {
+    setCurrentNotification(data);
+    ring();
   };
 
   const fetchWaiterPendingCount = async () => {
@@ -131,17 +137,28 @@ const Footer = () => {
     try {
       const response = await call.get('ury.ury_pos.api.get_kitchen_notifications');
       const notifications = (response.message || []) as any[];
-      setNotificationCount(notifications.length);
+      // Kitchen change requests count as alerts too — the order is ON HOLD
+      // until the waiter answers, so it must nag like a served order.
+      const changes = await getKitchenChangeRequests();
+      setNotificationCount(notifications.length + changes.length);
 
-      // Fallback trigger (KDS-style): if a served order appears that we
-      // hadn't seen on the previous poll, alert. Skipped on the very first
-      // poll so we don't blast for every pre-existing served order at load.
-      const currentIds = new Set(notifications.map((n) => n.invoice));
+      // Fallback trigger (KDS-style): if a served order or a change request
+      // appears that we hadn't seen on the previous poll, alert. Skipped on
+      // the very first poll so we don't blast for pre-existing ones at load.
+      const currentIds = new Set<string>([
+        ...notifications.map((n) => n.invoice),
+        ...changes.map((c) => `chg:${c.kot}`),
+      ]);
       if (notifInitRef.current) {
-        const fresh = notifications.find(
+        const freshChange = changes.find(
+          (c) => !seenServedRef.current.has(`chg:${c.kot}`)
+        );
+        const freshServed = notifications.find(
           (n) => n.invoice && !seenServedRef.current.has(n.invoice)
         );
-        if (fresh) alertServed(fresh);
+        // A held order is the more urgent of the two.
+        if (freshChange) ring();
+        else if (freshServed) alertServed(freshServed);
       }
       seenServedRef.current = currentIds;
       notifInitRef.current = true;

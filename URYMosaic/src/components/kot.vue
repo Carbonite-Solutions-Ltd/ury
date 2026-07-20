@@ -1,5 +1,63 @@
 <template>
   <div class="mx-auto p-6 mb-16 relative">
+    <!-- Kitchen -> waiter change request modal (2026-07-16) -->
+    <div
+      v-if="showChangeModal"
+      class="fixed inset-0 z-30 flex items-center justify-center bg-black/50 p-4"
+    >
+      <div class="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+        <h2 class="text-xl font-bold text-gray-900">Request a change</h2>
+        <p class="mt-1 text-sm text-gray-500">
+          The order goes on hold until the waiter checks with the customer.
+        </p>
+
+        <label class="mt-4 block text-sm font-medium text-gray-700">
+          Item (optional)
+        </label>
+        <select
+          v-model="changeItem"
+          class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2"
+        >
+          <option value="">— whole order —</option>
+          <option
+            v-for="it in (changeKot && changeKot.kot_items) || []"
+            :key="it.name"
+            :value="it.item_name"
+          >
+            {{ it.item_name }}
+          </option>
+        </select>
+
+        <label class="mt-4 block text-sm font-medium text-gray-700">
+          What needs to change?
+        </label>
+        <textarea
+          v-model="changeMessage"
+          rows="3"
+          placeholder="e.g. out of prawns — swap for chicken?"
+          class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2"
+        ></textarea>
+
+        <div class="mt-5 flex justify-end gap-3">
+          <button
+            type="button"
+            @click="closeChangeRequest"
+            class="rounded-md border border-gray-300 px-4 py-2 font-medium text-gray-700 hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            :disabled="!changeMessage.trim() || changeSubmitting"
+            @click="submitChangeRequest"
+            class="rounded-md bg-[#F59E0B] px-4 py-2 font-semibold text-white hover:bg-[#D97706] disabled:opacity-50"
+          >
+            {{ changeSubmitting ? "Sending…" : "Send & hold" }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Alert Modal div start-->
     <div
       v-if="this.showModal"
@@ -138,8 +196,13 @@
               >
                 ( Duplicate KOT ( CHECK WITH CAPTAIN ) )
               </div>
-              <div v-show="kot.comments" class="text-[#6B7280] font-medium">
-                ( {{ kot.comments }} )
+              <!-- Order-level note. Highlighted so the kitchen can't miss
+                   it on a busy screen (2026-07-16). -->
+              <div
+                v-show="kot.comments"
+                class="mt-1 rounded border-2 border-[#F59E0B] bg-[#FEF3C7] px-2 py-1 text-[#92400E] font-bold"
+              >
+                ORDER NOTE: {{ kot.comments }}
               </div>
               <div></div>
               <div>
@@ -179,21 +242,53 @@
                     </div>
                   </div>
                   <div>
+                    <!-- Per-item special instruction. Loud styling so a cook
+                         scanning the board catches it (2026-07-16). -->
                     <p
                       v-show="kotitem.comments"
-                      class="ml-2 text-[#6B7280] font-medium"
+                      class="ml-2 mt-1 rounded border-2 border-[#DC2626] bg-[#FEE2E2] px-2 py-1 text-[#991B1B] font-bold"
                     >
-                      {{ kotitem.comments }}
+                      NOTE: {{ kotitem.comments }}
                     </p>
                     <hr class="my-1 border-gray-200 mt-2" />
                   </div>
                 </div>
               </div>
 
+              <!-- Kitchen -> waiter change request state (2026-07-16) -->
+              <div
+                v-if="kot.change_status === 'Awaiting Confirmation'"
+                class="mt-3 rounded border-2 border-[#F59E0B] bg-[#FFFBEB] px-2 py-2"
+              >
+                <div class="font-bold text-[#92400E]">
+                  ON HOLD — AWAITING CONFIRMATION
+                </div>
+                <div class="text-[#92400E] text-sm mt-1">
+                  <span v-if="kot.change_item">{{ kot.change_item }}: </span
+                  >{{ kot.change_request }}
+                </div>
+                <div class="text-[#92400E] text-xs mt-1 italic">
+                  Waiting for the waiter to check with the customer.
+                </div>
+              </div>
+              <div
+                v-else-if="kot.change_status === 'Confirmed'"
+                class="mt-3 rounded border-2 border-[#16A34A] bg-[#F0FDF4] px-2 py-2 font-bold text-[#166534]"
+              >
+                CHANGE CONFIRMED — proceed
+              </div>
+              <div
+                v-else-if="kot.change_status === 'Rejected'"
+                class="mt-3 rounded border-2 border-[#DC2626] bg-[#FEF2F2] px-2 py-2 font-bold text-[#991B1B]"
+              >
+                REJECTED — make as originally ordered
+              </div>
+
               <!-- Visible Serve / Confirm button (always at the bottom of the card) -->
-              <div class="mt-3 pt-3 border-t border-black/10">
+              <div class="mt-3 pt-3 border-t border-black/10 space-y-2">
                 <button
                   type="button"
+                  :disabled="kot.change_status === 'Awaiting Confirmation'"
                   @click.stop="
                     kot.type === 'Cancelled' || kot.type === 'Partially cancelled'
                       ? confirmOrder(kot)
@@ -201,16 +296,28 @@
                   "
                   :class="[
                     'w-full py-2 rounded-md text-white font-semibold transition',
-                    kot.isLate
+                    kot.change_status === 'Awaiting Confirmation'
+                      ? 'bg-gray-400 cursor-not-allowed'
+                      : kot.isLate
                       ? 'bg-red-700 hover:bg-red-800'
                       : 'bg-blue-600 hover:bg-blue-700',
                   ]"
                 >
                   {{
-                    kot.type === 'Cancelled' || kot.type === 'Partially cancelled'
+                    kot.change_status === 'Awaiting Confirmation'
+                      ? 'On hold'
+                      : kot.type === 'Cancelled' || kot.type === 'Partially cancelled'
                       ? 'Confirm'
                       : 'Serve'
                   }}
+                </button>
+                <button
+                  v-if="kot.change_status !== 'Awaiting Confirmation'"
+                  type="button"
+                  @click.stop="openChangeRequest(kot)"
+                  class="w-full py-2 rounded-md border-2 border-[#F59E0B] text-[#92400E] font-semibold hover:bg-[#FFFBEB] transition"
+                >
+                  Request change
                 </button>
               </div>
 
@@ -306,6 +413,12 @@ export default {
       kot: [],
       masonry: null,
       call: frappe.call(),
+      // Kitchen -> waiter change request modal (2026-07-16)
+      showChangeModal: false,
+      changeKot: null,
+      changeItem: "",
+      changeMessage: "",
+      changeSubmitting: false,
       production: "",
       branch: "",
       kds_routing_mode: "Menu Course",
@@ -420,6 +533,44 @@ export default {
         })
         .catch((error) => console.error(error));
     },
+    // --- Kitchen -> waiter change request (2026-07-16) -----------------
+    openChangeRequest(kot) {
+      this.changeKot = kot;
+      this.changeItem = "";
+      this.changeMessage = "";
+      this.showChangeModal = true;
+    },
+    closeChangeRequest() {
+      this.showChangeModal = false;
+      this.changeKot = null;
+    },
+    async submitChangeRequest() {
+      const msg = (this.changeMessage || "").trim();
+      if (!msg || !this.changeKot) return;
+      const kot = this.changeKot;
+      this.changeSubmitting = true;
+      try {
+        await this.call.post(
+          "ury.ury.api.ury_kot_display.request_kot_change",
+          {
+            kot: kot.name,
+            message: msg,
+            item: this.changeItem || null,
+          }
+        );
+        // Reflect the hold immediately; the next poll re-syncs from server.
+        kot.change_status = "Awaiting Confirmation";
+        kot.change_request = msg;
+        kot.change_item = this.changeItem || null;
+        this.closeChangeRequest();
+        this.masonryLoading();
+      } catch (error) {
+        console.error(error);
+      } finally {
+        this.changeSubmitting = false;
+      }
+    },
+
     async serveOrder(kot) {
       const now = new Date();
       this.currentTime = now.toLocaleTimeString();
