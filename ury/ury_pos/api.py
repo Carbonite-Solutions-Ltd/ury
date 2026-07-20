@@ -1404,10 +1404,17 @@ def reassign_order_waiter(invoice, waiter):
 @frappe.whitelist()
 def get_waiters_with_pending_orders(include_empty=0):
     """For the Waiters page: every active waiter plus their DRAFT (unpaid)
-    POS Invoices that the CURRENT cashier rang, each with its items.
-    Scoped to the session user (the cashier who rang the order) + branch.
-    Orders charged-to-room (iHotel) are excluded — they aren't pending
-    payment. Returns [{name, full_name, mobile_number, orders: [...]}].
+    POS Invoices, each with its items. Branch-scoped. Orders charged-to-room
+    (iHotel) are excluded — they aren't pending payment.
+    Returns [{name, full_name, mobile_number, orders: [...]}].
+
+    SCOPE CHANGE (2026-07-16): this used to also filter `pi.owner =
+    session.user` ("only orders the CURRENT cashier rang", added 2026-06-11).
+    That made sense when cashiers rang every order on a waiter's behalf, but
+    self-serve waiters (2026-07-14) own their own orders — so the owner
+    filter hid every waiter-placed order from the cashier AND the captain,
+    i.e. from exactly the people who use this page to collect the money and
+    key in the payment. Now branch-scoped only.
 
     `include_empty`: when truthy, ALSO return active waiters that have no
     pending orders — needed so the drag-and-drop Waiters page can use every
@@ -1428,7 +1435,6 @@ def get_waiters_with_pending_orders(include_empty=0):
                pi.order_type, pi.invoice_printed, pi.creation
         FROM `tabPOS Invoice` pi
         WHERE pi.branch = %(branch)s
-          AND pi.owner = %(owner)s
           AND pi.docstatus = 0
           AND pi.status = 'Draft'
           AND COALESCE(pi.custom_waiter, '') != ''
@@ -1436,7 +1442,7 @@ def get_waiters_with_pending_orders(include_empty=0):
           AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
         ORDER BY pi.creation DESC
         """,
-        {"branch": branch, "owner": frappe.session.user},
+        {"branch": branch},
         as_dict=True,
     )
     by_waiter = {}
@@ -1466,23 +1472,24 @@ def get_waiters_with_pending_orders(include_empty=0):
 
 @frappe.whitelist()
 def get_waiter_pending_order_count():
-    """Pending (Draft) orders with a waiter that the CURRENT cashier rang —
-    drives the Waiters navbar badge. Cheap COUNT, scoped to the session
-    user (the cashier who rang the order) + branch."""
+    """Pending (Draft) orders that have a waiter — drives the Waiters navbar
+    badge. Cheap COUNT, branch-scoped. Matches
+    `get_waiters_with_pending_orders`: the per-cashier `owner` filter was
+    dropped on 2026-07-16 because self-serve waiters own their own orders,
+    which hid them from the cashier/captain who collects the payment."""
     branch = getBranch()
     row = frappe.db.sql(
         """
         SELECT COUNT(pi.name) AS c
         FROM `tabPOS Invoice` pi
         WHERE pi.branch = %(branch)s
-          AND pi.owner = %(owner)s
           AND pi.docstatus = 0
           AND pi.status = 'Draft'
           AND COALESCE(pi.custom_waiter, '') != ''
           AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)
           AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
         """,
-        {"branch": branch, "owner": frappe.session.user},
+        {"branch": branch},
         as_dict=True,
     )
     return {"count": int(row[0].c if row else 0)}
@@ -4133,6 +4140,102 @@ def get_daily_sales(date=None):
             "invoices": [],
             "payment_totals": []
         }
+
+
+@frappe.whitelist()
+def get_waiter_sales(from_date=None, to_date=None, waiter=None):
+    """Sales served by a waiter, for her own sales report in the POS.
+
+    Scope: SUBMITTED POS Invoices whose ``custom_waiter`` is this waiter —
+    that covers BOTH orders she rang herself and orders a cashier rang on
+    her behalf. Returns are excluded, as are merged-source invoices (the
+    master carries the combined total).
+
+    Deliberately NOT branch-scoped: a waiter's orders are stamped with the
+    branch of the table/till she rang on, which need not match her own URY
+    User branch — branch-filtering her was what hid her orders before (see
+    the 2026-07-15 round-5 fix).
+
+    Waiter resolution:
+      - A self-serve waiter always gets her OWN sales; the ``waiter`` arg is
+        ignored so she can't read someone else's numbers.
+      - An elevated user (Administrator / System Manager / URY Manager /
+        URY Captain) may pass an explicit ``waiter`` to view that waiter's
+        sales.
+    2026-07-16.
+    """
+    self_waiter = _get_self_waiter_for_user()
+    if self_waiter:
+        waiter_name = self_waiter["name"]
+    elif waiter and _user_can_see_admin_reports():
+        waiter_name = waiter
+    else:
+        frappe.throw(
+            _(
+                "No waiter is linked to your user, so there are no waiter "
+                "sales to show. Ask your manager to link your user on the "
+                "{0} record."
+            ).format(_("URY Waiter")),
+            title=_("Not a Waiter"),
+        )
+
+    today = frappe.utils.today()
+    from_date = from_date or today
+    to_date = to_date or from_date
+    if to_date < from_date:
+        from_date, to_date = to_date, from_date
+
+    rows = frappe.db.sql(
+        """
+        SELECT
+            pi.name, pi.posting_date, pi.posting_time, pi.customer_name,
+            pi.restaurant_table, pi.grand_total, pi.net_total, pi.status,
+            pi.order_type,
+            (
+                SELECT COUNT(*) FROM `tabPOS Invoice Item` ii
+                WHERE ii.parent = pi.name
+            ) AS items_count
+        FROM `tabPOS Invoice` pi
+        WHERE pi.custom_waiter = %s
+        AND pi.docstatus = 1
+        AND (pi.is_return IS NULL OR pi.is_return = 0)
+        AND pi.posting_date BETWEEN %s AND %s
+        AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
+        ORDER BY pi.posting_date DESC, pi.posting_time DESC
+        """,
+        (waiter_name, from_date, to_date),
+        as_dict=True,
+    )
+
+    order_count = len(rows)
+    total_sales = sum(float(r.get("grand_total") or 0) for r in rows)
+
+    # Per-day rollup so a multi-day range shows a daily breakdown.
+    by_day = {}
+    for r in rows:
+        key = str(r["posting_date"])
+        bucket = by_day.setdefault(
+            key, {"posting_date": key, "order_count": 0, "total": 0.0}
+        )
+        bucket["order_count"] += 1
+        bucket["total"] += float(r.get("grand_total") or 0)
+
+    return {
+        "waiter": waiter_name,
+        "waiter_name": frappe.db.get_value("URY Waiter", waiter_name, "full_name")
+        or waiter_name,
+        "from_date": from_date,
+        "to_date": to_date,
+        "summary": {
+            "order_count": order_count,
+            "total_sales": total_sales,
+            "average_order": (total_sales / order_count) if order_count else 0,
+        },
+        "by_day": sorted(
+            by_day.values(), key=lambda x: x["posting_date"], reverse=True
+        ),
+        "invoices": rows,
+    }
 
 
 # ============================================================

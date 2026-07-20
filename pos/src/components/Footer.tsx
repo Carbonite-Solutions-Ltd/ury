@@ -161,6 +161,7 @@ const Footer = () => {
         { icon: LayoutGrid, label: 'POS', path: '/' },
         { icon: Table, label: 'Tables', path: '/table' },
         { icon: ClipboardList, label: 'My Orders', path: '/orders' },
+        { icon: BarChart3, label: 'My Sales', path: '/my-sales' },
         { icon: Bell, label: 'Alerts', path: '/notifications', badge: notificationCount },
       ]
     : [

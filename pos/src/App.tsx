@@ -6,6 +6,7 @@ import Waiters from './pages/Waiters';
 import POS from './pages/POS';
 import Table from './pages/Table';
 import Reports from './pages/Reports';
+import WaiterSales from './pages/WaiterSales';
 import Notifications from './pages/Notifications';
 import BiometricEnrollment from './pages/BiometricEnrollment';
 import BiometricLogin from './pages/BiometricLogin';
@@ -317,6 +318,10 @@ function App() {
                         </RequireNotWaiter>
                       }
                     />
+                    {/* Waiter's own sales report. Scoped server-side to her
+                        URY Waiter record, so it's safe for any signed-in
+                        user (non-waiters get a friendly "not a waiter"). */}
+                    <Route path="/my-sales" element={<WaiterSales />} />
                     <Route path="/notifications" element={<Notifications />} />
                     <Route path="/biometric-enrollment" element={<BiometricEnrollment />} />
                   </Routes>

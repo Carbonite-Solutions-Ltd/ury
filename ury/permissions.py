@@ -276,6 +276,91 @@ def _ensure_role_exists(role_name: str) -> None:
     print(f"[URY perms] created role: {role_name}")
 
 
+def _perm_flag_fields() -> list:
+    """Permission checkbox fields present in BOTH DocPerm and Custom DocPerm
+    on this Frappe version. Resolved from the meta rather than hardcoded —
+    the field set drifts between versions (e.g. `set_user_permissions` is
+    absent on v16, which made a hardcoded SELECT blow up)."""
+    try:
+        custom = {
+            f.fieldname
+            for f in frappe.get_meta("Custom DocPerm").fields
+            if f.fieldtype == "Check"
+        }
+        builtin = {
+            f.fieldname
+            for f in frappe.get_meta("DocPerm").fields
+            if f.fieldtype == "Check"
+        }
+        return sorted(custom & builtin)
+    except Exception:
+        return ["read", "write", "create", "delete", "select"]
+
+
+def _materialize_builtin_perms(doctype: str) -> int:
+    """Copy built-in DocPerm rows into Custom DocPerm where missing.
+
+    THE TRAP (2026-07-16): Frappe uses Custom DocPerm rows **instead of** a
+    DocType's built-in DocPerm rows as soon as ANY Custom DocPerm exists for
+    that doctype — they are NOT merged, the built-ins are ignored wholesale
+    (see `Meta.get_permissions`). So the moment we added one custom row for a
+    new role (URY Waiter), every role that relied on a built-in row (URY
+    Cashier / URY Captain / URY Manager, and anything else the DocType JSON
+    shipped) silently lost access. That is exactly what caused "Failed to
+    load menu categories" for cashiers and captains while waiters were fine:
+    URY Menu Course had 3 built-in rows and 1 custom (waiter) row, so the
+    built-ins stopped counting.
+
+    Copying the built-ins across as custom rows keeps them effective.
+    Idempotent — only inserts when a (role, permlevel) has no custom
+    counterpart. Returns the number of rows copied.
+    """
+    flags = _perm_flag_fields()
+    # `flags` comes from the DocType meta (not user input), so interpolating
+    # it into the SELECT is safe. Backticked because several are SQL
+    # keywords (`read`, `select`, `import`, `print`, …).
+    cols = ", ".join(f"`{f}`" for f in flags)
+    builtins = frappe.db.sql(
+        f"SELECT `role`, `permlevel`, {cols} FROM `tabDocPerm` WHERE parent = %s",
+        (doctype,),
+        as_dict=True,
+    )
+    if not builtins:
+        return 0
+
+    copied = 0
+    for b in builtins:
+        role_name = b.get("role")
+        level = b.get("permlevel") or 0
+        if not role_name or not frappe.db.exists("Role", role_name):
+            continue
+        if frappe.db.exists(
+            "Custom DocPerm",
+            {"parent": doctype, "role": role_name, "permlevel": level},
+        ):
+            continue
+        row = {
+            "doctype": "Custom DocPerm",
+            "parent": doctype,
+            "parenttype": "DocType",
+            "parentfield": "permissions",
+            "role": role_name,
+            "permlevel": level,
+        }
+        for flag in flags:
+            row[flag] = b.get(flag) or 0
+        doc = frappe.get_doc(row)
+        doc.flags.ignore_permissions = True
+        doc.insert()
+        copied += 1
+        print(
+            f"[URY perms] preserved builtin perm: {role_name} on {doctype}"
+        )
+    if copied:
+        frappe.clear_cache(doctype=doctype)
+    return copied
+
+
 def _ensure_perm(
     role: str,
     doctype: str,
@@ -299,12 +384,30 @@ def _ensure_perm(
         print(f"[URY perms] skipping unknown doctype: {doctype}")
         return False
 
-    builtin_exists = frappe.db.exists(
-        "DocPerm",
-        {"parent": doctype, "role": role, "permlevel": permlevel},
+    # Is this doctype already "customised"? If ANY Custom DocPerm row exists,
+    # Frappe is ALREADY ignoring the built-in DocPerm rows — so a built-in
+    # granting this role means nothing and we must give the role its own
+    # explicit Custom row. (2026-07-16: this is what left cashiers/captains
+    # without read once the waiter role added the first custom row.)
+    already_customised = bool(
+        frappe.db.exists("Custom DocPerm", {"parent": doctype})
     )
-    if builtin_exists and not merge_with_existing:
-        return False
+
+    if not already_customised:
+        builtin_exists = frappe.db.exists(
+            "DocPerm",
+            {"parent": doctype, "role": role, "permlevel": permlevel},
+        )
+        if builtin_exists and not merge_with_existing:
+            # Built-ins are still authoritative here and already cover this
+            # role — leave the doctype alone. Adding a custom row would make
+            # Frappe ignore EVERY built-in row on it.
+            return False
+
+    # From here this doctype will carry Custom DocPerm rows, which means its
+    # built-ins stop being consulted — preserve them as custom rows first so
+    # no role silently loses access.
+    preserved = _materialize_builtin_perms(doctype)
 
     custom_perm_name = frappe.db.exists(
         "Custom DocPerm",
@@ -328,7 +431,8 @@ def _ensure_perm(
                 f"({list(perms.keys())})"
             )
             return True
-        return False
+        # No change to this role's row, but we may have rescued built-ins.
+        return bool(preserved)
 
     # Fresh insert.
     perm_doc = frappe.get_doc(
