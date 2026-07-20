@@ -72,7 +72,53 @@
           On hold — waiting for the waiter to confirm with the customer.
         </div>
 
-        <div class="mt-5 space-y-2">
+        <!-- Waiter sent something back: the only next step is to accept it. -->
+        <div v-if="hasPendingResponse(actionKot)" class="mt-4">
+          <div
+            class="rounded border-2 px-3 py-2 text-sm"
+            :class="
+              actionKot.change_status === 'Cancelled'
+                ? 'border-[#DC2626] bg-[#FEF2F2] text-[#991B1B]'
+                : 'border-[#2563EB] bg-[#EFF6FF] text-[#1E3A8A]'
+            "
+          >
+            <div class="font-bold">
+              {{
+                actionKot.change_status === "Cancelled"
+                  ? "Order cancelled by the waiter"
+                  : actionKot.change_status === "Updated"
+                  ? "Special request updated"
+                  : "Confirmed by the waiter"
+              }}
+            </div>
+            <div v-if="actionKot.change_response" class="mt-1">
+              {{ actionKot.change_response }}
+            </div>
+          </div>
+          <button
+            type="button"
+            :disabled="acceptingKot === actionKot.name"
+            @click="acceptChange(actionKot)"
+            class="mt-3 w-full py-3 rounded-md bg-gray-900 text-white font-semibold hover:bg-black disabled:opacity-50"
+          >
+            {{
+              acceptingKot === actionKot.name
+                ? "Accepting…"
+                : actionKot.change_status === "Cancelled"
+                ? "Accept & remove"
+                : "Accept"
+            }}
+          </button>
+          <button
+            type="button"
+            @click="closeActions"
+            class="mt-2 w-full py-2 text-gray-600 hover:text-gray-800"
+          >
+            Close
+          </button>
+        </div>
+
+        <div v-else class="mt-5 space-y-2">
           <button
             type="button"
             :disabled="actionKot && actionKot.change_status === 'Awaiting Confirmation'"
@@ -215,10 +261,20 @@
     >
       <div v-for="kot in this.kot" :key="kot.name">
         <div
-          :class="[kot.color, { 'ury-served-flash': kot.served }]"
-          class="relative inline-block shadow-lg gap-4 p-3 rounded-2xl w-90 h-auto masonry-item"
+          :class="[
+            kot.color,
+            { 'ury-served-flash': kot.served, 'ury-drag-over': dragOverKot === kot.name },
+          ]"
+          class="relative inline-block shadow-lg gap-4 p-3 rounded-2xl w-90 h-auto masonry-item cursor-pointer"
           style="margin-top: 28px"
           v-if="!kot.showDiv && kot.production === production"
+          draggable="true"
+          @dragstart="onDragStart(kot, $event)"
+          @dragover.prevent="onDragOver(kot)"
+          @dragleave="onDragLeave(kot)"
+          @drop.prevent="onDrop(kot)"
+          @dragend="onDragEnd"
+          @click="openActions(kot)"
         >
           <!-- Protruding badges (2026-07-16): order number + waiter. They sit
                half outside the top edge so they're the first thing a cook sees
@@ -242,9 +298,10 @@
           <div class="w-64 check">
               <!-- Card Header: Table. The order number + waiter live on the
                    protruding badges above, so they're not repeated here.
-                   Tapping anywhere on the card opens the action dialog
-                   (Serve / Request change) — 2026-07-16. -->
-              <div class="flex justify-between" @click="openActions(kot)">
+                   The click handler is on the CARD (not here) so tapping
+                   anywhere — including the "Tap for options" strip — opens
+                   the action dialog. 2026-07-16. -->
+              <div class="flex justify-between">
                 <div class="text-sm w-48">
                   <span
                     v-if="kot.tableortakeaway !== 'Takeaway'"
@@ -304,11 +361,7 @@
                   :key="kotitem.name"
                 >
                   <div
-                    @click="
-                      () => {
-                        toggleItemStrikeThrough(kotitem, kot);
-                      }
-                    "
+                    @click.stop="toggleItemStrikeThrough(kotitem, kot)"
                     :class="{
                       'line-through text-green-700': kotitem.striked,
                     }"
@@ -363,17 +416,41 @@
                   Waiting for the waiter to check with the customer.
                 </div>
               </div>
+              <!-- Waiter answered — the kitchen must Accept before the card
+                   clears, so nothing is missed. 2026-07-16. -->
               <div
                 v-else-if="kot.change_status === 'Confirmed'"
-                class="mt-3 rounded border-2 border-[#16A34A] bg-[#F0FDF4] px-2 py-2 font-bold text-[#166534]"
+                class="mt-3 rounded border-2 border-[#16A34A] bg-[#F0FDF4] px-2 py-2 text-[#166534]"
               >
-                CHANGE CONFIRMED — proceed
+                <div class="font-bold">CONFIRMED — proceed</div>
+                <div v-if="kot.change_response" class="text-sm mt-1">
+                  {{ kot.change_response }}
+                </div>
+                <div class="text-xs mt-1 italic">Tap the card to accept.</div>
               </div>
               <div
-                v-else-if="kot.change_status === 'Rejected'"
-                class="mt-3 rounded border-2 border-[#DC2626] bg-[#FEF2F2] px-2 py-2 font-bold text-[#991B1B]"
+                v-else-if="kot.change_status === 'Updated'"
+                class="mt-3 rounded border-2 border-[#2563EB] bg-[#EFF6FF] px-2 py-2 text-[#1E3A8A]"
               >
-                REJECTED — make as originally ordered
+                <div class="font-bold">SPECIAL REQUEST UPDATED</div>
+                <div v-if="kot.change_response" class="text-sm mt-1">
+                  {{ kot.change_response }}
+                </div>
+                <div class="text-xs mt-1 italic">
+                  Item note updated above. Tap the card to accept.
+                </div>
+              </div>
+              <div
+                v-else-if="kot.change_status === 'Cancelled'"
+                class="mt-3 rounded border-2 border-[#DC2626] bg-[#FEF2F2] px-2 py-2 text-[#991B1B]"
+              >
+                <div class="font-bold">ORDER CANCELLED — stop cooking</div>
+                <div v-if="kot.change_response" class="text-sm mt-1">
+                  {{ kot.change_response }}
+                </div>
+                <div class="text-xs mt-1 italic">
+                  Tap the card to accept; it will leave the board.
+                </div>
               </div>
 
               <!-- No action buttons on the card any more (2026-07-16) — they
@@ -492,6 +569,10 @@ export default {
       servedKots: [],
       servedLoading: false,
       reinstatingKot: null,
+      // Drag-to-reorder (2026-07-16)
+      draggingKot: null,
+      dragOverKot: null,
+      acceptingKot: null,
       production: "",
       branch: "",
       kds_routing_mode: "Menu Course",
@@ -594,6 +675,9 @@ export default {
                 k._fetchedAt = fetchedAt;
               });
               this.kot = list;
+              // Restore the cook's drag order so a refresh/poll doesn't
+              // shuffle the board back. 2026-07-16.
+              this.applySavedOrder();
               this.updateQtyColorTable();
               this.updateTimeRemaining();
               this.masonryLoading();
@@ -635,6 +719,107 @@ export default {
         : (kot.invoice || "").slice(-4);
     },
 
+    // --- Drag to reorder the board (2026-07-16) ------------------------
+    // Cooks want their own running order. The chosen sequence is kept in
+    // localStorage per production, so a reload (or the 30s poll) doesn't
+    // shuffle the board back.
+    orderStorageKey() {
+      return "ury_kds_order_" + (this.production || "all");
+    },
+    savedOrder() {
+      try {
+        return JSON.parse(localStorage.getItem(this.orderStorageKey()) || "[]");
+      } catch (e) {
+        return [];
+      }
+    },
+    persistOrder() {
+      try {
+        localStorage.setItem(
+          this.orderStorageKey(),
+          JSON.stringify(this.kot.map((k) => k.name))
+        );
+      } catch (e) {
+        /* storage full / unavailable — ordering just won't persist */
+      }
+    },
+    /** Re-sort freshly fetched KOTs onto the cook's saved sequence. Anything
+     *  not in the saved list (a NEW order) goes to the front so it can't be
+     *  buried at the bottom of a long board. */
+    applySavedOrder() {
+      const saved = this.savedOrder();
+      if (!saved.length) return;
+      const rank = new Map(saved.map((n, i) => [n, i]));
+      this.kot.sort((a, b) => {
+        const ra = rank.has(a.name) ? rank.get(a.name) : -1;
+        const rb = rank.has(b.name) ? rank.get(b.name) : -1;
+        return ra - rb;
+      });
+    },
+    onDragStart(kot, event) {
+      this.draggingKot = kot.name;
+      try {
+        event.dataTransfer.effectAllowed = "move";
+        // Firefox needs data set for a drag to start at all.
+        event.dataTransfer.setData("text/plain", kot.name);
+      } catch (e) {
+        /* ignore */
+      }
+    },
+    onDragOver(kot) {
+      if (this.draggingKot && this.draggingKot !== kot.name) {
+        this.dragOverKot = kot.name;
+      }
+    },
+    onDragLeave(kot) {
+      if (this.dragOverKot === kot.name) this.dragOverKot = null;
+    },
+    onDrop(targetKot) {
+      const from = this.kot.findIndex((k) => k.name === this.draggingKot);
+      const to = this.kot.findIndex((k) => k.name === targetKot.name);
+      this.dragOverKot = null;
+      if (from < 0 || to < 0 || from === to) return;
+      const [moved] = this.kot.splice(from, 1);
+      this.kot.splice(to, 0, moved);
+      this.persistOrder();
+      this.masonryLoading();
+    },
+    onDragEnd() {
+      this.draggingKot = null;
+      this.dragOverKot = null;
+    },
+
+    /** Kitchen accepts whatever the waiter sent back. On a cancellation the
+     *  card leaves the board. 2026-07-16. */
+    async acceptChange(kot) {
+      this.acceptingKot = kot.name;
+      try {
+        await this.call.post(
+          "ury.ury.api.ury_kot_display.kitchen_ack_change",
+          { kot: kot.name }
+        );
+        const wasCancelled = kot.change_status === "Cancelled";
+        this.closeActions();
+        if (wasCancelled) {
+          kot.served = true; // reuse the collapse animation
+          setTimeout(() => {
+            kot.showDiv = true;
+            this.masonryLoading();
+          }, 620);
+        } else {
+          kot.change_status = "";
+          kot.change_request = null;
+          kot.change_response = null;
+          kot.change_item = null;
+          this.masonryLoading();
+        }
+      } catch (error) {
+        console.error(error);
+      } finally {
+        this.acceptingKot = null;
+      }
+    },
+
     // --- Tap-a-card action dialog (2026-07-16) -------------------------
     // The card used to carry Serve / Request-change buttons, which made the
     // board look like a wall of forms. Now tapping the card opens this.
@@ -645,6 +830,13 @@ export default {
     closeActions() {
       this.showActionModal = false;
       this.actionKot = null;
+    },
+    /** Waiter has answered and the kitchen hasn't accepted it yet. */
+    hasPendingResponse(kot) {
+      return (
+        !!kot &&
+        ["Confirmed", "Updated", "Cancelled"].includes(kot.change_status)
+      );
     },
     isCancelType(kot) {
       return (
@@ -1077,6 +1269,12 @@ export default {
 <style>
 .bg-gray-100 {
   background-color: rgba(0, 0, 0, 0.2);
+}
+
+/* Drop target while dragging a card to reorder the board (2026-07-16). */
+.ury-drag-over {
+  outline: 3px dashed #2563eb;
+  outline-offset: 3px;
 }
 
 /* Served confirmation (2026-07-16): the card pulses green, then collapses

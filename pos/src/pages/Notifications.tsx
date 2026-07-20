@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { AlertTriangle, Bell, ChefHat, CheckCircle, Clock, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { AlertTriangle, Bell, ChefHat, CheckCircle, Clock, X, Pencil, ExternalLink } from 'lucide-react';
+import { useRootStore } from '../store/root-store';
 import { Card, CardContent, Badge } from '../components/ui';
 import { Spinner } from '../components/ui/spinner';
 import { call } from '../lib/frappe-sdk';
@@ -61,6 +63,11 @@ export default function Notifications() {
   // Kitchen change requests awaiting this user's confirmation (2026-07-16).
   const [changeRequests, setChangeRequests] = useState<KitchenChangeRequest[]>([]);
   const [respondingKot, setRespondingKot] = useState<string | null>(null);
+  // Per-request draft of the revised special instruction + note back.
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
+  const navigate = useNavigate();
+  const setOrderSearchQuery = useRootStore((s) => s.setOrderSearchQuery);
 
   const fetchChangeRequests = async () => {
     setChangeRequests(await getKitchenChangeRequests());
@@ -68,22 +75,32 @@ export default function Notifications() {
 
   const handleChangeResponse = async (
     kot: string,
-    action: 'confirm' | 'reject'
+    action: 'confirm' | 'update' | 'cancel',
+    opts?: { note?: string; itemNote?: string }
   ) => {
     setRespondingKot(kot);
     try {
-      await respondKotChange(kot, action);
+      await respondKotChange(kot, action, opts);
       setChangeRequests((prev) => prev.filter((c) => c.kot !== kot));
       showToast.success(
         action === 'confirm'
           ? 'Confirmed — the kitchen can proceed'
-          : 'Rejected — the kitchen will make it as originally ordered'
+          : action === 'update'
+          ? 'Sent to the kitchen — they will confirm they got it'
+          : 'Order cancelled — the kitchen will stop'
       );
     } catch (err: any) {
       showToast.error(err?.message || 'Could not send your response');
     } finally {
       setRespondingKot(null);
     }
+  };
+
+  /** Jump to the order this request is about. Pre-fills the Orders search
+   *  with the invoice id so it's the only row she sees. 2026-07-16. */
+  const openOrder = (invoice: string) => {
+    setOrderSearchQuery(invoice);
+    navigate('/orders');
   };
 
   useEffect(() => {
@@ -452,12 +469,50 @@ export default function Notifications() {
                           )}
                         </div>
                         <p className="text-xs text-amber-700 mt-2 italic">
-                          Check with the customer, then confirm. Rejecting means
-                          the kitchen makes it as originally ordered.
+                          Check with the customer, then confirm, update the
+                          special request, or cancel the order.
                         </p>
-                        <div className="flex gap-2 mt-3">
+
+                        <button
+                          onClick={() => openOrder(req.invoice)}
+                          className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 hover:text-blue-800"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          Open this order
+                        </button>
+
+                        {/* Update the SPECIAL REQUEST only (never the items). */}
+                        <div className="mt-3">
+                          <label className="block text-xs font-medium text-amber-900 mb-1">
+                            Update special request{req.change_item ? ` for ${req.change_item}` : ''}
+                          </label>
+                          <input
+                            type="text"
+                            value={noteDrafts[req.kot] || ''}
+                            onChange={(e) =>
+                              setNoteDrafts((d) => ({ ...d, [req.kot]: e.target.value }))
+                            }
+                            placeholder="e.g. chicken instead of prawns"
+                            className="w-full px-3 py-2 text-sm border border-amber-300 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500"
+                          />
+                          <input
+                            type="text"
+                            value={replyDrafts[req.kot] || ''}
+                            onChange={(e) =>
+                              setReplyDrafts((d) => ({ ...d, [req.kot]: e.target.value }))
+                            }
+                            placeholder="Optional note back to the kitchen"
+                            className="w-full mt-2 px-3 py-2 text-sm border border-amber-300 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500"
+                          />
+                        </div>
+
+                        <div className="flex flex-wrap gap-2 mt-3">
                           <button
-                            onClick={() => handleChangeResponse(req.kot, 'confirm')}
+                            onClick={() =>
+                              handleChangeResponse(req.kot, 'confirm', {
+                                note: replyDrafts[req.kot],
+                              })
+                            }
                             disabled={respondingKot === req.kot}
                             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-green-600 text-white text-sm font-semibold hover:bg-green-700 disabled:opacity-60"
                           >
@@ -465,12 +520,29 @@ export default function Notifications() {
                             Confirm
                           </button>
                           <button
-                            onClick={() => handleChangeResponse(req.kot, 'reject')}
+                            onClick={() =>
+                              handleChangeResponse(req.kot, 'update', {
+                                itemNote: noteDrafts[req.kot],
+                                note: replyDrafts[req.kot],
+                              })
+                            }
+                            disabled={respondingKot === req.kot || !(noteDrafts[req.kot] || '').trim()}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                          >
+                            <Pencil className="w-4 h-4" />
+                            Update request
+                          </button>
+                          <button
+                            onClick={() =>
+                              handleChangeResponse(req.kot, 'cancel', {
+                                note: replyDrafts[req.kot],
+                              })
+                            }
                             disabled={respondingKot === req.kot}
-                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-amber-500 text-amber-900 text-sm font-semibold hover:bg-amber-100 disabled:opacity-60"
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-red-400 text-red-700 text-sm font-semibold hover:bg-red-50 disabled:opacity-60"
                           >
                             <X className="w-4 h-4" />
-                            Reject
+                            Cancel order
                           </button>
                         </div>
                       </div>

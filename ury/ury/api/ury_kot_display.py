@@ -234,15 +234,53 @@ def request_kot_change(kot, message, item=None):
     return {"kot": kot, "status": "Awaiting Confirmation"}
 
 
-@frappe.whitelist()
-def respond_kot_change(kot, action):
-    """Waiter answers a change request. `action` is 'confirm' or 'reject'.
+def _update_item_note(kot, item_name, note):
+    """Point the special instruction at BOTH the KOT item (what the kitchen
+    reads) and the matching POS Invoice item (what the bill/record keeps),
+    so they can't drift. Best-effort: a missing row is skipped."""
+    if not item_name:
+        return
+    note = (note or "").strip()
+    for row in frappe.get_all(
+        "URY KOT Items",
+        filters={"parent": kot, "item_name": item_name},
+        fields=["name"],
+    ):
+        frappe.db.set_value(
+            "URY KOT Items", row["name"], "comments", note, update_modified=False
+        )
+    invoice = frappe.db.get_value("URY KOT", kot, "invoice")
+    if invoice:
+        for row in frappe.get_all(
+            "POS Invoice Item",
+            filters={"parent": invoice, "item_name": item_name},
+            fields=["name"],
+        ):
+            frappe.db.set_value(
+                "POS Invoice Item", row["name"], "comment", note,
+                update_modified=False,
+            )
 
-    Reject means "cook it as originally ordered" — the hold simply clears
-    (the chosen behaviour on 2026-07-16); nothing is cancelled.
+
+@frappe.whitelist()
+def respond_kot_change(kot, action, note=None, item_note=None):
+    """Waiter answers a kitchen change request (2026-07-16).
+
+    `action`:
+      - ``confirm`` — customer agreed to what the kitchen proposed.
+      - ``update``  — waiter revised the SPECIAL REQUEST for the item (and
+        may add a note back). Deliberately only touches the instruction —
+        never quantities, items or price; re-ringing the order is the
+        cashier's job.
+      - ``cancel``  — customer no longer wants it. This cancels the KITCHEN
+        order only; the card leaves the board once the kitchen accepts.
+        Cancelling the INVOICE stays a captain action (`cancel_order`).
+
+    Every outcome leaves the KOT waiting on the kitchen to Accept, so the
+    cook always sees what came back before the card clears.
     """
     action = (action or "").strip().lower()
-    if action not in ("confirm", "reject"):
+    if action not in ("confirm", "update", "cancel"):
         frappe.throw(_("Invalid action."), title=_("Bad Request"))
     current = frappe.db.get_value("URY KOT", kot, "change_status")
     if current != "Awaiting Confirmation":
@@ -251,12 +289,24 @@ def respond_kot_change(kot, action):
             title=_("Already Resolved"),
         )
 
-    new_status = "Confirmed" if action == "confirm" else "Rejected"
+    status_map = {
+        "confirm": "Confirmed",
+        "update": "Updated",
+        "cancel": "Cancelled",
+    }
+    new_status = status_map[action]
+
+    if action == "update":
+        _update_item_note(
+            kot, frappe.db.get_value("URY KOT", kot, "change_item"), item_note
+        )
+
     frappe.db.set_value(
         "URY KOT",
         kot,
         {
             "change_status": new_status,
+            "change_response": (note or "").strip() or None,
             "change_resolved_by": frappe.session.user,
             "change_resolved_at": frappe.utils.now_datetime(),
         },
@@ -276,6 +326,42 @@ def respond_kot_change(kot, action):
             event=f"kot_update_{branch}_All", message={"kot": kot}, after_commit=True
         )
     return {"kot": kot, "status": new_status}
+
+
+@frappe.whitelist()
+def kitchen_ack_change(kot):
+    """Kitchen acknowledges whatever the waiter sent back (2026-07-16).
+
+    Confirmed / Updated → the change fields clear and the card comes off
+    hold so the cook carries on. Cancelled → the card leaves the board:
+    `order_status` becomes "Cancelled by Waiter", which matches neither the
+    active board's "Ready For Prepare" filter nor the served list's
+    "Served", so it simply drops out (order_status is a free-text Data
+    field, so this needs no schema change).
+    """
+    status = frappe.db.get_value("URY KOT", kot, "change_status")
+    if status not in ("Confirmed", "Updated", "Cancelled"):
+        frappe.throw(
+            _("There's nothing waiting to be accepted on this order."),
+            title=_("Nothing to Accept"),
+        )
+
+    updates = {
+        "change_status": "",
+        "change_request": None,
+        "change_item": None,
+        "change_response": None,
+        "change_requested_by": None,
+        "change_requested_at": None,
+        "change_resolved_by": None,
+        "change_resolved_at": None,
+    }
+    if status == "Cancelled":
+        updates["order_status"] = "Cancelled by Waiter"
+
+    frappe.db.set_value("URY KOT", kot, updates, update_modified=False)
+    frappe.db.commit()
+    return {"kot": kot, "accepted": status}
 
 
 @frappe.whitelist()
