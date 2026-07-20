@@ -1,7 +1,8 @@
 import json
 
 import frappe
-from ury.ury_pos.api import getBranch
+from frappe import _
+from ury.ury_pos.api import getBranch, _get_self_waiter_for_user
 from frappe.utils import get_datetime
 
 
@@ -97,6 +98,154 @@ def serve_kot(name, time):
     except Exception as e:
         frappe.log_error(f"Error updating invoice status: {str(e)}", "Serve KOT Error")
         pass
+
+
+# ============================================================
+# Kitchen -> waiter change requests (2026-07-16)
+# ------------------------------------------------------------
+# The kitchen can't always cook an order as rung (out of stock, can't
+# honour a special instruction). Instead of silently changing it, the
+# kitchen raises a TEXT request; the KOT goes ON HOLD ("Awaiting
+# Confirmation", Serve disabled on the KDS) and the waiter is alerted.
+# She checks with the customer, edits the order normally if they agree,
+# then Confirms — or Rejects, which means "cook it as originally
+# ordered". The kitchen never edits quantities or prices, so the invoice
+# is never touched by this flow.
+# ============================================================
+
+
+def _kot_notify_users(invoice):
+    """Users who should be alerted about this invoice: the owner (whoever
+    rang it) plus the waiter it was rung for. Mirrors serve_kot."""
+    row = frappe.db.get_value(
+        "POS Invoice", invoice, ["owner", "custom_waiter"], as_dict=True
+    ) or {}
+    recipients = set()
+    if row.get("owner"):
+        recipients.add(row["owner"])
+    waiter_record = row.get("custom_waiter")
+    if waiter_record:
+        waiter_user = frappe.db.get_value("URY Waiter", waiter_record, "user")
+        if waiter_user:
+            recipients.add(waiter_user)
+    return recipients
+
+
+@frappe.whitelist()
+def request_kot_change(kot, message, item=None):
+    """Kitchen raises a change request → KOT goes on hold, waiter alerted."""
+    message = (message or "").strip()
+    if not message:
+        frappe.throw(_("Please describe the change you need."), title=_("Empty Request"))
+    if not frappe.db.exists("URY KOT", kot):
+        frappe.throw(_("KOT {0} not found.").format(kot), title=_("Not Found"))
+
+    invoice = frappe.db.get_value("URY KOT", kot, "invoice")
+    now_dt = frappe.utils.now_datetime()
+    frappe.db.set_value(
+        "URY KOT",
+        kot,
+        {
+            "change_status": "Awaiting Confirmation",
+            "change_request": message,
+            "change_item": item or None,
+            "change_requested_by": frappe.session.user,
+            "change_requested_at": now_dt,
+            "change_resolved_by": None,
+            "change_resolved_at": None,
+        },
+        update_modified=False,
+    )
+    frappe.db.commit()
+
+    payload = {
+        "kot": kot,
+        "invoice": invoice,
+        "item": item,
+        "message": message,
+        "requested_by": frappe.session.user,
+    }
+    for recipient in _kot_notify_users(invoice):
+        frappe.publish_realtime(
+            event="kot_change_request", message=payload, user=recipient
+        )
+    return {"kot": kot, "status": "Awaiting Confirmation"}
+
+
+@frappe.whitelist()
+def respond_kot_change(kot, action):
+    """Waiter answers a change request. `action` is 'confirm' or 'reject'.
+
+    Reject means "cook it as originally ordered" — the hold simply clears
+    (the chosen behaviour on 2026-07-16); nothing is cancelled.
+    """
+    action = (action or "").strip().lower()
+    if action not in ("confirm", "reject"):
+        frappe.throw(_("Invalid action."), title=_("Bad Request"))
+    current = frappe.db.get_value("URY KOT", kot, "change_status")
+    if current != "Awaiting Confirmation":
+        frappe.throw(
+            _("This request has already been resolved."),
+            title=_("Already Resolved"),
+        )
+
+    new_status = "Confirmed" if action == "confirm" else "Rejected"
+    frappe.db.set_value(
+        "URY KOT",
+        kot,
+        {
+            "change_status": new_status,
+            "change_resolved_by": frappe.session.user,
+            "change_resolved_at": frappe.utils.now_datetime(),
+        },
+        update_modified=False,
+    )
+    frappe.db.commit()
+
+    # Tell the kitchen screens so the card comes off hold immediately.
+    branch = frappe.db.get_value("URY KOT", kot, "branch")
+    frappe.publish_realtime(
+        event="kot_change_resolved",
+        message={"kot": kot, "status": new_status, "by": frappe.session.user},
+        after_commit=True,
+    )
+    if branch:
+        frappe.publish_realtime(
+            event=f"kot_update_{branch}_All", message={"kot": kot}, after_commit=True
+        )
+    return {"kot": kot, "status": new_status}
+
+
+@frappe.whitelist()
+def get_kitchen_change_requests():
+    """Pending kitchen change requests for the current user (the invoice
+    owner OR the waiter it was rung for). Drives the Alerts page + badge."""
+    user = frappe.session.user
+    self_waiter = _get_self_waiter_for_user(user)
+
+    clause = "pi.owner = %(user)s"
+    params = {"user": user}
+    if self_waiter:
+        clause = "(pi.owner = %(user)s OR pi.custom_waiter = %(waiter)s)"
+        params["waiter"] = self_waiter["name"]
+
+    return frappe.db.sql(
+        f"""
+        SELECT k.name AS kot, k.change_request, k.change_item,
+               k.change_requested_by, k.change_requested_at,
+               k.invoice, pi.customer_name, pi.restaurant_table,
+               pi.grand_total
+        FROM `tabURY KOT` k
+        JOIN `tabPOS Invoice` pi ON pi.name = k.invoice
+        WHERE k.change_status = 'Awaiting Confirmation'
+          AND k.docstatus != 2
+          AND {clause}
+        ORDER BY k.change_requested_at DESC
+        LIMIT 50
+        """,
+        params,
+        as_dict=True,
+    )
 
 
 # Function to mark it as verified by a user in cancel type KOT

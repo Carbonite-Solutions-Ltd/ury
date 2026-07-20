@@ -41,7 +41,14 @@
   "user",
   "amended_from",
   "kot_printed",
-  "custom_printed_departments"
+  "custom_printed_departments",
+  "change_status",
+  "change_request",
+  "change_item",
+  "change_requested_by",
+  "change_requested_at",
+  "change_resolved_by",
+  "change_resolved_at"
  ],
  "fields": [
   {
@@ -270,12 +277,59 @@
    "fieldtype": "Small Text",
    "label": "Printed Departments (JSON)",
    "description": "JSON array of department names whose items have been successfully printed for this KOT. Added 2026-04-16 for the auto-print-hold / pending-KOT workflow. Example: `[\"Food\"]` means the Food portion auto-fired but Drinks is still held for manual print at bill time."
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "change_status",
+   "fieldtype": "Select",
+   "options": "\nAwaiting Confirmation\nConfirmed\nRejected",
+   "label": "Change Request Status",
+   "in_standard_filter": 1,
+   "description": "Kitchen→waiter change request (2026-07-16). 'Awaiting Confirmation' puts the KOT ON HOLD on the KDS (Serve disabled) until the waiter confirms with the customer. 'Rejected' means cook it as originally ordered."
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "change_request",
+   "fieldtype": "Small Text",
+   "label": "Change Request",
+   "description": "What the kitchen needs the waiter to check with the customer, e.g. 'out of prawns — swap for chicken?'."
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "change_item",
+   "fieldtype": "Data",
+   "label": "Change Request Item",
+   "description": "Optional item name the request is about."
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "change_requested_by",
+   "fieldtype": "Data",
+   "label": "Change Requested By"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "change_requested_at",
+   "fieldtype": "Datetime",
+   "label": "Change Requested At"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "change_resolved_by",
+   "fieldtype": "Data",
+   "label": "Change Resolved By"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "change_resolved_at",
+   "fieldtype": "Datetime",
+   "label": "Change Resolved At"
   }
  ],
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2025-12-21 17:24:53.872363",
+ "modified": "2026-07-16 10:00:00.000000",
  "modified_by": "obed.odai@gmail.com",
  "module": "URY",
  "name": "URY KOT",

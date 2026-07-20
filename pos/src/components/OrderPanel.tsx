@@ -29,6 +29,7 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
     activeOrders,
     removeFromOrder,
     updateQuantity,
+    updateItemComment,
     clearOrder,
     setSelectedItem,
     orderLoading,
@@ -62,6 +63,8 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
   const [editingItem, setEditingItem] = useState<typeof activeOrders[0] | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showCommentDialog, setShowCommentDialog] = useState(false);
+  // Cart line whose per-item note is being edited (null = dialog closed).
+  const [noteItem, setNoteItem] = useState<any | null>(null);
   const [showWaiterDialog, setShowWaiterDialog] = useState(false);
   const [numberOfPeople, setNumberOfPeople] = useState<number>(1);
 
@@ -381,9 +384,36 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
                       </p>
                     )}
                     <p className="text-gray-600 text-sm">{formatCurrency(calculateItemTotal(item))}</p>
+                    {/* Special instruction for this line — shown so the
+                        cashier/waiter can see it without opening a dialog. */}
+                    {item.comment && (
+                      <p className="mt-1 inline-flex items-start gap-1 rounded bg-amber-50 border border-amber-300 px-2 py-0.5 text-xs font-medium text-amber-900">
+                        <MessageSquare className="w-3 h-3 mt-0.5 shrink-0" />
+                        <span className="break-words">{item.comment}</span>
+                      </p>
+                    )}
                   </div>
-                  
+
                   <div className="flex items-center space-x-2">
+                    {/* One-tap per-item note (2026-07-16). Previously the only
+                        way in was double-tapping the menu card to open the
+                        product dialog, which nobody discovered. Allowed even
+                        on already-ordered lines — a note changes no qty or
+                        price, so the cashier item-restriction doesn't apply. */}
+                    <Button
+                      onClick={() => setNoteItem(item)}
+                      variant="ghost"
+                      size="icon"
+                      className={cn(
+                        item.comment
+                          ? 'text-amber-600 hover:text-amber-700'
+                          : 'text-gray-400 hover:text-gray-600'
+                      )}
+                      title={item.comment ? 'Edit note' : 'Add note'}
+                      disabled={isInteractionDisabled}
+                    >
+                      <MessageSquare className="w-5 h-5" />
+                    </Button>
                     <Button
                       onClick={() => handleEdit(item)}
                       variant="ghost"
@@ -545,6 +575,18 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
         onClose={() => setShowCommentDialog(false)}
         onSave={handleCommentSave}
         initialComment={orderComment}
+      />
+      {/* Per-item special instruction (reuses CommentDialog with item wording). */}
+      <CommentDialog
+        isOpen={!!noteItem}
+        onClose={() => setNoteItem(null)}
+        onSave={(c) => {
+          if (noteItem?.uniqueId) updateItemComment(noteItem.uniqueId, c);
+        }}
+        initialComment={noteItem?.comment || ''}
+        title={noteItem?.name ? `Note — ${noteItem.name}` : 'Item Note'}
+        label="Special instructions for this item"
+        placeholder="e.g. no onions, extra spicy, well done…"
       />
       {showWaiterDialog && (
         <WaiterSelectDialog

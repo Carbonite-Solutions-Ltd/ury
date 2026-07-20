@@ -157,6 +157,8 @@ interface POSStore extends POSState {
   addToOrder: (item: OrderItem) => Promise<void>;
   removeFromOrder: (uniqueId: string) => Promise<void>;
   updateQuantity: (uniqueId: string, quantity: number) => Promise<void>;
+  /** Set/clear one cart line's special instruction (per-item note). */
+  updateItemComment: (uniqueId: string, comment: string) => void;
   clearOrder: () => Promise<void>;
   setSelectedCategory: (category: string) => void;
   setSearchQuery: (query: string) => void;
@@ -587,6 +589,19 @@ export const usePOSStore = create<POSStore>((set, get) => ({
         set({ error: 'Failed to update quantity' });
       }
     }
+  },
+
+  // Set/clear a single cart line's special instruction. Deliberately does
+  // NOT go through addToOrder (which merges + bumps quantity) and is not
+  // blocked by the cashier item-restriction — adding "no onions" to an
+  // already-ordered line changes no price or quantity. 2026-07-16.
+  updateItemComment: (uniqueId: string, comment: string) => {
+    const newOrders = get().activeOrders.map((item) =>
+      item.uniqueId === uniqueId
+        ? { ...item, comment: comment.trim() || undefined }
+        : item
+    );
+    set({ activeOrders: newOrders });
   },
 
   clearOrder: async () => {

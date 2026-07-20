@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { MessageSquare, X } from 'lucide-react';
 import { Button } from './ui';
 
@@ -7,10 +7,31 @@ interface CommentDialogProps {
   onClose: () => void;
   onSave: (comment: string) => void;
   initialComment?: string;
+  /** Heading — defaults to the order-level wording. */
+  title?: string;
+  /** Field label above the textarea. */
+  label?: string;
+  placeholder?: string;
 }
 
-const CommentDialog = ({ isOpen, onClose, onSave, initialComment = '' }: CommentDialogProps) => {
+const CommentDialog = ({
+  isOpen,
+  onClose,
+  onSave,
+  initialComment = '',
+  title = 'Order Comments',
+  label = 'Add comments for this order',
+  placeholder = 'Enter any special instructions or comments...',
+}: CommentDialogProps) => {
   const [comment, setComment] = useState(initialComment);
+
+  // The dialog stays mounted (it just renders null when closed), so the
+  // state would otherwise persist between opens — showing the PREVIOUS
+  // item's note when you open a different one. Re-seed on every open.
+  // 2026-07-16.
+  useEffect(() => {
+    if (isOpen) setComment(initialComment);
+  }, [isOpen, initialComment]);
 
   const handleSave = () => {
     onSave(comment);
@@ -30,9 +51,7 @@ const CommentDialog = ({ isOpen, onClose, onSave, initialComment = '' }: Comment
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <MessageSquare className="w-5 h-5 text-blue-600" />
-            <h2 className="text-lg font-semibold text-gray-900">
-              Order Comments
-            </h2>
+            <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
           </div>
           <Button
             onClick={handleCancel}
@@ -46,13 +65,13 @@ const CommentDialog = ({ isOpen, onClose, onSave, initialComment = '' }: Comment
         
         <div className="mb-6">
           <label htmlFor="comment" className="block text-sm font-medium text-gray-700 mb-2">
-            Add comments for this order
+            {label}
           </label>
           <textarea
             id="comment"
             value={comment}
             onChange={(e) => setComment(e.target.value)}
-            placeholder="Enter any special instructions or comments..."
+            placeholder={placeholder}
             className="w-full h-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
             autoFocus
           />

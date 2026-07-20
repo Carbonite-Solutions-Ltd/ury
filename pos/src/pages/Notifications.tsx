@@ -5,6 +5,11 @@ import { Spinner } from '../components/ui/spinner';
 import { call } from '../lib/frappe-sdk';
 import { formatCurrency } from '../lib/utils';
 import { showToast } from '../components/ui/toast';
+import {
+  getKitchenChangeRequests,
+  respondKotChange,
+  KitchenChangeRequest,
+} from '../lib/kitchen-change-api';
 
 // @ts-ignore
 const socket = window.frappe?.socketio || null;
@@ -53,10 +58,38 @@ export default function Notifications() {
   const [lateOrders, setLateOrders] = useState<LateOrder[]>([]);
   const [policyMinutes, setPolicyMinutes] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
+  // Kitchen change requests awaiting this user's confirmation (2026-07-16).
+  const [changeRequests, setChangeRequests] = useState<KitchenChangeRequest[]>([]);
+  const [respondingKot, setRespondingKot] = useState<string | null>(null);
+
+  const fetchChangeRequests = async () => {
+    setChangeRequests(await getKitchenChangeRequests());
+  };
+
+  const handleChangeResponse = async (
+    kot: string,
+    action: 'confirm' | 'reject'
+  ) => {
+    setRespondingKot(kot);
+    try {
+      await respondKotChange(kot, action);
+      setChangeRequests((prev) => prev.filter((c) => c.kot !== kot));
+      showToast.success(
+        action === 'confirm'
+          ? 'Confirmed — the kitchen can proceed'
+          : 'Rejected — the kitchen will make it as originally ordered'
+      );
+    } catch (err: any) {
+      showToast.error(err?.message || 'Could not send your response');
+    } finally {
+      setRespondingKot(null);
+    }
+  };
 
   useEffect(() => {
     if (activeTab === 'kitchen') {
       fetchKitchenNotifications();
+      fetchChangeRequests();
     } else if (activeTab === 'late') {
       fetchLateOrders();
     }
@@ -64,6 +97,7 @@ export default function Notifications() {
     // Listen for realtime updates
     if (socket) {
       socket.on('order_served_notification', handleRealtimeNotification);
+      socket.on('kot_change_request', handleChangeRequestRealtime);
     }
 
     // Keep "Late" tab fresh — orders cross the threshold passively.
@@ -75,6 +109,7 @@ export default function Notifications() {
     return () => {
       if (socket) {
         socket.off('order_served_notification', handleRealtimeNotification);
+        socket.off('kot_change_request', handleChangeRequestRealtime);
       }
       if (interval) clearInterval(interval);
     };
@@ -87,6 +122,11 @@ export default function Notifications() {
     if (activeTab === 'kitchen') {
       fetchKitchenNotifications();
     }
+  };
+
+  const handleChangeRequestRealtime = () => {
+    // Kitchen raised a change request for one of this user's orders.
+    fetchChangeRequests();
   };
 
   const fetchKitchenNotifications = async () => {
@@ -371,7 +411,7 @@ export default function Notifications() {
               <X className="w-12 h-12 text-red-500 mx-auto mb-4" />
               <p className="text-red-600 font-medium">{error}</p>
             </div>
-          ) : kitchenNotifications.length === 0 ? (
+          ) : kitchenNotifications.length === 0 && changeRequests.length === 0 ? (
             <div className="text-center py-12">
               <ChefHat className="w-16 h-16 text-gray-400 mx-auto mb-4" />
               <p className="text-gray-500 text-lg">No kitchen updates</p>
@@ -379,6 +419,66 @@ export default function Notifications() {
             </div>
           ) : (
             <div className="max-w-4xl mx-auto space-y-3">
+              {/* Kitchen change requests — the order is ON HOLD until the
+                  waiter checks with the customer and answers (2026-07-16). */}
+              {changeRequests.map((req) => (
+                <Card
+                  key={req.kot}
+                  className="border-2 border-amber-400 bg-amber-50"
+                >
+                  <CardContent className="p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-200 flex items-center justify-center">
+                        <AlertTriangle className="w-5 h-5 text-amber-800" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <h3 className="text-base font-semibold text-amber-900">
+                            Kitchen needs a change
+                          </h3>
+                          <Badge className="bg-amber-600 text-white text-xs">
+                            On hold
+                          </Badge>
+                        </div>
+                        <p className="text-sm text-amber-900 font-medium">
+                          {req.change_item ? `${req.change_item}: ` : ''}
+                          {req.change_request}
+                        </p>
+                        <div className="flex items-center gap-3 text-xs text-amber-800 mt-2 flex-wrap">
+                          <span>{req.invoice}</span>
+                          {req.customer_name && <span>· {req.customer_name}</span>}
+                          {req.restaurant_table && (
+                            <span>· Table {req.restaurant_table}</span>
+                          )}
+                        </div>
+                        <p className="text-xs text-amber-700 mt-2 italic">
+                          Check with the customer, then confirm. Rejecting means
+                          the kitchen makes it as originally ordered.
+                        </p>
+                        <div className="flex gap-2 mt-3">
+                          <button
+                            onClick={() => handleChangeResponse(req.kot, 'confirm')}
+                            disabled={respondingKot === req.kot}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-green-600 text-white text-sm font-semibold hover:bg-green-700 disabled:opacity-60"
+                          >
+                            <CheckCircle className="w-4 h-4" />
+                            Confirm
+                          </button>
+                          <button
+                            onClick={() => handleChangeResponse(req.kot, 'reject')}
+                            disabled={respondingKot === req.kot}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-amber-500 text-amber-900 text-sm font-semibold hover:bg-amber-100 disabled:opacity-60"
+                          >
+                            <X className="w-4 h-4" />
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+
               {kitchenNotifications.map((notification) => (
                 <Card 
                   key={notification.invoice} 
