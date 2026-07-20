@@ -1,5 +1,129 @@
 <template>
   <div class="mx-auto p-6 mb-16 relative">
+    <!-- Active / Served toggle (2026-07-16). "Served" lets the kitchen undo
+         a mistaken serve; it lists the most recently served first. -->
+    <div class="mb-4 flex items-center gap-2">
+      <button
+        type="button"
+        @click="showActive"
+        :class="[
+          'px-4 py-2 rounded-full font-semibold transition',
+          viewMode === 'active'
+            ? 'bg-gray-900 text-white shadow'
+            : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50',
+        ]"
+      >
+        Active orders
+      </button>
+      <button
+        type="button"
+        @click="showServed"
+        :class="[
+          'px-4 py-2 rounded-full font-semibold transition',
+          viewMode === 'served'
+            ? 'bg-gray-900 text-white shadow'
+            : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50',
+        ]"
+      >
+        Served
+      </button>
+    </div>
+
+    <!-- Served list + reinstate (2026-07-16) -->
+    <div v-if="viewMode === 'served'" class="max-w-3xl">
+      <p v-if="servedLoading" class="text-gray-600">Loading served orders…</p>
+      <p v-else-if="!servedKots.length" class="text-gray-600">
+        No orders served in the last 3 hours.
+      </p>
+      <div v-else class="space-y-3">
+        <div
+          v-for="s in servedKots"
+          :key="s.name"
+          class="flex items-center justify-between gap-4 rounded-xl bg-white shadow p-4"
+        >
+          <div class="min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span
+                class="rounded-full bg-gray-900 text-white px-3 py-0.5 text-lg font-extrabold leading-none"
+              >
+                #{{ orderLabel(s) }}
+              </span>
+              <span
+                v-if="s.waiter_name"
+                class="rounded-full bg-[#2563EB] text-white px-2 py-0.5 text-xs font-bold leading-none"
+              >
+                {{ s.waiter_name }}
+              </span>
+              <span class="text-sm text-gray-500">
+                {{ s.restaurant_table || "Takeaway" }}
+              </span>
+            </div>
+            <div class="mt-1 text-xs text-gray-500">
+              Served {{ servedTimeLabel(s) }} ·
+              {{ (s.kot_items && s.kot_items.length) || 0 }} item(s)
+            </div>
+          </div>
+          <button
+            type="button"
+            :disabled="reinstatingKot === s.name"
+            @click="reinstateKot(s)"
+            class="shrink-0 rounded-md border-2 border-[#DC2626] px-4 py-2 font-semibold text-[#991B1B] hover:bg-[#FEF2F2] disabled:opacity-50"
+          >
+            {{ reinstatingKot === s.name ? "Undoing…" : "Reinstate" }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card action dialog (2026-07-16): replaces the per-card buttons. -->
+    <div
+      v-if="showActionModal"
+      class="fixed inset-0 z-30 flex items-center justify-center bg-black/50 p-4"
+      @click.self="closeActions"
+    >
+      <div class="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl">
+        <h2 class="text-2xl font-extrabold text-gray-900">
+          #{{ actionKot ? orderLabel(actionKot) : "" }}
+        </h2>
+        <p v-if="actionKot && actionKot.waiter_name" class="text-sm text-gray-500 mt-1">
+          Waiter: {{ actionKot.waiter_name }}
+        </p>
+
+        <div
+          v-if="actionKot && actionKot.change_status === 'Awaiting Confirmation'"
+          class="mt-4 rounded border-2 border-[#F59E0B] bg-[#FFFBEB] px-3 py-2 text-sm font-semibold text-[#92400E]"
+        >
+          On hold — waiting for the waiter to confirm with the customer.
+        </div>
+
+        <div class="mt-5 space-y-2">
+          <button
+            type="button"
+            :disabled="actionKot && actionKot.change_status === 'Awaiting Confirmation'"
+            @click="serveFromDialog"
+            class="w-full py-3 rounded-md bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+          >
+            {{ isCancelType(actionKot) ? "Confirm" : "Serve" }}
+          </button>
+          <button
+            v-if="actionKot && actionKot.change_status !== 'Awaiting Confirmation'"
+            type="button"
+            @click="requestChangeFromDialog"
+            class="w-full py-3 rounded-md border-2 border-[#F59E0B] text-[#92400E] font-semibold hover:bg-[#FFFBEB]"
+          >
+            Request change
+          </button>
+          <button
+            type="button"
+            @click="closeActions"
+            class="w-full py-2 text-gray-600 hover:text-gray-800"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Kitchen -> waiter change request modal (2026-07-16) -->
     <div
       v-if="showChangeModal"
@@ -110,52 +234,41 @@
     </div>
 
     <div
-      v-else
+      v-else-if="viewMode === 'active'"
       class="grid grid-cols-1 gap-10 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
     >
       <div v-for="kot in this.kot" :key="kot.name">
         <div
-          :class="[kot.color]"
+          :class="[kot.color, { 'ury-served-flash': kot.served }]"
           class="relative inline-block shadow-lg gap-4 p-3 rounded-2xl w-90 h-auto masonry-item"
           style="margin-top: 28px"
           v-if="!kot.showDiv && kot.production === production"
         >
-          <!-- Protruding order-number badge (2026-07-16). Sits half outside
-               the top edge so the number is the first thing a cook sees when
+          <!-- Protruding badges (2026-07-16): order number + waiter. They sit
+               half outside the top edge so they're the first thing a cook sees
                scanning the board. The card's 28px top margin leaves room. -->
           <div
-            class="absolute -top-4 left-1/2 -translate-x-1/2 z-20 rounded-full bg-gray-900 text-white border-4 border-white shadow-lg px-4 py-1 text-xl font-extrabold leading-none whitespace-nowrap"
+            class="absolute -top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 whitespace-nowrap"
           >
-            #{{ orderLabel(kot) }}
+            <span
+              class="rounded-full bg-gray-900 text-white border-4 border-white shadow-lg px-4 py-1 text-xl font-extrabold leading-none"
+            >
+              #{{ orderLabel(kot) }}
+            </span>
+            <span
+              v-if="kot.waiter_name"
+              class="rounded-full bg-[#2563EB] text-white border-4 border-white shadow-lg px-3 py-1 text-sm font-bold leading-none max-w-[9rem] truncate"
+              :title="kot.waiter_name"
+            >
+              {{ kot.waiter_name }}
+            </span>
           </div>
           <div class="w-64 check">
-            <div
-              :class="[{ hidden: !kot.isRotated }]"
-              @click="rotateCard(kot)"
-              class="absolute inset-0 bg-white z-50 opacity-80 rounded-2xl flex flex-col justify-center items-center"
-            >
-              <button
-                @click="
-                  kot.type === 'Cancelled' || kot.type === 'Partially cancelled'
-                    ? confirmOrder(kot)
-                    : serveOrder(kot)
-                "
-                :class="[{ hidden: !kot.isRotated }]"
-                class="py-2 px-6 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition duration-300 ease-in-out"
-              >
-                {{
-                  kot.type === "Cancelled" || kot.type === "Partially cancelled"
-                    ? "Confirm"
-                    : "Serve"
-                }}
-              </button>
-            </div>
-
-            
-              <!-- Serve Button -->
-
-              <!-- Card Header: Table Name and Order Number -->
-              <div class="flex justify-between" @click="rotateCard(kot)">
+              <!-- Card Header: Table. The order number + waiter live on the
+                   protruding badges above, so they're not repeated here.
+                   Tapping anywhere on the card opens the action dialog
+                   (Serve / Request change) — 2026-07-16. -->
+              <div class="flex justify-between" @click="openActions(kot)">
                 <div class="text-sm w-48">
                   <span
                     v-if="kot.tableortakeaway !== 'Takeaway'"
@@ -176,12 +289,8 @@
                   <span v-if="kot.is_aggregator" class="text-black-500 ml-2 font-semibold"
                     >{{ kot.aggregator_id }}
                   </span><br v-if="kot.is_aggregator"/>
-                  <span class="text-sm font-medium text-[#6B7280]">Order</span>
-                  <span class="text-black-500 ml-2 font-semibold"
-                    >{{ orderLabel(kot) }}
-                  </span>
                   <span
-                    class="text-black-500 ml-2 font-semibold"
+                    class="text-black-500 font-semibold"
                     v-if="
                       kot.type === 'Partially cancelled' ||
                       kot.type === 'Cancelled'
@@ -291,41 +400,11 @@
                 REJECTED — make as originally ordered
               </div>
 
-              <!-- Visible Serve / Confirm button (always at the bottom of the card) -->
-              <div class="mt-3 pt-3 border-t border-black/10 space-y-2">
-                <button
-                  type="button"
-                  :disabled="kot.change_status === 'Awaiting Confirmation'"
-                  @click.stop="
-                    kot.type === 'Cancelled' || kot.type === 'Partially cancelled'
-                      ? confirmOrder(kot)
-                      : serveOrder(kot)
-                  "
-                  :class="[
-                    'w-full py-2 rounded-md text-white font-semibold transition',
-                    kot.change_status === 'Awaiting Confirmation'
-                      ? 'bg-gray-400 cursor-not-allowed'
-                      : kot.isLate
-                      ? 'bg-red-700 hover:bg-red-800'
-                      : 'bg-blue-600 hover:bg-blue-700',
-                  ]"
-                >
-                  {{
-                    kot.change_status === 'Awaiting Confirmation'
-                      ? 'On hold'
-                      : kot.type === 'Cancelled' || kot.type === 'Partially cancelled'
-                      ? 'Confirm'
-                      : 'Serve'
-                  }}
-                </button>
-                <button
-                  v-if="kot.change_status !== 'Awaiting Confirmation'"
-                  type="button"
-                  @click.stop="openChangeRequest(kot)"
-                  class="w-full py-2 rounded-md border-2 border-[#F59E0B] text-[#92400E] font-semibold hover:bg-[#FFFBEB] transition"
-                >
-                  Request change
-                </button>
+              <!-- No action buttons on the card any more (2026-07-16) — they
+                   made every card look like a form. Tap the card to open the
+                   Serve / Request change dialog. -->
+              <div class="mt-3 pt-2 border-t border-black/10 text-center text-xs text-[#6B7280] italic">
+                Tap for options
               </div>
 
           </div>
@@ -426,6 +505,14 @@ export default {
       changeItem: "",
       changeMessage: "",
       changeSubmitting: false,
+      // Tap-a-card action dialog (2026-07-16)
+      showActionModal: false,
+      actionKot: null,
+      // Served-orders view + reinstate (2026-07-16)
+      viewMode: "active",
+      servedKots: [],
+      servedLoading: false,
+      reinstatingKot: null,
       production: "",
       branch: "",
       kds_routing_mode: "Menu Course",
@@ -446,11 +533,29 @@ export default {
     };
   },
   methods: {
+    /** Ring for a new order. Uses the POS Profile's configured sound when
+     *  one is set, otherwise the bundled default bell — so the kitchen has
+     *  an audible alert out of the box. 2026-07-16. */
     playAlertSound(path) {
-      var currentDomain = window.location.origin;
-      var audio_path = currentDomain + path;
-      const audio = new Audio(audio_path);
-      audio.play();
+      try {
+        const src = path
+          ? window.location.origin + path
+          : "/assets/ury/URYMosaic/sounds/kitchen-bell.wav";
+        const audio = new Audio(src);
+        audio.play().catch(() => {
+          // Autoplay blocked until the user interacts with the page — the
+          // existing "click anywhere to enable" hint covers this.
+          this.showAudioAlertMessage = true;
+        });
+      } catch (e) {
+        /* ignore */
+      }
+    },
+    /** Should we ring at all? `custom_kot_alert` is the admin's mute switch;
+     *  an UNSET value (never configured) still rings, so the default bell
+     *  works out of the box. Explicit 0 stays silent. */
+    shouldRing() {
+      return this.audio_alert !== 0;
     },
     auth() {
       return new Promise((resolve, reject) => {
@@ -518,10 +623,6 @@ export default {
         }
       });
     },
-    rotateCard(kot) {
-      this.masonryLoading();
-      kot.isRotated = !kot.isRotated;
-    },
     confirmOrder(kot) {
       const now = new Date();
       this.currentTime = now.toLocaleTimeString();
@@ -547,6 +648,81 @@ export default {
       return this.daily_order_number
         ? kot.order_no
         : (kot.invoice || "").slice(-4);
+    },
+
+    // --- Tap-a-card action dialog (2026-07-16) -------------------------
+    // The card used to carry Serve / Request-change buttons, which made the
+    // board look like a wall of forms. Now tapping the card opens this.
+    openActions(kot) {
+      this.actionKot = kot;
+      this.showActionModal = true;
+    },
+    closeActions() {
+      this.showActionModal = false;
+      this.actionKot = null;
+    },
+    isCancelType(kot) {
+      return (
+        kot &&
+        (kot.type === "Cancelled" || kot.type === "Partially cancelled")
+      );
+    },
+    serveFromDialog() {
+      const kot = this.actionKot;
+      this.closeActions();
+      if (!kot) return;
+      if (this.isCancelType(kot)) this.confirmOrder(kot);
+      else this.serveOrder(kot);
+    },
+    requestChangeFromDialog() {
+      const kot = this.actionKot;
+      this.closeActions();
+      if (kot) this.openChangeRequest(kot);
+    },
+
+    // --- Served orders + reinstate (2026-07-16) ------------------------
+    async showServed() {
+      this.viewMode = "served";
+      this.servedLoading = true;
+      try {
+        const res = await this.call.get(
+          "ury.ury.api.ury_kot_display.served_kot_list"
+        );
+        const msg = res.message || res;
+        this.servedKots = (msg && msg.KOT) || [];
+      } catch (error) {
+        console.error(error);
+        this.servedKots = [];
+      } finally {
+        this.servedLoading = false;
+      }
+    },
+    showActive() {
+      this.viewMode = "active";
+      this.masonryLoading();
+    },
+    async reinstateKot(kot) {
+      this.reinstatingKot = kot.name;
+      try {
+        await this.call.post("ury.ury.api.ury_kot_display.reinstate_kot", {
+          name: kot.name,
+        });
+        this.servedKots = this.servedKots.filter((k) => k.name !== kot.name);
+        // Pull it back onto the active board.
+        await this.fetchKOT();
+        this.masonryLoading();
+      } catch (error) {
+        console.error(error);
+      } finally {
+        this.reinstatingKot = null;
+      }
+    },
+    servedTimeLabel(kot) {
+      const raw = kot.served_at || kot.modified;
+      if (!raw) return "";
+      const d = new Date(String(raw).replace(" ", "T"));
+      if (isNaN(d.getTime())) return String(raw);
+      return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     },
 
     // --- Kitchen -> waiter change request (2026-07-16) -----------------
@@ -597,12 +773,16 @@ export default {
           time: this.currentTime,
         })
         .then((result) => {
-          // kot.isHidden = !kot.isHidden;
-          kot.showDiv = !kot.showDiv;
-          // this.showDiv = false;
-
+          // Visible confirmation (2026-07-16): flash the card green and let
+          // it collapse away, THEN re-lay the board so the remaining cards
+          // animate up into the gap. Previously it vanished instantly with
+          // nothing to show the tap had registered.
+          kot.served = true;
           this.removeAllItemsFromLocalStorage(kot);
-          this.masonryLoading();
+          setTimeout(() => {
+            kot.showDiv = true;
+            this.masonryLoading();
+          }, 620);
         })
         .catch((error) => console.error(error));
     },
@@ -775,12 +955,29 @@ export default {
     },
     masonryLoading() {
       this.$nextTick(() => {
-        this.masonry = new Masonry(this.$el.querySelector(".grid"), {
-          itemSelector: ".masonry-item",
-          gutter: 28,
-
-          // Other Masonry options can be added here
-        });
+        const grid = this.$el.querySelector(".grid");
+        if (!grid) return;
+        // Re-USE the instance (2026-07-16). This used to build a brand new
+        // Masonry on every call, which snaps every card into place with no
+        // animation. Keeping one instance and calling reloadItems()+layout()
+        // lets `transitionDuration` animate the re-flow, so when a card is
+        // served you can see the rest slide up into the gap.
+        if (!this.masonry || this.masonry.element !== grid) {
+          if (this.masonry) {
+            try {
+              this.masonry.destroy();
+            } catch (e) {
+              /* ignore */
+            }
+          }
+          this.masonry = new Masonry(grid, {
+            itemSelector: ".masonry-item",
+            gutter: 28,
+            transitionDuration: "0.4s",
+          });
+        } else {
+          this.masonry.reloadItems();
+        }
         this.masonry.layout();
       });
     },
@@ -834,7 +1031,9 @@ export default {
             this.showAudioAlertMessage = true;
           }
           socket.on(this.kot_channel, (doc) => {
-            if (this.audio_alert === 1) {
+            // Rings unless the admin explicitly muted it; falls back to the
+            // bundled bell when no profile sound is configured. 2026-07-16.
+            if (this.shouldRing()) {
               this.playAlertSound(doc.audio_file);
             }
             let kottime = localStorage.getItem("kot_time");
@@ -888,5 +1087,28 @@ export default {
 <style>
 .bg-gray-100 {
   background-color: rgba(0, 0, 0, 0.2);
+}
+
+/* Served confirmation (2026-07-16): the card pulses green, then collapses
+   away — so the cook can see the tap registered. Masonry then animates the
+   remaining cards up into the gap (transitionDuration in masonryLoading). */
+.ury-served-flash {
+  animation: uryServed 620ms ease-out forwards;
+  pointer-events: none;
+}
+@keyframes uryServed {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(22, 163, 74, 0);
+  }
+  30% {
+    transform: scale(1.04);
+    box-shadow: 0 0 0 8px rgba(22, 163, 74, 0.5);
+  }
+  100% {
+    transform: scale(0.82);
+    opacity: 0;
+    box-shadow: 0 0 0 0 rgba(22, 163, 74, 0);
+  }
 }
 </style>
