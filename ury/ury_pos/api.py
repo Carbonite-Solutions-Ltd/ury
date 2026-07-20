@@ -1404,10 +1404,17 @@ def reassign_order_waiter(invoice, waiter):
 @frappe.whitelist()
 def get_waiters_with_pending_orders(include_empty=0):
     """For the Waiters page: every active waiter plus their DRAFT (unpaid)
-    POS Invoices that the CURRENT cashier rang, each with its items.
-    Scoped to the session user (the cashier who rang the order) + branch.
-    Orders charged-to-room (iHotel) are excluded — they aren't pending
-    payment. Returns [{name, full_name, mobile_number, orders: [...]}].
+    POS Invoices, each with its items. Branch-scoped. Orders charged-to-room
+    (iHotel) are excluded — they aren't pending payment.
+    Returns [{name, full_name, mobile_number, orders: [...]}].
+
+    SCOPE CHANGE (2026-07-16): this used to also filter `pi.owner =
+    session.user` ("only orders the CURRENT cashier rang", added 2026-06-11).
+    That made sense when cashiers rang every order on a waiter's behalf, but
+    self-serve waiters (2026-07-14) own their own orders — so the owner
+    filter hid every waiter-placed order from the cashier AND the captain,
+    i.e. from exactly the people who use this page to collect the money and
+    key in the payment. Now branch-scoped only.
 
     `include_empty`: when truthy, ALSO return active waiters that have no
     pending orders — needed so the drag-and-drop Waiters page can use every
@@ -1428,7 +1435,6 @@ def get_waiters_with_pending_orders(include_empty=0):
                pi.order_type, pi.invoice_printed, pi.creation
         FROM `tabPOS Invoice` pi
         WHERE pi.branch = %(branch)s
-          AND pi.owner = %(owner)s
           AND pi.docstatus = 0
           AND pi.status = 'Draft'
           AND COALESCE(pi.custom_waiter, '') != ''
@@ -1436,7 +1442,7 @@ def get_waiters_with_pending_orders(include_empty=0):
           AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
         ORDER BY pi.creation DESC
         """,
-        {"branch": branch, "owner": frappe.session.user},
+        {"branch": branch},
         as_dict=True,
     )
     by_waiter = {}
@@ -1466,23 +1472,24 @@ def get_waiters_with_pending_orders(include_empty=0):
 
 @frappe.whitelist()
 def get_waiter_pending_order_count():
-    """Pending (Draft) orders with a waiter that the CURRENT cashier rang —
-    drives the Waiters navbar badge. Cheap COUNT, scoped to the session
-    user (the cashier who rang the order) + branch."""
+    """Pending (Draft) orders that have a waiter — drives the Waiters navbar
+    badge. Cheap COUNT, branch-scoped. Matches
+    `get_waiters_with_pending_orders`: the per-cashier `owner` filter was
+    dropped on 2026-07-16 because self-serve waiters own their own orders,
+    which hid them from the cashier/captain who collects the payment."""
     branch = getBranch()
     row = frappe.db.sql(
         """
         SELECT COUNT(pi.name) AS c
         FROM `tabPOS Invoice` pi
         WHERE pi.branch = %(branch)s
-          AND pi.owner = %(owner)s
           AND pi.docstatus = 0
           AND pi.status = 'Draft'
           AND COALESCE(pi.custom_waiter, '') != ''
           AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)
           AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
         """,
-        {"branch": branch, "owner": frappe.session.user},
+        {"branch": branch},
         as_dict=True,
     )
     return {"count": int(row[0].c if row else 0)}
