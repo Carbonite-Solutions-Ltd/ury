@@ -48,7 +48,8 @@
   "change_requested_by",
   "change_requested_at",
   "change_resolved_by",
-  "change_resolved_at"
+  "change_resolved_at",
+  "served_at"
  ],
  "fields": [
   {
@@ -324,6 +325,13 @@
    "fieldname": "change_resolved_at",
    "fieldtype": "Datetime",
    "label": "Change Resolved At"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "served_at",
+   "fieldtype": "Datetime",
+   "label": "Served At",
+   "description": "When the kitchen marked this KOT served (2026-07-16). Sortable, unlike the legacy `start_time_serv` which stores a locale time STRING. Drives the 'last served on top' ordering of the KDS served list + reinstate."
   }
  ],
  "index_web_pages_for_search": 1,

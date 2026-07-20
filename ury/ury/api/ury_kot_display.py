@@ -19,6 +19,9 @@ def serve_kot(name, time):
     frappe.db.set_value("URY KOT", name, "start_time_serv", time)
     frappe.db.set_value("URY KOT", name, "production_time", production_time_minutes)
     frappe.db.set_value("URY KOT", name, "order_status", "Served")
+    # Sortable served timestamp — `start_time_serv` is a locale time STRING
+    # ("3:45:12 PM") so it can't order the served list. 2026-07-16.
+    frappe.db.set_value("URY KOT", name, "served_at", current_time)
     
     # Update linked POS Invoice status
     try:
@@ -100,6 +103,55 @@ def serve_kot(name, time):
         pass
 
 
+@frappe.whitelist()
+def reinstate_kot(name):
+    """Undo a serve — the kitchen marked a KOT served by mistake (2026-07-16).
+
+    Puts the KOT back on the board and withdraws the "food ready" alert from
+    the waiter by clearing the invoice's `custom_order_status`. An invoice can
+    carry several KOTs, so any un-serve clears the invoice-level Served flag —
+    it goes back to Served when the kitchen serves again.
+    """
+    if not frappe.db.exists("URY KOT", name):
+        frappe.throw(_("KOT {0} not found.").format(name), title=_("Not Found"))
+    if frappe.db.get_value("URY KOT", name, "order_status") != "Served":
+        frappe.throw(
+            _("This order isn't marked served."), title=_("Nothing to Undo")
+        )
+
+    frappe.db.set_value(
+        "URY KOT",
+        name,
+        {
+            "order_status": "Ready For Prepare",
+            "served_at": None,
+            "start_time_serv": None,
+            "production_time": 0,
+        },
+        update_modified=False,
+    )
+
+    invoice = frappe.db.get_value("URY KOT", name, "invoice")
+    if invoice and frappe.db.exists("POS Invoice", invoice):
+        # Withdraw the waiter's "ready" alert.
+        frappe.db.set_value(
+            "POS Invoice",
+            invoice,
+            {"custom_order_status": "", "custom_clear_from_notification": 0},
+            update_modified=False,
+        )
+    frappe.db.commit()
+
+    branch = frappe.db.get_value("URY KOT", name, "branch")
+    if branch:
+        frappe.publish_realtime(
+            event=f"kot_update_{branch}_All",
+            message={"kot": name, "reinstated": 1},
+            after_commit=True,
+        )
+    return {"kot": name, "status": "Ready For Prepare"}
+
+
 # ============================================================
 # Kitchen -> waiter change requests (2026-07-16)
 # ------------------------------------------------------------
@@ -112,6 +164,16 @@ def serve_kot(name, time):
 # ordered". The kitchen never edits quantities or prices, so the invoice
 # is never touched by this flow.
 # ============================================================
+
+
+def _kot_waiter_name(invoice):
+    """Friendly waiter name for the KDS card badge, or None (2026-07-16)."""
+    if not invoice:
+        return None
+    waiter = frappe.db.get_value("POS Invoice", invoice, "custom_waiter")
+    if not waiter:
+        return None
+    return frappe.db.get_value("URY Waiter", waiter, "full_name") or waiter
 
 
 def _kot_notify_users(invoice):
@@ -403,6 +465,8 @@ def kot_list(target=None):
             # passes when the URL's target is "All".
             kotjson["production"] = "All"
 
+        # Waiter badge on the KDS card (2026-07-16).
+        kotjson["waiter_name"] = _kot_waiter_name(kotjson.get("invoice"))
         KOT.append(kotjson)
 
     return {
@@ -514,36 +578,33 @@ def served_kot_list():
     audio_alert = frappe.db.get_value(
         "POS Profile", {"branch": branch}, "custom_kot_alert"
     )
-    kotList = frappe.get_list(
-        "URY KOT",
-        fields=["name"],
-        filters={
-            "order_status": "Served",
-            "branch": branch,
-            "type": [
-                "in",
-                [
-                    "New Order",
-                    "Order Modified",
-                    "Duplicate",
-                    "Cancelled",
-                    "Partially cancelled",
-                ],
-            ],
-            "docstatus": 1,
-            "verified": 0,
-            "creation": (">=", three_hours_ago),
-        },
-        order_by="creation desc",
+    # Window + ordering are both on WHEN IT WAS SERVED, not when the KOT was
+    # created (2026-07-16). The old filter used `creation >= 3h ago`, so an
+    # order that was rung earlier in the shift but served just now never
+    # appeared in this list — useless for "undo a mistaken serve". Rows
+    # served before `served_at` existed fall back to creation.
+    kotList = frappe.db.sql(
+        """
+        SELECT name
+        FROM `tabURY KOT`
+        WHERE order_status = 'Served'
+          AND branch = %(branch)s
+          AND docstatus = 1
+          AND verified = 0
+          AND type IN ('New Order', 'Order Modified', 'Duplicate',
+                       'Cancelled', 'Partially cancelled')
+          AND COALESCE(served_at, creation) >= %(since)s
+        ORDER BY COALESCE(served_at, creation) DESC
+        LIMIT 100
+        """,
+        {"branch": branch, "since": three_hours_ago},
+        as_dict=True,
     )
-    print(kotList,"kotList..................")
     KOT = []
     for kot in kotList:
         kotdoc = frappe.get_doc("URY KOT", kot.name)
-        print(kot.name,".................kotdoc")
-        invoice=frappe.db.get_value("URY KOT",kot.name,"invoice")
-        print(invoice,".....................invoice")
         kotjson = json.loads(frappe.as_json(kotdoc))
+        kotjson["waiter_name"] = _kot_waiter_name(kotjson.get("invoice"))
         KOT.append(kotjson)
     return {
         "KOT": KOT,
