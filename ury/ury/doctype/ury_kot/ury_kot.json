@@ -49,6 +49,7 @@
   "change_requested_at",
   "change_resolved_by",
   "change_resolved_at",
+  "change_response",
   "served_at"
  ],
  "fields": [
@@ -283,10 +284,10 @@
    "allow_on_submit": 1,
    "fieldname": "change_status",
    "fieldtype": "Select",
-   "options": "\nAwaiting Confirmation\nConfirmed\nRejected",
+   "options": "\nAwaiting Confirmation\nConfirmed\nUpdated\nCancelled",
    "label": "Change Request Status",
    "in_standard_filter": 1,
-   "description": "Kitchen→waiter change request (2026-07-16). 'Awaiting Confirmation' puts the KOT ON HOLD on the KDS (Serve disabled) until the waiter confirms with the customer. 'Rejected' means cook it as originally ordered."
+   "description": "Kitchen→waiter change request (2026-07-16). 'Awaiting Confirmation' = kitchen asked, KOT is ON HOLD until the waiter answers. The waiter then Confirms, Updates the special request, or Cancels the order — each of which the KITCHEN must Accept to clear (Cancelled also takes the card off the board)."
   },
   {
    "allow_on_submit": 1,
@@ -325,6 +326,13 @@
    "fieldname": "change_resolved_at",
    "fieldtype": "Datetime",
    "label": "Change Resolved At"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "change_response",
+   "fieldtype": "Small Text",
+   "label": "Waiter Response",
+   "description": "What the waiter sent back after checking with the customer — the updated special request and/or a note. Shown on the KDS card until the kitchen Accepts it."
   },
   {
    "allow_on_submit": 1,

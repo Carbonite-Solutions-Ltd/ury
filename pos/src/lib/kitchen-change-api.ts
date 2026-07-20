@@ -36,14 +36,29 @@ export async function getKitchenChangeRequests(): Promise<KitchenChangeRequest[]
   }
 }
 
-/** Answer a request: 'confirm' (customer agreed) or 'reject' (make as ordered). */
+/**
+ * Answer a kitchen request.
+ *  - `confirm` — customer agreed to what the kitchen proposed.
+ *  - `update`  — revise the item's SPECIAL REQUEST (`itemNote`) and/or send
+ *    a note back. Only the instruction changes — never quantities, items or
+ *    price; re-ringing the order stays the cashier's job.
+ *  - `cancel`  — customer no longer wants it. Cancels the KITCHEN order; the
+ *    card leaves the board once the kitchen accepts.
+ * Whatever the answer, the kitchen must Accept it before the card clears.
+ */
 export async function respondKotChange(
   kot: string,
-  action: 'confirm' | 'reject'
+  action: 'confirm' | 'update' | 'cancel',
+  opts?: { note?: string; itemNote?: string }
 ): Promise<{ kot: string; status: string }> {
   const res = await call.post<{ message: { kot: string; status: string } }>(
     'ury.ury.api.ury_kot_display.respond_kot_change',
-    { kot, action }
+    {
+      kot,
+      action,
+      note: opts?.note || null,
+      item_note: opts?.itemNote || null,
+    }
   );
   return res.message;
 }
