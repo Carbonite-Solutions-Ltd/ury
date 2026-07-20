@@ -4135,6 +4135,102 @@ def get_daily_sales(date=None):
         }
 
 
+@frappe.whitelist()
+def get_waiter_sales(from_date=None, to_date=None, waiter=None):
+    """Sales served by a waiter, for her own sales report in the POS.
+
+    Scope: SUBMITTED POS Invoices whose ``custom_waiter`` is this waiter —
+    that covers BOTH orders she rang herself and orders a cashier rang on
+    her behalf. Returns are excluded, as are merged-source invoices (the
+    master carries the combined total).
+
+    Deliberately NOT branch-scoped: a waiter's orders are stamped with the
+    branch of the table/till she rang on, which need not match her own URY
+    User branch — branch-filtering her was what hid her orders before (see
+    the 2026-07-15 round-5 fix).
+
+    Waiter resolution:
+      - A self-serve waiter always gets her OWN sales; the ``waiter`` arg is
+        ignored so she can't read someone else's numbers.
+      - An elevated user (Administrator / System Manager / URY Manager /
+        URY Captain) may pass an explicit ``waiter`` to view that waiter's
+        sales.
+    2026-07-16.
+    """
+    self_waiter = _get_self_waiter_for_user()
+    if self_waiter:
+        waiter_name = self_waiter["name"]
+    elif waiter and _user_can_see_admin_reports():
+        waiter_name = waiter
+    else:
+        frappe.throw(
+            _(
+                "No waiter is linked to your user, so there are no waiter "
+                "sales to show. Ask your manager to link your user on the "
+                "{0} record."
+            ).format(_("URY Waiter")),
+            title=_("Not a Waiter"),
+        )
+
+    today = frappe.utils.today()
+    from_date = from_date or today
+    to_date = to_date or from_date
+    if to_date < from_date:
+        from_date, to_date = to_date, from_date
+
+    rows = frappe.db.sql(
+        """
+        SELECT
+            pi.name, pi.posting_date, pi.posting_time, pi.customer_name,
+            pi.restaurant_table, pi.grand_total, pi.net_total, pi.status,
+            pi.order_type,
+            (
+                SELECT COUNT(*) FROM `tabPOS Invoice Item` ii
+                WHERE ii.parent = pi.name
+            ) AS items_count
+        FROM `tabPOS Invoice` pi
+        WHERE pi.custom_waiter = %s
+        AND pi.docstatus = 1
+        AND (pi.is_return IS NULL OR pi.is_return = 0)
+        AND pi.posting_date BETWEEN %s AND %s
+        AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
+        ORDER BY pi.posting_date DESC, pi.posting_time DESC
+        """,
+        (waiter_name, from_date, to_date),
+        as_dict=True,
+    )
+
+    order_count = len(rows)
+    total_sales = sum(float(r.get("grand_total") or 0) for r in rows)
+
+    # Per-day rollup so a multi-day range shows a daily breakdown.
+    by_day = {}
+    for r in rows:
+        key = str(r["posting_date"])
+        bucket = by_day.setdefault(
+            key, {"posting_date": key, "order_count": 0, "total": 0.0}
+        )
+        bucket["order_count"] += 1
+        bucket["total"] += float(r.get("grand_total") or 0)
+
+    return {
+        "waiter": waiter_name,
+        "waiter_name": frappe.db.get_value("URY Waiter", waiter_name, "full_name")
+        or waiter_name,
+        "from_date": from_date,
+        "to_date": to_date,
+        "summary": {
+            "order_count": order_count,
+            "total_sales": total_sales,
+            "average_order": (total_sales / order_count) if order_count else 0,
+        },
+        "by_day": sorted(
+            by_day.values(), key=lambda x: x["posting_date"], reverse=True
+        ),
+        "invoices": rows,
+    }
+
+
 # ============================================================
 # Reports endpoints (2026-04-16 — reports batch 1)
 # ------------------------------------------------------------
