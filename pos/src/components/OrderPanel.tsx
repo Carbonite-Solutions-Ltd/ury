@@ -1,9 +1,11 @@
 import { useState } from 'react';
+import { v4 as uuidv4 } from 'uuid';
 import { Trash2, Edit, FrownIcon, Plus, Loader2, MessageSquare, Users, X } from 'lucide-react';
 import { usePOSStore } from '../store/pos-store';
 import { formatCurrency, cn, extractFrappeServerError, parseFrappeServerMessages } from '../lib/utils';
 import { canManageMenuPrices, isCaptainOrAbove } from '../lib/role-utils';
 import { useConnectivity } from '../lib/connectivity';
+import { useOutbox } from '../lib/outbox';
 import { CustomerSelect } from './CustomerSelect';
 import ProductDialog from './ProductDialog';
 import OrderTypeSelect from './OrderTypeSelect';
@@ -116,19 +118,6 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
         throw new Error('User not logged in');
       }
 
-      // Offline guard (Phase A): sending an order needs the server
-      // (naming series, pricing, tax, KOT to the kitchen). We can't queue
-      // it yet — that's Phase B — so tell the waiter plainly and keep the
-      // cart intact so they can resend once the connection is back.
-      if (!online) {
-        showToast.error({
-          title: "You're offline",
-          description:
-            "This order can't be sent to the kitchen right now. Your cart is saved — send it again once you're back online.",
-        });
-        return;
-      }
-
       // Hard block when the POS Profile has
       // `custom_block_orders_after_shift_end` enabled and the shift
       // has run past its `custom_shift_hours` limit. The
@@ -180,7 +169,12 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
       }
 
       setIsSubmitting(true);
-      
+
+      // One idempotency key per submit, sent on EVERY attempt (online +
+      // queued) so a mid-flight drop that maybe reached the server, then a
+      // queued replay, can't double-create. See ury_order.sync_order.
+      const idempotencyKey = uuidv4();
+
       const orderData = {
         items: activeOrders.map((item) => ({
           item: item.id,
@@ -212,10 +206,63 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
         comments: orderComment || undefined,
         terminal: terminalName || undefined,
         hotel_room: hotelRoom || undefined,
+        idempotency_key: idempotencyKey,
       };
 
-      await syncOrder(orderData);
-      
+      const itemCount = activeOrders.length;
+      const queueLabel = `${selectedOrderType}${
+        selectedTable ? ` · ${selectedTable}` : ''
+      } · ${itemCount} item${itemCount === 1 ? '' : 's'}`;
+
+      // Offline (Phase B): queue NEW orders — the outbox fires them to the
+      // kitchen automatically on reconnect (idempotent via the key). An
+      // update to an existing order can't be queued (it needs the live
+      // draft), so ask the waiter to retry when back online.
+      if (!online) {
+        if (isUpdatingOrder) {
+          showToast.error({
+            title: "You're offline",
+            description:
+              'Editing an existing order needs a connection. Try again once you’re back online.',
+          });
+          return;
+        }
+        useOutbox.getState().enqueue(orderData, queueLabel);
+        resetOrderState();
+        setNumberOfPeople(1);
+        showToast.success({
+          title: 'Order queued',
+          description:
+            "No internet — it'll be sent to the kitchen automatically when you're back online.",
+        });
+        onCloseMobile?.();
+        return;
+      }
+
+      // Online: submit now. If the connection drops mid-flight, queue the
+      // order (idempotent) instead of losing it — new orders only.
+      try {
+        await syncOrder(orderData);
+      } catch (err) {
+        const networkFailure =
+          (err as { isOffline?: boolean })?.isOffline ||
+          (parseFrappeServerMessages(err).length === 0 &&
+            (!useConnectivity.getState().online || err instanceof TypeError));
+        if (!isUpdatingOrder && networkFailure) {
+          useOutbox.getState().enqueue(orderData, queueLabel);
+          resetOrderState();
+          setNumberOfPeople(1);
+          showToast.success({
+            title: 'Connection dropped — order queued',
+            description:
+              "It'll be sent to the kitchen automatically when the connection is back.",
+          });
+          onCloseMobile?.();
+          return;
+        }
+        throw err; // real server error → outer catch (Price Not Set, etc.)
+      }
+
       // Reset all states after successful order submission
       resetOrderState();
       setNumberOfPeople(1);

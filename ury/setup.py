@@ -181,6 +181,25 @@ def get_custom_fields():
 					"print_hide_if_no_value": 1,
 					"description": "Set when this invoice has been merged into another (the master). Hidden from the Orders page list. Cleared on unmerge.",
 				},
+				# Offline order queue de-duplication (Phase B, 2026-07-21).
+				# A client-generated key stamped on a new POS Invoice so a
+				# queued offline order replayed on reconnect is returned
+				# instead of created twice. sync_order checks this before
+				# creating anything. Hidden internal field. Dual-sourced here
+				# + custom_field.json so pre-existing installs get the column.
+				{
+					"fieldname": "custom_idempotency_key",
+					"fieldtype": "Data",
+					"insert_after": "custom_terminal",
+					"label": "Idempotency Key",
+					"read_only": 1,
+					"no_copy": 1,
+					"hidden": 1,
+					"print_hide": 1,
+					"search_index": 1,
+					"description": "Client-generated key for the offline order queue. Ensures a queued order replayed on reconnect is not created twice.",
+					"translatable": 0,
+				},
 				# iHotel integration — "charged draft" fields. When the
 				# cashier picks "Charge to Room" in the Payment dialog,
 				# the backend writes a Folio Charge row on the matching

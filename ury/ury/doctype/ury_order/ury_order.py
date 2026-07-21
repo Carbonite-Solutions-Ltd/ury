@@ -17,6 +17,25 @@ class URYOrder(Document):
     pass
 
 
+# ── Offline order queue idempotency (Phase B, 2026-07-21) ──────────────
+def _find_invoice_by_idempotency_key(idempotency_key):
+    """Name of an existing POS Invoice carrying this offline-queue
+    idempotency key, or None. A non-empty key that matches means the order
+    was already created (a replay of a queued order)."""
+    if not idempotency_key:
+        return None
+    return frappe.db.get_value(
+        "POS Invoice", {"custom_idempotency_key": idempotency_key}, "name"
+    )
+
+
+def _should_stamp_idempotency(idempotency_key, existing_key_on_invoice):
+    """Pure decision (unit-tested): stamp the client key on this invoice
+    only when a key was supplied AND the invoice doesn't already carry one.
+    Never overwrite an existing key (a reused draft keeps its identity)."""
+    return bool(idempotency_key) and not existing_key_on_invoice
+
+
 @frappe.whitelist()
 def get_order_invoice(table=None, invoiceNo=None, order_type=None, is_payment=None):
     """returns the active invoice linked to the given table"""
@@ -180,6 +199,7 @@ def sync_order(
     terminal=None,
     hotel_room=None,
     selected_waiter=None,
+    idempotency_key=None,
 ):
     # `owner` is optional. The frontend deliberately omits it when
     # updating an existing order so we don't overwrite the original
@@ -195,9 +215,22 @@ def sync_order(
     # hits the Payment dialog's Charge to Room tab. See CLAUDE.md
     # "Fixes log" 2026-04-12.
     
+    # Offline order queue idempotency (Phase B, 2026-07-21). If this exact
+    # order was already created (same client-generated key), return it
+    # instead of creating a duplicate. The offline outbox can replay a
+    # queued order more than once on a flaky reconnect; table orders are
+    # incidentally deduped by the restaurant_table lookup in
+    # get_order_invoice, but Take Away / Aggregator orders are NOT — so
+    # without this a replay double-creates (and double-fires KOTs). The key
+    # is stamped on the invoice below so this lookup finds it on a replay.
+    if idempotency_key:
+        existing = _find_invoice_by_idempotency_key(idempotency_key)
+        if existing:
+            return frappe.get_doc("POS Invoice", existing).as_dict()
+
     user_role = frappe.get_roles()
     posprofile = frappe.get_doc("POS Profile", pos_profile)
-    
+
     billing_user = any(
         role.role in user_role for role in posprofile.role_allowed_for_billing
     )
@@ -359,7 +392,13 @@ def sync_order(
         )
         if terminal_branch and invoice_branch and terminal_branch == invoice_branch:
             invoice.custom_terminal = terminal
-    
+
+    # Stamp the offline-queue idempotency key on the invoice so a later
+    # replay of the same queued order is caught by the lookup at the top of
+    # this function and returned instead of re-created.
+    if _should_stamp_idempotency(idempotency_key, invoice.get("custom_idempotency_key")):
+        invoice.custom_idempotency_key = idempotency_key
+
     if order_type == "Aggregators":
         price_list = frappe.db.get_value("Aggregator Settings",{"customer": customer, "parent": invoice.branch, "parenttype": "Branch"},"price_list",)
         
