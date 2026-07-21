@@ -14,9 +14,11 @@ import AuthGuard from './components/AuthGuard';
 import RequireNotWaiter from './components/RequireNotWaiter';
 import POSOpeningProvider from './components/POSOpeningProvider';
 import ShiftHoursBanner from './components/ShiftHoursBanner';
+import OfflineBanner from './components/OfflineBanner';
 import ScreenSizeProvider from './components/ScreenSizeProvider';
 import InstallPrompt from './components/InstallPrompt';
 import { ToastProvider } from './components/ui/toast';
+import { useConnectivity } from './lib/connectivity';
 import { usePOSStore } from './store/pos-store';
 import { useEffect, useState } from 'react';
 import { setupKotListener } from './lib/kot-listener';
@@ -109,6 +111,14 @@ function App() {
   // allowed coordinates. See CLAUDE.md "Fixes log" 2026-04-10.
   useEffect(() => {
     if (!terminal || geofencePassed) return;
+    // Offline boot: skip the geofence gate. `validateGeofence` is a POST
+    // that can't succeed without a connection, and blocking the whole POS
+    // on it would defeat offline app-shell loading. The check runs
+    // normally again on the next online boot. (Phase A offline support.)
+    if (!useConnectivity.getState().online) {
+      setGeofencePassed(true);
+      return;
+    }
     let cancelled = false;
     setGeofenceChecking(true);
     setGeofenceError(null);
@@ -295,6 +305,7 @@ function App() {
                     POSOpeningProvider level used to drop it
                     OUTSIDE the h-screen container, pushing the
                     Footer below the viewport. */}
+                <OfflineBanner />
                 <ShiftHoursBanner />
                 <Header />
                 <div className="flex-1 overflow-hidden">

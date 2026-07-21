@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Trash2, Edit, FrownIcon, Plus, Loader2, MessageSquare, Users, X } from 'lucide-react';
 import { usePOSStore } from '../store/pos-store';
-import { formatCurrency, cn, extractFrappeServerError } from '../lib/utils';
+import { formatCurrency, cn, extractFrappeServerError, parseFrappeServerMessages } from '../lib/utils';
 import { canManageMenuPrices, isCaptainOrAbove } from '../lib/role-utils';
+import { useConnectivity } from '../lib/connectivity';
 import { CustomerSelect } from './CustomerSelect';
 import ProductDialog from './ProductDialog';
 import OrderTypeSelect from './OrderTypeSelect';
@@ -54,6 +55,7 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
     lockedItemQtys,
   } = usePOSStore();
   const user = useRootStore((state: RootState) => state.user);
+  const online = useConnectivity((s) => s.online);
   // On an EXISTING order, a plain cashier can only INCREASE the original
   // items — never reduce them below what was ordered or remove them (that
   // previously let them delete the whole order by emptying it). Captains /
@@ -112,6 +114,19 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
 
       if (!user?.name) {
         throw new Error('User not logged in');
+      }
+
+      // Offline guard (Phase A): sending an order needs the server
+      // (naming series, pricing, tax, KOT to the kitchen). We can't queue
+      // it yet — that's Phase B — so tell the waiter plainly and keep the
+      // cart intact so they can resend once the connection is back.
+      if (!online) {
+        showToast.error({
+          title: "You're offline",
+          description:
+            "This order can't be sent to the kitchen right now. Your cart is saved — send it again once you're back online.",
+        });
+        return;
       }
 
       // Hard block when the POS Profile has
@@ -210,6 +225,25 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
       onCloseMobile?.();
     } catch (error) {
       console.error('Failed to sync order:', error);
+
+      // Connection dropped mid-submit (weak/flaky internet). frappe-js-sdk
+      // throws a raw TypeError with no `_server_messages` because there's
+      // no HTTP response to read. Show a clear "connection lost" message
+      // instead of the cryptic "Cannot read properties of undefined", and
+      // keep the cart (we don't resetOrderState on failure) so the waiter
+      // can resend. Phase B will queue this automatically.
+      const hasServerMessage = parseFrappeServerMessages(error).length > 0;
+      if (
+        !hasServerMessage &&
+        (!useConnectivity.getState().online || error instanceof TypeError)
+      ) {
+        showToast.error({
+          title: 'Connection lost',
+          description:
+            "Couldn't reach the server — the order was not sent. Your cart is saved; try again when the connection is stable.",
+        });
+        return;
+      }
 
       // Parse Frappe's _server_messages envelope. Prefers raise_exception=1
       // so we surface the actual ValidationError, not any side-effect
