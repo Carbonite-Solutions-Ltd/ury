@@ -413,6 +413,7 @@ fixtures = [
                     "POS Invoice-custom_ury_order_number",
                     "POS Invoice-custom_terminal",
                     "POS Invoice-custom_merged_into",
+                    "POS Invoice-custom_idempotency_key",
                     "POS Invoice-custom_transfer_status",
                     "POS Invoice-custom_waiter",
                     "POS Invoice-custom_print_count",

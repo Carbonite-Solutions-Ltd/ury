@@ -87,6 +87,13 @@ export interface SyncOrderRequest {
   terminal?: string | null;
   /** iHotel: when set, the draft is tagged with the selected hotel room so the intent survives reloads. The actual folio write happens at charge_invoice_to_room time. */
   hotel_room?: string | null;
+  /**
+   * Offline queue idempotency key (Phase B). A client-generated UUID sent
+   * on EVERY submit (online + queued). If a queued order is replayed on
+   * reconnect, the backend returns the already-created invoice instead of
+   * duplicating it. See ury_order.sync_order.
+   */
+  idempotency_key?: string;
 }
 
 export const syncOrder = async (data: SyncOrderRequest) => {

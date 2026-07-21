@@ -15,6 +15,7 @@ import RequireNotWaiter from './components/RequireNotWaiter';
 import POSOpeningProvider from './components/POSOpeningProvider';
 import ShiftHoursBanner from './components/ShiftHoursBanner';
 import OfflineBanner from './components/OfflineBanner';
+import OutboxIndicator from './components/OutboxIndicator';
 import ScreenSizeProvider from './components/ScreenSizeProvider';
 import InstallPrompt from './components/InstallPrompt';
 import { ToastProvider } from './components/ui/toast';
@@ -306,6 +307,7 @@ function App() {
                     OUTSIDE the h-screen container, pushing the
                     Footer below the viewport. */}
                 <OfflineBanner />
+                <OutboxIndicator />
                 <ShiftHoursBanner />
                 <Header />
                 <div className="flex-1 overflow-hidden">
