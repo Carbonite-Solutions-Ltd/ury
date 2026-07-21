@@ -50,6 +50,40 @@ export async function getWaiters(query?: string): Promise<Waiter[]> {
   return res.message || [];
 }
 
+const WAITER_CACHE_KEY = 'ury_offline_waiters';
+
+/**
+ * Full active-waiter list with a durable localStorage fallback (Phase B
+ * offline). `get_waiters` is a `ury.*` GET, but the picker only opens when
+ * a cashier rings an order — so it's often not in the service-worker cache
+ * offline. This caches the full list on every successful online fetch and
+ * falls back to it when offline, so the cashier can still assign a waiter
+ * with no internet. The dialog filters this list client-side, so search
+ * works offline too. Throws only when offline AND there's no cached copy.
+ */
+export async function loadWaitersWithCache(): Promise<Waiter[]> {
+  try {
+    const waiters = await getWaiters();
+    try {
+      localStorage.setItem(WAITER_CACHE_KEY, JSON.stringify(waiters));
+    } catch {
+      /* localStorage full/unavailable — online still works */
+    }
+    return waiters;
+  } catch (e) {
+    try {
+      const raw = localStorage.getItem(WAITER_CACHE_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) return arr as Waiter[];
+      }
+    } catch {
+      /* corrupt cache — fall through */
+    }
+    throw e;
+  }
+}
+
 /** Quick-add a waiter from the POS. */
 export async function createWaiter(
   full_name: string,

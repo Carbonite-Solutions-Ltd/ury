@@ -10,17 +10,20 @@
  * once it drains successfully on reconnect. The copy makes that explicit.
  */
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   CloudUpload,
   Loader2,
   AlertTriangle,
   RefreshCw,
+  Pencil,
   Trash2,
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
-import { useOutbox } from '../lib/outbox';
+import { useOutbox, type OutboxEntry } from '../lib/outbox';
 import { useConnectivity } from '../lib/connectivity';
+import { usePOSStore } from '../store/pos-store';
 
 const OutboxIndicator = () => {
   const entries = useOutbox((s) => s.entries);
@@ -29,7 +32,19 @@ const OutboxIndicator = () => {
   const discard = useOutbox((s) => s.discard);
   const drain = useOutbox((s) => s.drain);
   const online = useConnectivity((s) => s.online);
+  const loadFromOutboxPayload = usePOSStore((s) => s.loadFromOutboxPayload);
+  const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
+
+  // Load a failed order back into the cart so the waiter can fix what was
+  // wrong (e.g. pick a valid customer) and re-send. Removes it from the
+  // queue — the fixed order is re-submitted as a fresh new order.
+  const handleFix = (entry: OutboxEntry) => {
+    loadFromOutboxPayload(entry.payload);
+    discard(entry.id);
+    setExpanded(false);
+    navigate('/');
+  };
 
   if (entries.length === 0) return null;
 
@@ -93,12 +108,20 @@ const OutboxIndicator = () => {
                   <div className="flex items-center gap-1 shrink-0">
                     <button
                       type="button"
-                      onClick={() => retry(e.id)}
-                      title="Retry"
+                      onClick={() => handleFix(e)}
+                      title="Open in the cart to fix and re-send"
                       className="inline-flex items-center gap-1 rounded bg-white/20 hover:bg-white/30 px-2 py-1 text-xs font-semibold"
                     >
+                      <Pencil className="w-3.5 h-3.5" />
+                      Fix
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => retry(e.id)}
+                      title="Try sending again as-is"
+                      className="inline-flex items-center rounded bg-white/20 hover:bg-white/30 p-1"
+                    >
                       <RefreshCw className="w-3.5 h-3.5" />
-                      Retry
                     </button>
                     <button
                       type="button"
