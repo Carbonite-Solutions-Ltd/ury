@@ -439,10 +439,16 @@ export const usePOSStore = create<POSStore>((set, get) => ({
     const { posProfile, selectedRoom, selectedOrderType } = get();
     if (!posProfile?.restaurant) return;
 
+    // Durable offline copies (localStorage): the exact menu for this
+    // context + the last menu loaded. Lets the waiter still browse the
+    // menu with no internet even if the SW runtime cache missed it.
+    const CTX_KEY = `ury_offline_menu:${posProfile.name}:${selectedRoom || ''}:${selectedOrderType}`;
+    const LAST_KEY = 'ury_offline_menu_last';
+
     try {
       set({ menuLoading: true, error: null });
       const items = await getRestaurantMenu(posProfile.name, selectedRoom, selectedOrderType);
-      
+
       const menuItems: MenuItem[] = items.map(item => ({
         id: item.item,
         name: item.item_name,
@@ -458,7 +464,25 @@ export const usePOSStore = create<POSStore>((set, get) => ({
       }));
 
       set({ menuItems });
+      try {
+        const serialized = JSON.stringify(menuItems);
+        storage.setItem(CTX_KEY, serialized);
+        storage.setItem(LAST_KEY, serialized);
+      } catch {
+        /* localStorage full/unavailable — online still works */
+      }
     } catch (error) {
+      // Offline / fetch failed — fall back to the durable copy (this menu
+      // context, else the last menu loaded) so the waiter can still browse.
+      const durable = storage.getItem(CTX_KEY) || storage.getItem(LAST_KEY);
+      if (durable) {
+        try {
+          set({ menuItems: JSON.parse(durable), error: null });
+          return;
+        } catch {
+          /* corrupt cache — fall through */
+        }
+      }
       // `menu-api.ts` already unwraps Frappe's _server_messages into
       // `new Error(serverMessage)` — keep that friendly text instead of
       // replacing it with a vague fallback. See CLAUDE.md "Fixes log".
@@ -493,6 +517,12 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   },
 
   fetchCategories: async () => {
+    // Durable offline copy (localStorage). getMenuCourses hits the
+    // /api/resource REST path which the service worker does NOT cache, and
+    // App.tsx clears the sessionStorage 'menuCategories' cache on every
+    // terminal resolve — so without this the POS shows "failed to load
+    // menu categories" on an offline reload. localStorage survives both.
+    const DURABLE_KEY = 'ury_offline_categories';
     try {
       const cached = sessionStorage.getItem('menuCategories');
       if (cached) {
@@ -504,8 +534,20 @@ export const usePOSStore = create<POSStore>((set, get) => ({
       const courses = await getMenuCourses();
       const categoryNames = courses.map(course => course.name);
       sessionStorage.setItem('menuCategories', JSON.stringify(categoryNames));
+      storage.setItem(DURABLE_KEY, JSON.stringify(categoryNames));
       set({ categories: categoryNames });
     } catch (error) {
+      // Offline / fetch failed — fall back to the last durable copy so the
+      // POS still renders its categories with no internet.
+      const durable = storage.getItem(DURABLE_KEY);
+      if (durable) {
+        try {
+          set({ categories: JSON.parse(durable), error: null });
+          return;
+        } catch {
+          /* corrupt cache — fall through to the error */
+        }
+      }
       set({ error: 'Failed to load menu categories' });
       throw error;
     }
