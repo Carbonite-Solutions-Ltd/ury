@@ -22,5 +22,10 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // The service worker is a WebWorker context (its own globals: self as
+  // ServiceWorkerGlobalScope, __WB_MANIFEST, etc.) that conflicts with the
+  // app's DOM lib. It's compiled separately by vite-plugin-pwa's
+  // injectManifest build, not by the app tsc, so exclude it here.
+  "exclude": ["src/sw.ts"]
 }
