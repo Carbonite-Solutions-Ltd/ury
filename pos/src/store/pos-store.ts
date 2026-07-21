@@ -6,9 +6,9 @@ import { getCurrencyInfo, PosProfileCombined, getCombinedPosProfile } from '../l
 import { getMenuCourses } from '../lib/menu-course-api';
 import { getCustomerGroups, getCustomerTerritories } from '../lib/customer-api';
 import { DEFAULT_ORDER_TYPE, OrderType } from '../data/order-types';
-import { getTableOrder, TableOrder } from '../lib/order-api';
+import { getTableOrder, TableOrder, type SyncOrderRequest } from '../lib/order-api';
 import { getPaymentModes } from '../lib/payment-api';
-import { Waiter } from '../lib/waiter-api';
+import { Waiter, loadWaitersWithCache } from '../lib/waiter-api';
 
 // Constants
 const MAX_QUANTITY = 99;
@@ -182,6 +182,12 @@ interface POSStore extends POSState {
   getItemQuantityFromCart: (item: MenuItem) => number;
   loadTableOrder: (table: string) => Promise<void>;
   clearTableOrder: () => void;
+  /**
+   * Hydrate the cart from a queued outbox order's payload so the waiter
+   * can fix it (e.g. pick a valid customer) and re-send. Used by the
+   * OutboxIndicator "Fix" action on a failed offline order. 2026-07-21.
+   */
+  loadFromOutboxPayload: (payload: SyncOrderRequest) => void;
   isMenuInteractionDisabled: () => boolean;
   isOrderInteractionDisabled: () => boolean;
   initializeApp: () => Promise<void>;
@@ -213,6 +219,16 @@ const calculateItemPrice = (item: OrderItem): number => {
   const basePrice = item.selectedVariant?.price || item.price;
   const addonsTotal = item.selectedAddons?.reduce((sum, addon) => sum + addon.price, 0) || 0;
   return basePrice + addonsTotal;
+};
+
+// Default POS customer. Prefer the POS Profile's configured customer
+// (ERPNext POS Profile `customer` field) so a site whose default isn't
+// literally "Cash Customer" doesn't fail order creation with "customer
+// does not exist". Falls back to "Cash Customer" for back-compat when the
+// profile has no default set. 2026-07-21.
+const defaultCustomer = (profile: PosProfileCombined | null): Customer => {
+  const c = profile?.customer || 'Cash Customer';
+  return { id: c, name: c, phone: '' };
 };
 
 // ── In-progress cart persistence ───────────────────────────────────
@@ -359,14 +375,19 @@ export const usePOSStore = create<POSStore>((set, get) => ({
       // branch 'X'..." See CLAUDE.md "Fixes log" 2026-04-08.
       set({
         isInitializing: false,
-        // Default to Cash Customer, but keep a customer restored from a
-        // persisted cart on reload (see CART_SESSION_KEY).
-        selectedCustomer: get().selectedCustomer || {
-          id: 'Cash Customer',
-          name: 'Cash Customer',
-          phone: '',
-        },
+        // Default to the POS Profile's configured customer, but keep a
+        // customer restored from a persisted cart on reload (see
+        // CART_SESSION_KEY).
+        selectedCustomer:
+          get().selectedCustomer || defaultCustomer(get().posProfile),
       });
+
+      // Warm the offline waiter cache so the picker works with no internet
+      // (only when this profile uses waiters). Fire-and-forget — a failure
+      // is fine (the picker still falls back to its own cache on open).
+      if (get().posProfile?.custom_use_waiter) {
+        loadWaitersWithCache().catch(() => {});
+      }
     } catch (error) {
       // Only unexpected synchronous errors reach here — allSettled never
       // rejects. Keep a fallback so we still unstick the UI.
@@ -899,6 +920,55 @@ export const usePOSStore = create<POSStore>((set, get) => ({
     });
   },
 
+  loadFromOutboxPayload: (payload: SyncOrderRequest) => {
+    const items: OrderItem[] = (payload.items || []).map((it) => {
+      const base = {
+        id: it.item,
+        name: it.item_name,
+        price: Number(it.rate) || 0,
+        quantity: it.qty,
+        comment: (it as { comment?: string }).comment,
+        image: null,
+        item: it.item,
+        item_name: it.item_name,
+        item_image: null,
+        course: '',
+        description: '',
+        special_dish: 0 as 0 | 1,
+        tax_rate: 0,
+      };
+      return { ...base, uniqueId: generateUniqueId(base as OrderItem) } as OrderItem;
+    });
+
+    set({
+      activeOrders: items,
+      selectedOrderType: (payload.order_type as OrderType) || DEFAULT_ORDER_TYPE,
+      selectedTable: payload.table || null,
+      selectedRoom: payload.room || null,
+      // Keep the payload's customer so the waiter can SEE what was wrong
+      // (e.g. an invalid customer) and change it; if none, use the default.
+      selectedCustomer: payload.customer
+        ? { id: payload.customer, name: payload.customer, phone: '' }
+        : defaultCustomer(get().posProfile),
+      selectedWaiter: payload.selected_waiter
+        ? {
+            name: payload.selected_waiter,
+            full_name: payload.selected_waiter,
+            mobile_number: null,
+          }
+        : null,
+      orderComment: payload.comments || '',
+      // A queued order was never created server-side, so this becomes a
+      // fresh NEW order on re-send (not an update).
+      isUpdatingOrder: false,
+      orderId: null,
+      lockedItemQtys: {},
+      hotelRoom: payload.hotel_room || null,
+      ihotelProfile: null,
+      selectedAggregator: null,
+    });
+  },
+
   setOrderForUpdate: (orderId: string | null) => {
     set({
       isUpdatingOrder: orderId !== null,
@@ -925,7 +995,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   const { fetchMenuItems, selectedRoom } = get();
 
   set({
-    selectedCustomer: { id: 'Cash Customer', name: 'Cash Customer', phone: '' },
+    selectedCustomer: defaultCustomer(get().posProfile),
     selectedWaiter: null,
     lockedItemQtys: {},
     selectedTable: null,

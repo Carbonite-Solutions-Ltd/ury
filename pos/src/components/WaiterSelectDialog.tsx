@@ -4,7 +4,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { showToast } from './ui/toast';
 import { extractFrappeServerError } from '../lib/utils';
-import { getWaiters, createWaiter, type Waiter } from '../lib/waiter-api';
+import { loadWaitersWithCache, createWaiter, type Waiter } from '../lib/waiter-api';
 
 /**
  * Waiter picker shown when the cashier creates a NEW order on a POS
@@ -21,29 +21,46 @@ const WaiterSelectDialog: React.FC<WaiterSelectDialogProps> = ({
   onCancel,
 }) => {
   const [query, setQuery] = useState('');
-  const [waiters, setWaiters] = useState<Waiter[]>([]);
+  const [allWaiters, setAllWaiters] = useState<Waiter[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState('');
   const [newMobile, setNewMobile] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const load = async (q?: string) => {
-    setLoading(true);
-    try {
-      setWaiters(await getWaiters(q));
-    } catch (e) {
-      showToast.error(extractFrappeServerError(e, 'Failed to load waiters').message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Initial load + debounced search.
+  // Load the full active-waiter list once (offline-first: a cached copy is
+  // used when there's no internet). Filtering is client-side below so the
+  // picker AND its search both work offline.
   useEffect(() => {
-    const t = setTimeout(() => load(query.trim() || undefined), 220);
-    return () => clearTimeout(t);
-  }, [query]);
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const list = await loadWaitersWithCache();
+        if (!cancelled) setAllWaiters(list);
+      } catch (e) {
+        if (!cancelled) {
+          showToast.error(
+            extractFrappeServerError(e, 'Failed to load waiters').message
+          );
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const q = query.trim().toLowerCase();
+  const waiters = q
+    ? allWaiters.filter(
+        (w) =>
+          w.full_name.toLowerCase().includes(q) ||
+          (w.mobile_number || '').toLowerCase().includes(q)
+      )
+    : allWaiters;
 
   const handleAdd = async () => {
     const name = newName.trim();
