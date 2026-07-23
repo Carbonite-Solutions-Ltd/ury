@@ -193,6 +193,26 @@ def _kot_notify_users(invoice):
     return recipients
 
 
+def _kot_kds_targets(kot, production):
+    """The KDS screen targets this KOT appears on, so a realtime ping can
+    reach the right kitchen screens (2026-07-23). URY Production Unit mode →
+    its production unit; Menu Course mode (`production` is NULL) → the
+    departments of its items (course → custom_department, default "Food")."""
+    if production:
+        return {production}
+    targets = set()
+    for row in frappe.get_all(
+        "URY KOT Items", filters={"parent": kot}, fields=["course"]
+    ):
+        dept = None
+        if row.get("course"):
+            dept = frappe.db.get_value(
+                "URY Menu Course", row["course"], "custom_department"
+            )
+        targets.add(dept or "Food")
+    return targets
+
+
 @frappe.whitelist()
 def request_kot_change(kot, message, item=None):
     """Kitchen raises a change request → KOT goes on hold, waiter alerted."""
@@ -314,17 +334,33 @@ def respond_kot_change(kot, action, note=None, item_note=None):
     )
     frappe.db.commit()
 
-    # Tell the kitchen screens so the card comes off hold immediately.
+    # Tell the kitchen screens so the card updates immediately — no reload
+    # (2026-07-23). The KDS subscribes per screen to
+    # `kot_change_resolved_<branch>_<target>`, where target is the production
+    # unit (URY Production Unit mode) or the item's department (Menu Course
+    # mode), plus an "All" channel. The previous code pinged
+    # `kot_update_<branch>_All` with just the KOT name, which the new-KOT
+    # socket handler mis-read as a fresh card — and it never reached a
+    # specific production screen at all, so the kitchen had to reload.
     branch = frappe.db.get_value("URY KOT", kot, "branch")
-    frappe.publish_realtime(
-        event="kot_change_resolved",
-        message={"kot": kot, "status": new_status, "by": frappe.session.user},
-        after_commit=True,
-    )
+    production = frappe.db.get_value("URY KOT", kot, "production")
+    msg = {"kot": kot, "status": new_status, "by": frappe.session.user}
     if branch:
         frappe.publish_realtime(
-            event=f"kot_update_{branch}_All", message={"kot": kot}, after_commit=True
+            event=f"kot_change_resolved_{branch}_All",
+            message=msg,
+            after_commit=True,
         )
+        for target in _kot_kds_targets(kot, production):
+            frappe.publish_realtime(
+                event=f"kot_change_resolved_{branch}_{target}",
+                message=msg,
+                after_commit=True,
+            )
+    # Legacy global event kept for any other listener.
+    frappe.publish_realtime(
+        event="kot_change_resolved", message=msg, after_commit=True
+    )
     return {"kot": kot, "status": new_status}
 
 
@@ -702,14 +738,42 @@ def served_kot_list(production=None):
         }
 
     window_ago = frappe.utils.add_to_date(today, hours=-window_hours)
+
+    # Production/department scoping (2026-07-23): AIRTIGHT — a KOT served in
+    # the kitchen must NOT show on the bar screen's reinstate list. Mirrors
+    # get_served_summary. "All"/no production stays branch-wide.
+    #   - URY Production Unit mode: each KOT carries `production`, filter on it.
+    #   - Menu Course mode: `production` is NULL on the KOT and the screen is a
+    #     department, so show a KOT only when it has an item in that department
+    #     (course -> custom_department, default "Food").
+    kds_mode = (
+        frappe.db.get_value(
+            "POS Profile", {"branch": branch}, "custom_kds_routing_mode"
+        )
+        or "Menu Course"
+    )
+    scope_sql = ""
+    scope_params = {}
+    if production and production != "All":
+        if kds_mode == "URY Production Unit":
+            scope_sql = " AND production = %(kds_production)s"
+            scope_params["kds_production"] = production
+        else:
+            scope_sql = (
+                " AND EXISTS (SELECT 1 FROM `tabURY KOT Items` ki "
+                "LEFT JOIN `tabURY Menu Course` mc ON mc.name = ki.course "
+                "WHERE ki.parent = `tabURY KOT`.name "
+                "AND COALESCE(NULLIF(mc.custom_department, ''), 'Food') "
+                "= %(kds_dept)s)"
+            )
+            scope_params["kds_dept"] = production
+
     # Window + ordering are both on WHEN IT WAS SERVED, not when the KOT was
-    # created (2026-07-16). The old filter used `creation >= 3h ago`, so an
-    # order that was rung earlier in the shift but served just now never
-    # appeared in this list — useless for "undo a mistaken serve". Rows
-    # served before `served_at` existed fall back to creation. The window is
-    # the production unit's configured hours (default 3) as of 2026-07-23.
+    # created (2026-07-16). Rows served before `served_at` existed fall back
+    # to creation. The window is the production unit's configured hours
+    # (default 3, 2026-07-23). `scope_sql` + its values are parameterised.
     kotList = frappe.db.sql(
-        """
+        f"""
         SELECT name
         FROM `tabURY KOT`
         WHERE order_status = 'Served'
@@ -719,10 +783,11 @@ def served_kot_list(production=None):
           AND type IN ('New Order', 'Order Modified', 'Duplicate',
                        'Cancelled', 'Partially cancelled')
           AND COALESCE(served_at, creation) >= %(since)s
+          {scope_sql}
         ORDER BY COALESCE(served_at, creation) DESC
         LIMIT 100
         """,
-        {"branch": branch, "since": window_ago},
+        {"branch": branch, "since": window_ago, **scope_params},
         as_dict=True,
     )
     KOT = []
