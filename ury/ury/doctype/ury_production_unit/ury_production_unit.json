@@ -13,6 +13,9 @@
   "branch",
   "warehouse",
   "item_groups",
+  "reinstate_section",
+  "enable_reinstate",
+  "reinstate_window_hours",
   "printer_info_section",
   "printer_settings"
  ],
@@ -52,6 +55,26 @@
    "options": "URY Production Item Groups"
   },
   {
+   "fieldname": "reinstate_section",
+   "fieldtype": "Section Break",
+   "label": "Served List / Reinstate"
+  },
+  {
+   "default": "1",
+   "description": "When on, the KDS 'Recently Served' tab shows recently-served orders for this production unit so the kitchen can undo (reinstate) a mistaken serve. Turn OFF to hide the Recently Served tab for this unit entirely (the Items Served summary still shows).",
+   "fieldname": "enable_reinstate",
+   "fieldtype": "Check",
+   "label": "Enable Reinstate"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_reinstate",
+   "description": "How many hours a served order stays in the Recently Served list and can be reinstated. Leave 0 (or blank) to use the default of 3 hours. Only applies when Enable Reinstate is on.",
+   "fieldname": "reinstate_window_hours",
+   "fieldtype": "Int",
+   "label": "Reinstate Window (Hours)"
+  },
+  {
    "collapsible": 1,
    "fieldname": "printer_info_section",
    "fieldtype": "Section Break",
@@ -66,7 +89,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-10-04 18:52:21.594992",
+ "modified": "2026-07-23 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "URY",
  "name": "URY Production Unit",

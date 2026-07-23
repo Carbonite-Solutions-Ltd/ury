@@ -5,145 +5,183 @@
     <Header :view-mode="viewMode" @set-view="onSetView" @logout="logout" />
 
     <div class="mx-auto p-4 mb-16 relative">
-    <!-- Served list + reinstate (2026-07-16) -->
-    <div v-if="viewMode === 'served'" class="max-w-3xl">
-      <!-- Sold summary (2026-07-23): per-item quantities + per-waiter,
-           printable for end-of-day accounting. Scoped to this screen's
-           production/department and day (defaults to today). -->
-      <div class="mb-4 rounded-xl bg-white shadow p-4">
-        <div class="flex items-center justify-between gap-3 flex-wrap">
-          <div>
-            <h2 class="text-lg font-bold text-gray-900">Items Sold</h2>
-            <p class="text-xs text-gray-500">
-              {{ production || "All" }} · {{ summaryDate }}
-            </p>
-          </div>
-          <div class="flex items-center gap-2">
-            <input
-              type="date"
-              v-model="summaryDate"
-              :max="todayIso()"
-              @change="fetchServedSummary"
-              class="rounded-md border border-gray-300 px-2 py-1 text-sm"
-            />
-            <button
-              type="button"
-              @click="printServedSummary"
-              :disabled="!servedSummary || !servedSummary.items.length"
-              class="rounded-md bg-gray-900 text-white px-3 py-1.5 text-sm font-semibold hover:bg-gray-700 disabled:opacity-50"
+    <!-- Served view (2026-07-16 / sidebar 2026-07-23): a sidebar toggles
+         Recently Served (reinstate list) vs Items Served (sold summary).
+         Recently Served is first + the default; it's hidden when the
+         production unit has reinstate disabled. -->
+    <div v-if="viewMode === 'served'" class="flex gap-4 items-start">
+      <aside class="w-40 shrink-0 space-y-1">
+        <button
+          v-if="reinstateEnabled"
+          type="button"
+          @click="servedTab = 'recent'"
+          :class="[
+            'w-full text-left px-3 py-2 rounded-lg text-sm font-semibold transition',
+            servedTab === 'recent'
+              ? 'bg-gray-900 text-white shadow'
+              : 'bg-white text-gray-700 hover:bg-gray-100',
+          ]"
+        >
+          Recently Served
+        </button>
+        <button
+          type="button"
+          @click="servedTab = 'summary'"
+          :class="[
+            'w-full text-left px-3 py-2 rounded-lg text-sm font-semibold transition',
+            servedTab === 'summary'
+              ? 'bg-gray-900 text-white shadow'
+              : 'bg-white text-gray-700 hover:bg-gray-100',
+          ]"
+        >
+          Items Served
+        </button>
+      </aside>
+
+      <div class="flex-1 min-w-0 max-w-3xl">
+        <!-- Recently served (reinstate) — default view -->
+        <div v-if="servedTab === 'recent' && reinstateEnabled">
+          <p v-if="servedLoading" class="text-gray-600">
+            Loading served orders…
+          </p>
+          <p v-else-if="!servedKots.length" class="text-gray-600">
+            No orders served in the last {{ reinstateWindowHours }} hours.
+          </p>
+          <div v-else class="space-y-3">
+            <div
+              v-for="s in servedKots"
+              :key="s.name"
+              class="flex items-center justify-between gap-4 rounded-xl bg-white shadow p-4"
             >
-              Print
-            </button>
+              <div class="min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span
+                    class="rounded-full bg-gray-900 text-white px-3 py-0.5 text-lg font-extrabold leading-none"
+                  >
+                    #{{ orderLabel(s) }}
+                  </span>
+                  <span
+                    v-if="s.waiter_name"
+                    class="rounded-full bg-[#2563EB] text-white px-2 py-0.5 text-xs font-bold leading-none"
+                  >
+                    {{ s.waiter_name }}
+                  </span>
+                  <span class="text-sm text-gray-500">
+                    {{ s.restaurant_table || "Takeaway" }}
+                  </span>
+                </div>
+                <div class="mt-1 text-xs text-gray-500">
+                  Served {{ servedTimeLabel(s) }} ·
+                  {{ (s.kot_items && s.kot_items.length) || 0 }} item(s)
+                </div>
+              </div>
+              <button
+                type="button"
+                :disabled="reinstatingKot === s.name"
+                @click="reinstateKot(s)"
+                class="shrink-0 rounded-md border-2 border-[#DC2626] px-4 py-2 font-semibold text-[#991B1B] hover:bg-[#FEF2F2] disabled:opacity-50"
+              >
+                {{ reinstatingKot === s.name ? "Undoing…" : "Reinstate" }}
+              </button>
+            </div>
           </div>
         </div>
 
-        <p v-if="summaryLoading" class="mt-3 text-sm text-gray-500">
-          Loading summary…
-        </p>
-        <template v-else-if="servedSummary && servedSummary.items.length">
-          <div class="mt-3 flex items-center gap-3 flex-wrap text-sm">
-            <span class="rounded-lg bg-gray-100 px-3 py-1 font-semibold">
-              Total qty: {{ fmtQty(servedSummary.total_qty) }}
-            </span>
-            <span class="rounded-lg bg-gray-100 px-3 py-1 font-semibold">
-              {{ servedSummary.distinct_items }} item(s)
-            </span>
-            <span class="rounded-lg bg-gray-100 px-3 py-1 font-semibold">
-              {{ servedSummary.ticket_count }} ticket(s)
-            </span>
-          </div>
-          <ul class="mt-3 divide-y divide-gray-100">
-            <li
-              v-for="it in servedSummary.items"
-              :key="it.item_name"
-              class="flex items-center justify-between py-1.5"
-            >
-              <span class="text-gray-800">{{ it.item_name }}</span>
-              <span class="font-bold text-gray-900">{{
-                fmtQty(it.total_qty)
-              }}</span>
-            </li>
-          </ul>
-          <div v-if="servedSummary.by_waiter.length" class="mt-4">
-            <button
-              type="button"
-              @click="showWaiterBreakdown = !showWaiterBreakdown"
-              class="text-sm font-semibold text-blue-700"
-            >
-              {{ showWaiterBreakdown ? "Hide" : "Show" }} by waiter
-            </button>
-            <div v-if="showWaiterBreakdown" class="mt-2 space-y-2">
-              <div
-                v-for="w in servedSummary.by_waiter"
-                :key="w.waiter"
-                class="rounded-lg bg-gray-50 p-2"
-              >
-                <div
-                  class="flex items-center justify-between text-sm font-semibold text-gray-800"
+        <!-- Items sold summary (2026-07-23): per-item quantities +
+             per-waiter, printable for end-of-day accounting. -->
+        <div v-else-if="servedTab === 'summary'">
+          <div class="rounded-xl bg-white shadow p-4">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <h2 class="text-lg font-bold text-gray-900">Items Sold</h2>
+                <p class="text-xs text-gray-500">
+                  {{ production || "All" }} · {{ summaryDate }}
+                </p>
+              </div>
+              <div class="flex items-center gap-2">
+                <input
+                  type="date"
+                  v-model="summaryDate"
+                  :max="todayIso()"
+                  @change="fetchServedSummary"
+                  class="rounded-md border border-gray-300 px-2 py-1 text-sm"
+                />
+                <button
+                  type="button"
+                  @click="printServedSummary"
+                  :disabled="!servedSummary || !servedSummary.items.length"
+                  class="rounded-md bg-gray-900 text-white px-3 py-1.5 text-sm font-semibold hover:bg-gray-700 disabled:opacity-50"
                 >
-                  <span>{{ w.waiter }}</span>
-                  <span>{{ fmtQty(w.total_qty) }}</span>
-                </div>
-                <ul class="mt-1 text-xs text-gray-600">
-                  <li
-                    v-for="it in w.items"
-                    :key="it.item_name"
-                    class="flex items-center justify-between"
-                  >
-                    <span>{{ it.item_name }}</span>
-                    <span>{{ fmtQty(it.qty) }}</span>
-                  </li>
-                </ul>
+                  Print
+                </button>
               </div>
             </div>
-          </div>
-        </template>
-        <p v-else class="mt-3 text-sm text-gray-500">
-          No items sold on this day.
-        </p>
-      </div>
 
-      <h3 class="text-sm font-semibold text-gray-700 mb-2">Recently served</h3>
-      <p v-if="servedLoading" class="text-gray-600">Loading served orders…</p>
-      <p v-else-if="!servedKots.length" class="text-gray-600">
-        No orders served in the last 3 hours.
-      </p>
-      <div v-else class="space-y-3">
-        <div
-          v-for="s in servedKots"
-          :key="s.name"
-          class="flex items-center justify-between gap-4 rounded-xl bg-white shadow p-4"
-        >
-          <div class="min-w-0">
-            <div class="flex items-center gap-2 flex-wrap">
-              <span
-                class="rounded-full bg-gray-900 text-white px-3 py-0.5 text-lg font-extrabold leading-none"
-              >
-                #{{ orderLabel(s) }}
-              </span>
-              <span
-                v-if="s.waiter_name"
-                class="rounded-full bg-[#2563EB] text-white px-2 py-0.5 text-xs font-bold leading-none"
-              >
-                {{ s.waiter_name }}
-              </span>
-              <span class="text-sm text-gray-500">
-                {{ s.restaurant_table || "Takeaway" }}
-              </span>
-            </div>
-            <div class="mt-1 text-xs text-gray-500">
-              Served {{ servedTimeLabel(s) }} ·
-              {{ (s.kot_items && s.kot_items.length) || 0 }} item(s)
-            </div>
+            <p v-if="summaryLoading" class="mt-3 text-sm text-gray-500">
+              Loading summary…
+            </p>
+            <template v-else-if="servedSummary && servedSummary.items.length">
+              <div class="mt-3 flex items-center gap-3 flex-wrap text-sm">
+                <span class="rounded-lg bg-gray-100 px-3 py-1 font-semibold">
+                  Total qty: {{ fmtQty(servedSummary.total_qty) }}
+                </span>
+                <span class="rounded-lg bg-gray-100 px-3 py-1 font-semibold">
+                  {{ servedSummary.distinct_items }} item(s)
+                </span>
+                <span class="rounded-lg bg-gray-100 px-3 py-1 font-semibold">
+                  {{ servedSummary.ticket_count }} ticket(s)
+                </span>
+              </div>
+              <ul class="mt-3 divide-y divide-gray-100">
+                <li
+                  v-for="it in servedSummary.items"
+                  :key="it.item_name"
+                  class="flex items-center justify-between py-1.5"
+                >
+                  <span class="text-gray-800">{{ it.item_name }}</span>
+                  <span class="font-bold text-gray-900">{{
+                    fmtQty(it.total_qty)
+                  }}</span>
+                </li>
+              </ul>
+              <div v-if="servedSummary.by_waiter.length" class="mt-4">
+                <button
+                  type="button"
+                  @click="showWaiterBreakdown = !showWaiterBreakdown"
+                  class="text-sm font-semibold text-blue-700"
+                >
+                  {{ showWaiterBreakdown ? "Hide" : "Show" }} by waiter
+                </button>
+                <div v-if="showWaiterBreakdown" class="mt-2 space-y-2">
+                  <div
+                    v-for="w in servedSummary.by_waiter"
+                    :key="w.waiter"
+                    class="rounded-lg bg-gray-50 p-2"
+                  >
+                    <div
+                      class="flex items-center justify-between text-sm font-semibold text-gray-800"
+                    >
+                      <span>{{ w.waiter }}</span>
+                      <span>{{ fmtQty(w.total_qty) }}</span>
+                    </div>
+                    <ul class="mt-1 text-xs text-gray-600">
+                      <li
+                        v-for="it in w.items"
+                        :key="it.item_name"
+                        class="flex items-center justify-between"
+                      >
+                        <span>{{ it.item_name }}</span>
+                        <span>{{ fmtQty(it.qty) }}</span>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <p v-else class="mt-3 text-sm text-gray-500">
+              No items sold on this day.
+            </p>
           </div>
-          <button
-            type="button"
-            :disabled="reinstatingKot === s.name"
-            @click="reinstateKot(s)"
-            class="shrink-0 rounded-md border-2 border-[#DC2626] px-4 py-2 font-semibold text-[#991B1B] hover:bg-[#FEF2F2] disabled:opacity-50"
-          >
-            {{ reinstatingKot === s.name ? "Undoing…" : "Reinstate" }}
-          </button>
         </div>
       </div>
     </div>
@@ -666,6 +704,12 @@ export default {
       servedKots: [],
       servedLoading: false,
       reinstatingKot: null,
+      // Served sub-view sidebar (2026-07-23): "recent" (reinstate) is the
+      // default; "summary" is the Items Sold report. reinstate config comes
+      // from the URY Production Unit (enable + window hours).
+      servedTab: "recent",
+      reinstateEnabled: true,
+      reinstateWindowHours: 3,
       // Served-day sold summary (2026-07-23)
       servedSummary: null,
       summaryDate: "",
@@ -967,15 +1011,22 @@ export default {
     },
     async showServed() {
       this.viewMode = "served";
+      this.servedTab = "recent";
       if (!this.summaryDate) this.summaryDate = this.todayIso();
       this.fetchServedSummary();
       this.servedLoading = true;
       try {
         const res = await this.call.get(
-          "ury.ury.api.ury_kot_display.served_kot_list"
+          "ury.ury.api.ury_kot_display.served_kot_list",
+          { production: this.production || "All" }
         );
         const msg = res.message || res;
         this.servedKots = (msg && msg.KOT) || [];
+        this.reinstateEnabled = !(msg && msg.reinstate_enabled === 0);
+        this.reinstateWindowHours = (msg && msg.reinstate_window_hours) || 3;
+        // Reinstate disabled for this unit → no "Recently Served" tab;
+        // land on the Items Sold summary instead.
+        if (!this.reinstateEnabled) this.servedTab = "summary";
       } catch (error) {
         console.error(error);
         this.servedKots = [];

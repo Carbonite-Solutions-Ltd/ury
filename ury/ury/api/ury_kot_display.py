@@ -651,7 +651,7 @@ def get_late_orders():
 
 
 @frappe.whitelist()
-def served_kot_list():
+def served_kot_list(production=None):
     today = frappe.utils.now()
     branch = getBranch()
     kot_alert_time = frappe.db.get_value(
@@ -660,15 +660,54 @@ def served_kot_list():
     daily_order_number = frappe.db.get_value(
         "POS Profile", {"branch": branch}, "custom_reset_order_number_daily"
     )
-    three_hours_ago = frappe.utils.add_to_date(today, hours=-3)
     audio_alert = frappe.db.get_value(
         "POS Profile", {"branch": branch}, "custom_kot_alert"
     )
+
+    # Reinstate config (2026-07-23): per URY Production Unit. When this KDS
+    # screen maps to a real production unit, honour its `enable_reinstate`
+    # + `reinstate_window_hours`. A department (Menu Course mode) / "All" /
+    # a missing unit falls back to the default: enabled, 3-hour window. The
+    # `reinstate_enabled` flag lets the KDS hide the Recently Served tab.
+    reinstate_enabled = 1
+    window_hours = 3
+    if (
+        production
+        and production != "All"
+        and frappe.db.exists("URY Production Unit", production)
+    ):
+        cfg = frappe.db.get_value(
+            "URY Production Unit",
+            production,
+            ["enable_reinstate", "reinstate_window_hours"],
+            as_dict=True,
+        )
+        if cfg:
+            # Default the check to ON for pre-existing units (null field).
+            reinstate_enabled = (
+                1 if cfg.enable_reinstate is None else int(cfg.enable_reinstate)
+            )
+            # 0/blank falls back to the 3-hour default.
+            window_hours = int(cfg.reinstate_window_hours or 0) or 3
+
+    if not reinstate_enabled:
+        return {
+            "KOT": [],
+            "Branch": branch,
+            "kot_alert_time": kot_alert_time,
+            "audio_alert": audio_alert,
+            "daily_order_number": daily_order_number,
+            "reinstate_enabled": 0,
+            "reinstate_window_hours": window_hours,
+        }
+
+    window_ago = frappe.utils.add_to_date(today, hours=-window_hours)
     # Window + ordering are both on WHEN IT WAS SERVED, not when the KOT was
     # created (2026-07-16). The old filter used `creation >= 3h ago`, so an
     # order that was rung earlier in the shift but served just now never
     # appeared in this list — useless for "undo a mistaken serve". Rows
-    # served before `served_at` existed fall back to creation.
+    # served before `served_at` existed fall back to creation. The window is
+    # the production unit's configured hours (default 3) as of 2026-07-23.
     kotList = frappe.db.sql(
         """
         SELECT name
@@ -683,7 +722,7 @@ def served_kot_list():
         ORDER BY COALESCE(served_at, creation) DESC
         LIMIT 100
         """,
-        {"branch": branch, "since": three_hours_ago},
+        {"branch": branch, "since": window_ago},
         as_dict=True,
     )
     KOT = []
@@ -697,7 +736,9 @@ def served_kot_list():
         "Branch": branch,
         "kot_alert_time": kot_alert_time,
         "audio_alert": audio_alert,
-        "daily_order_number":daily_order_number
+        "daily_order_number": daily_order_number,
+        "reinstate_enabled": 1,
+        "reinstate_window_hours": window_hours,
     }
 
 
