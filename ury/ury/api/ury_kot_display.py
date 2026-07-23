@@ -700,3 +700,139 @@ def served_kot_list():
         "daily_order_number":daily_order_number
     }
 
+
+@frappe.whitelist()
+def get_served_summary(production=None, date=None):
+    """Aggregate items SERVED (sold) for a production/department on a day.
+
+    Powers the KDS "Served" tab end-of-day summary: per-item quantities
+    ("20 Coke", "10 Jollof Rice"), a per-waiter breakdown, and grand totals
+    — printable for accounting (2026-07-23).
+
+    Scope mirrors served_kot_list (branch + served state) but over the FULL
+    day (`DATE(served_at) = date`), not the 3-hour board window. `production`
+    is interpreted per the POS Profile's routing mode:
+      - URY Production Unit mode: a real production unit (or "All"). Filter
+        KOTs by `k.production`.
+      - Menu Course mode: a department (Food/Drinks/Other/All). `k.production`
+        is NULL there, so filter per-item by the item's course department
+        (URY Menu Course.custom_department, defaulting to "Food" to match
+        _classify_kot_item_department).
+
+    Counts served KOTs of type New Order + Order Modified (the items that
+    actually went out) — excludes Duplicate reprints and Cancelled tickets
+    to avoid double/over-counting. `URY KOT Items.quantity` is a Data string,
+    so it's CAST to a number.
+    """
+    branch = getBranch()
+    if not date:
+        date = frappe.utils.nowdate()
+
+    kds_mode = (
+        frappe.db.get_value(
+            "POS Profile", {"branch": branch}, "custom_kds_routing_mode"
+        )
+        or "Menu Course"
+    )
+
+    conditions = [
+        "k.order_status = 'Served'",
+        "k.branch = %(branch)s",
+        "k.docstatus = 1",
+        "k.verified = 0",
+        "k.type IN ('New Order', 'Order Modified')",
+        "DATE(k.served_at) = %(date)s",
+    ]
+    params = {"branch": branch, "date": date}
+    join_course = ""
+
+    if production and production != "All":
+        if kds_mode == "URY Production Unit":
+            conditions.append("k.production = %(production)s")
+            params["production"] = production
+        else:
+            join_course = (
+                "LEFT JOIN `tabURY Menu Course` mc ON mc.name = ki.course"
+            )
+            conditions.append(
+                "COALESCE(NULLIF(mc.custom_department, ''), 'Food') = %(dept)s"
+            )
+            params["dept"] = production
+
+    # `where`/`join_course` are built only from the hardcoded clauses above;
+    # every value (branch/date/production/dept) is parameterised → no injection.
+    where = " AND ".join(conditions)
+
+    item_rows = frappe.db.sql(
+        f"""
+        SELECT ki.item_name AS item_name,
+               SUM(CAST(ki.quantity AS DECIMAL(18,2))) AS total_qty
+        FROM `tabURY KOT` k
+        JOIN `tabURY KOT Items` ki ON ki.parent = k.name
+        {join_course}
+        WHERE {where}
+        GROUP BY ki.item_name
+        ORDER BY total_qty DESC, ki.item_name ASC
+        """,
+        params,
+        as_dict=True,
+    )
+
+    waiter_rows = frappe.db.sql(
+        f"""
+        SELECT COALESCE(w.full_name, 'Unassigned') AS waiter,
+               ki.item_name AS item_name,
+               SUM(CAST(ki.quantity AS DECIMAL(18,2))) AS total_qty
+        FROM `tabURY KOT` k
+        JOIN `tabURY KOT Items` ki ON ki.parent = k.name
+        {join_course}
+        LEFT JOIN `tabPOS Invoice` pi ON pi.name = k.invoice
+        LEFT JOIN `tabURY Waiter` w ON w.name = pi.custom_waiter
+        WHERE {where}
+        GROUP BY waiter, ki.item_name
+        ORDER BY waiter ASC, total_qty DESC, ki.item_name ASC
+        """,
+        params,
+        as_dict=True,
+    )
+
+    ticket_row = frappe.db.sql(
+        f"""
+        SELECT COUNT(DISTINCT k.name) AS n
+        FROM `tabURY KOT` k
+        JOIN `tabURY KOT Items` ki ON ki.parent = k.name
+        {join_course}
+        WHERE {where}
+        """,
+        params,
+        as_dict=True,
+    )
+
+    items = [
+        {"item_name": r.item_name, "total_qty": float(r.total_qty or 0)}
+        for r in item_rows
+    ]
+    total_qty = sum(i["total_qty"] for i in items)
+
+    by_waiter = {}
+    for r in waiter_rows:
+        w = by_waiter.setdefault(
+            r.waiter, {"waiter": r.waiter, "total_qty": 0.0, "items": []}
+        )
+        qty = float(r.total_qty or 0)
+        w["items"].append({"item_name": r.item_name, "qty": qty})
+        w["total_qty"] += qty
+    by_waiter_list = sorted(by_waiter.values(), key=lambda x: -x["total_qty"])
+
+    return {
+        "date": str(date),
+        "production": production or "All",
+        "kds_mode": kds_mode,
+        "branch": branch,
+        "items": items,
+        "by_waiter": by_waiter_list,
+        "total_qty": total_qty,
+        "distinct_items": len(items),
+        "ticket_count": ticket_row[0].n if ticket_row else 0,
+    }
+
