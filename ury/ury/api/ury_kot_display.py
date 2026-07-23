@@ -193,6 +193,26 @@ def _kot_notify_users(invoice):
     return recipients
 
 
+def _kot_kds_targets(kot, production):
+    """The KDS screen targets this KOT appears on, so a realtime ping can
+    reach the right kitchen screens (2026-07-23). URY Production Unit mode →
+    its production unit; Menu Course mode (`production` is NULL) → the
+    departments of its items (course → custom_department, default "Food")."""
+    if production:
+        return {production}
+    targets = set()
+    for row in frappe.get_all(
+        "URY KOT Items", filters={"parent": kot}, fields=["course"]
+    ):
+        dept = None
+        if row.get("course"):
+            dept = frappe.db.get_value(
+                "URY Menu Course", row["course"], "custom_department"
+            )
+        targets.add(dept or "Food")
+    return targets
+
+
 @frappe.whitelist()
 def request_kot_change(kot, message, item=None):
     """Kitchen raises a change request → KOT goes on hold, waiter alerted."""
@@ -314,17 +334,33 @@ def respond_kot_change(kot, action, note=None, item_note=None):
     )
     frappe.db.commit()
 
-    # Tell the kitchen screens so the card comes off hold immediately.
+    # Tell the kitchen screens so the card updates immediately — no reload
+    # (2026-07-23). The KDS subscribes per screen to
+    # `kot_change_resolved_<branch>_<target>`, where target is the production
+    # unit (URY Production Unit mode) or the item's department (Menu Course
+    # mode), plus an "All" channel. The previous code pinged
+    # `kot_update_<branch>_All` with just the KOT name, which the new-KOT
+    # socket handler mis-read as a fresh card — and it never reached a
+    # specific production screen at all, so the kitchen had to reload.
     branch = frappe.db.get_value("URY KOT", kot, "branch")
-    frappe.publish_realtime(
-        event="kot_change_resolved",
-        message={"kot": kot, "status": new_status, "by": frappe.session.user},
-        after_commit=True,
-    )
+    production = frappe.db.get_value("URY KOT", kot, "production")
+    msg = {"kot": kot, "status": new_status, "by": frappe.session.user}
     if branch:
         frappe.publish_realtime(
-            event=f"kot_update_{branch}_All", message={"kot": kot}, after_commit=True
+            event=f"kot_change_resolved_{branch}_All",
+            message=msg,
+            after_commit=True,
         )
+        for target in _kot_kds_targets(kot, production):
+            frappe.publish_realtime(
+                event=f"kot_change_resolved_{branch}_{target}",
+                message=msg,
+                after_commit=True,
+            )
+    # Legacy global event kept for any other listener.
+    frappe.publish_realtime(
+        event="kot_change_resolved", message=msg, after_commit=True
+    )
     return {"kot": kot, "status": new_status}
 
 

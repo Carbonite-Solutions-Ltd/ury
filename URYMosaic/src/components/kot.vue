@@ -723,6 +723,9 @@ export default {
       branch: "",
       kds_routing_mode: "Menu Course",
       kot_channel: "",
+      // Realtime channel for a waiter's reply to a kitchen change request
+      // (2026-07-23) — so the card updates without a manual reload.
+      change_channel: "",
       clickedItems: new Set(),
       struckThroughItems: {},
       loggeduser: "",
@@ -813,6 +816,7 @@ export default {
               this.daily_order_number = msg.daily_order_number;
               this.kds_routing_mode = msg.kds_routing_mode || "Menu Course";
               this.kot_channel = `kot_update_${this.branch}_${this.production}`;
+              this.change_channel = `kot_change_resolved_${this.branch}_${this.production}`;
               // Stamp the moment we received each KOT so the timer can tick
               // forward from the server-computed elapsed_seconds base.
               const fetchedAt = Date.now();
@@ -1511,6 +1515,14 @@ export default {
               }
             },1500)
             localStorage.setItem("kot_time", doc.kot.time);
+          });
+          // A waiter answered a kitchen change request (confirm / update /
+          // cancel) → refresh so the card shows the response + the Accept
+          // button without a manual reload. 2026-07-23.
+          socket.on(this.change_channel, () => {
+            this.fetchKOT().then(() => {
+              this.masonryLoading();
+            });
           });
         });
       })
