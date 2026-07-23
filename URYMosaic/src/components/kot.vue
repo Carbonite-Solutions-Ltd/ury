@@ -2,11 +2,108 @@
   <!-- Single root on purpose: masonryLoading() uses this.$el.querySelector,
        and a multi-root (fragment) component would make $el a comment node. -->
   <div>
-    <Header :view-mode="viewMode" @set-view="onSetView" />
+    <Header :view-mode="viewMode" @set-view="onSetView" @logout="logout" />
 
     <div class="mx-auto p-4 mb-16 relative">
     <!-- Served list + reinstate (2026-07-16) -->
     <div v-if="viewMode === 'served'" class="max-w-3xl">
+      <!-- Sold summary (2026-07-23): per-item quantities + per-waiter,
+           printable for end-of-day accounting. Scoped to this screen's
+           production/department and day (defaults to today). -->
+      <div class="mb-4 rounded-xl bg-white shadow p-4">
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <h2 class="text-lg font-bold text-gray-900">Items Sold</h2>
+            <p class="text-xs text-gray-500">
+              {{ production || "All" }} · {{ summaryDate }}
+            </p>
+          </div>
+          <div class="flex items-center gap-2">
+            <input
+              type="date"
+              v-model="summaryDate"
+              :max="todayIso()"
+              @change="fetchServedSummary"
+              class="rounded-md border border-gray-300 px-2 py-1 text-sm"
+            />
+            <button
+              type="button"
+              @click="printServedSummary"
+              :disabled="!servedSummary || !servedSummary.items.length"
+              class="rounded-md bg-gray-900 text-white px-3 py-1.5 text-sm font-semibold hover:bg-gray-700 disabled:opacity-50"
+            >
+              Print
+            </button>
+          </div>
+        </div>
+
+        <p v-if="summaryLoading" class="mt-3 text-sm text-gray-500">
+          Loading summary…
+        </p>
+        <template v-else-if="servedSummary && servedSummary.items.length">
+          <div class="mt-3 flex items-center gap-3 flex-wrap text-sm">
+            <span class="rounded-lg bg-gray-100 px-3 py-1 font-semibold">
+              Total qty: {{ fmtQty(servedSummary.total_qty) }}
+            </span>
+            <span class="rounded-lg bg-gray-100 px-3 py-1 font-semibold">
+              {{ servedSummary.distinct_items }} item(s)
+            </span>
+            <span class="rounded-lg bg-gray-100 px-3 py-1 font-semibold">
+              {{ servedSummary.ticket_count }} ticket(s)
+            </span>
+          </div>
+          <ul class="mt-3 divide-y divide-gray-100">
+            <li
+              v-for="it in servedSummary.items"
+              :key="it.item_name"
+              class="flex items-center justify-between py-1.5"
+            >
+              <span class="text-gray-800">{{ it.item_name }}</span>
+              <span class="font-bold text-gray-900">{{
+                fmtQty(it.total_qty)
+              }}</span>
+            </li>
+          </ul>
+          <div v-if="servedSummary.by_waiter.length" class="mt-4">
+            <button
+              type="button"
+              @click="showWaiterBreakdown = !showWaiterBreakdown"
+              class="text-sm font-semibold text-blue-700"
+            >
+              {{ showWaiterBreakdown ? "Hide" : "Show" }} by waiter
+            </button>
+            <div v-if="showWaiterBreakdown" class="mt-2 space-y-2">
+              <div
+                v-for="w in servedSummary.by_waiter"
+                :key="w.waiter"
+                class="rounded-lg bg-gray-50 p-2"
+              >
+                <div
+                  class="flex items-center justify-between text-sm font-semibold text-gray-800"
+                >
+                  <span>{{ w.waiter }}</span>
+                  <span>{{ fmtQty(w.total_qty) }}</span>
+                </div>
+                <ul class="mt-1 text-xs text-gray-600">
+                  <li
+                    v-for="it in w.items"
+                    :key="it.item_name"
+                    class="flex items-center justify-between"
+                  >
+                    <span>{{ it.item_name }}</span>
+                    <span>{{ fmtQty(it.qty) }}</span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </template>
+        <p v-else class="mt-3 text-sm text-gray-500">
+          No items sold on this day.
+        </p>
+      </div>
+
+      <h3 class="text-sm font-semibold text-gray-700 mb-2">Recently served</h3>
       <p v-if="servedLoading" class="text-gray-600">Loading served orders…</p>
       <p v-else-if="!servedKots.length" class="text-gray-600">
         No orders served in the last 3 hours.
@@ -569,6 +666,11 @@ export default {
       servedKots: [],
       servedLoading: false,
       reinstatingKot: null,
+      // Served-day sold summary (2026-07-23)
+      servedSummary: null,
+      summaryDate: "",
+      summaryLoading: false,
+      showWaiterBreakdown: false,
       // Drag-to-reorder (2026-07-16)
       draggingKot: null,
       dragOverKot: null,
@@ -865,6 +967,8 @@ export default {
     },
     async showServed() {
       this.viewMode = "served";
+      if (!this.summaryDate) this.summaryDate = this.todayIso();
+      this.fetchServedSummary();
       this.servedLoading = true;
       try {
         const res = await this.call.get(
@@ -877,6 +981,120 @@ export default {
         this.servedKots = [];
       } finally {
         this.servedLoading = false;
+      }
+    },
+    /** Today's local date as YYYY-MM-DD (for the summary date input). */
+    todayIso() {
+      const d = new Date();
+      const p = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    },
+    /** Format a numeric quantity: integers as-is, else trimmed to 2dp. */
+    fmtQty(n) {
+      const v = Number(n) || 0;
+      return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
+    },
+    /** Load the day's SOLD summary for this screen's production/department. */
+    async fetchServedSummary() {
+      if (!this.summaryDate) this.summaryDate = this.todayIso();
+      this.summaryLoading = true;
+      try {
+        const res = await this.call.get(
+          "ury.ury.api.ury_kot_display.get_served_summary",
+          { production: this.production || "All", date: this.summaryDate }
+        );
+        this.servedSummary = res.message || res;
+      } catch (error) {
+        console.error(error);
+        this.servedSummary = null;
+      } finally {
+        this.summaryLoading = false;
+      }
+    },
+    /** Print the sold summary via a self-contained print window (no printer
+     * wiring in the KDS — the browser print dialog handles printer / PDF). */
+    printServedSummary() {
+      const s = this.servedSummary;
+      if (!s || !s.items || !s.items.length) return;
+      const esc = (x) =>
+        String(x == null ? "" : x).replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[c]
+        );
+      const fmt = (n) => this.fmtQty(n);
+      const itemRows = s.items
+        .map(
+          (it) =>
+            `<tr><td>${esc(it.item_name)}</td><td class="q">${fmt(
+              it.total_qty
+            )}</td></tr>`
+        )
+        .join("");
+      const waiterBlocks = (s.by_waiter || [])
+        .map((w) => {
+          const wr = w.items
+            .map(
+              (it) =>
+                `<tr><td>${esc(it.item_name)}</td><td class="q">${fmt(
+                  it.qty
+                )}</td></tr>`
+            )
+            .join("");
+          return `<h3>${esc(w.waiter)} — ${fmt(
+            w.total_qty
+          )}</h3><table><tbody>${wr}</tbody></table>`;
+        })
+        .join("");
+      const win = window.open("", "_blank", "width=720,height=900");
+      if (!win) return;
+      win.document.write(
+        `<!doctype html><html><head><meta charset="utf-8">` +
+          `<title>Items Sold — ${esc(s.production)} — ${esc(s.date)}</title>` +
+          `<style>` +
+          `body{font-family:Arial,Helvetica,sans-serif;color:#111;padding:24px;}` +
+          `h1{font-size:20px;margin:0 0 2px;}` +
+          `.sub{color:#555;font-size:12px;margin:0 0 16px;}` +
+          `.tot{display:flex;gap:12px;flex-wrap:wrap;font-size:13px;margin:0 0 16px;}` +
+          `.tot span{background:#f3f4f6;border-radius:6px;padding:4px 10px;font-weight:600;}` +
+          `table{width:100%;border-collapse:collapse;margin:0 0 16px;}` +
+          `td,th{padding:6px 4px;border-bottom:1px solid #eee;text-align:left;font-size:14px;}` +
+          `td.q,th.q{text-align:right;font-weight:700;}` +
+          `h2{font-size:15px;margin:18px 0 6px;border-top:2px solid #111;padding-top:8px;}` +
+          `h3{font-size:13px;margin:12px 0 4px;color:#333;}` +
+          `.foot{margin-top:20px;color:#888;font-size:11px;}` +
+          `</style></head><body>` +
+          `<h1>Items Sold — ${esc(s.production)}</h1>` +
+          `<p class="sub">${esc(s.branch)} · ${esc(s.date)}</p>` +
+          `<div class="tot"><span>Total qty: ${fmt(
+            s.total_qty
+          )}</span><span>${esc(s.distinct_items)} item(s)</span><span>${esc(
+            s.ticket_count
+          )} ticket(s)</span></div>` +
+          `<table><thead><tr><th>Item</th><th class="q">Qty</th></tr></thead>` +
+          `<tbody>${itemRows}</tbody></table>` +
+          (waiterBlocks ? `<h2>By waiter</h2>${waiterBlocks}` : "") +
+          `<p class="foot">Generated ${esc(
+            new Date().toLocaleString()
+          )}</p>` +
+          `<script>window.onload=function(){window.print();setTimeout(function(){window.close();},300);}<\/script>` +
+          `</body></html>`
+      );
+      win.document.close();
+    },
+    async logout() {
+      try {
+        await frappe.auth().logout();
+      } catch (e) {
+        console.error("Logout failed:", e);
+      } finally {
+        this.redirectToLogin();
       }
     },
     showActive() {

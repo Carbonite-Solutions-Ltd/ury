@@ -33,27 +33,53 @@
       </button>
     </div>
 
-    <button
-      class="hover:bg-slate-200 text-blue font-semibold px-3 py-1 rounded-md shrink-0"
-      title="Refresh"
-      @click="reloadKOT"
-    >
-      <svg
-        class="w-5 h-5 text-blue-800"
-        aria-hidden="true"
-        xmlns="http://www.w3.org/2000/svg"
-        fill="none"
-        viewBox="0 0 18 20"
+    <!-- Right group: refresh + logout kept together so the toggle stays
+         centered in the justify-between header. -->
+    <div class="flex items-center gap-1 shrink-0">
+      <button
+        class="hover:bg-slate-200 text-blue font-semibold px-3 py-1 rounded-md shrink-0"
+        title="Refresh"
+        @click="reloadKOT"
       >
-        <path
-          stroke="currentColor"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-          d="M16 1v5h-5M2 19v-5h5m10-4a8 8 0 0 1-14.947 3.97M1 10a8 8 0 0 1 14.947-3.97"
-        />
-      </svg>
-    </button>
+        <svg
+          class="w-5 h-5 text-blue-800"
+          aria-hidden="true"
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 18 20"
+        >
+          <path
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M16 1v5h-5M2 19v-5h5m10-4a8 8 0 0 1-14.947 3.97M1 10a8 8 0 0 1 14.947-3.97"
+          />
+        </svg>
+      </button>
+      <button
+        class="hover:bg-red-50 text-red-700 font-semibold px-3 py-1 rounded-md shrink-0 flex items-center gap-1"
+        title="Log out"
+        @click="$emit('logout')"
+      >
+        <svg
+          class="w-5 h-5"
+          aria-hidden="true"
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M16 17l5-5-5-5M21 12H9M12 19H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h7"
+          />
+        </svg>
+        <span class="hidden sm:inline text-sm">Logout</span>
+      </button>
+    </div>
   </header>
 </template>
 
@@ -69,7 +95,7 @@ export default {
       default: "active",
     },
   },
-  emits: ["set-view"],
+  emits: ["set-view", "logout"],
   data() {
     return {
       imagePath: uriMosaicImage,
