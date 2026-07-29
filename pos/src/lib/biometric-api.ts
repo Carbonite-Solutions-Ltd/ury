@@ -61,8 +61,18 @@ export interface AdminResetResult {
 
 export interface PinChangeResult {
   user: string;
-  action: 'pin_changed';
+  /** `pin_set` when this was a first PIN, `pin_changed` when replacing one. */
+  action: 'pin_changed' | 'pin_set' | 'pin_set_by_admin';
   changed_at: string;
+}
+
+export interface MyPinStatus {
+  user: string;
+  has_enrollment: 0 | 1;
+  /** 0 when the user has never set a PIN — the dialog then skips the "current PIN" field. */
+  has_pin: 0 | 1;
+  /** 1 for captains / managers / admins, who may set a PIN for someone else. */
+  can_set_for_others: 0 | 1;
 }
 
 const MODULE = 'ury.ury.biometric.api';
@@ -147,11 +157,42 @@ export async function adminResetEnrollment(
   return res.message;
 }
 
+/**
+ * Set or change the signed-in user's own PIN.
+ *
+ * `old_pin` is optional: omit it when the user has no PIN yet (check
+ * `getMyPinStatus().has_pin` first). The backend still REQUIRES it
+ * whenever a PIN already exists, so leaving it out is not a bypass.
+ */
 export async function changePin(args: {
-  old_pin: string;
+  old_pin?: string;
   new_pin: string;
+  terminal?: string | null;
 }): Promise<PinChangeResult> {
   const res = await call.post<{ message: PinChangeResult }>(`${MODULE}.change_pin`, args);
+  return res.message;
+}
+
+/** Whether the signed-in user already has a PIN, and may set others'. */
+export async function getMyPinStatus(): Promise<MyPinStatus> {
+  const res = await call.get<{ message: MyPinStatus }>(`${MODULE}.get_my_pin_status`);
+  return res.message;
+}
+
+/**
+ * Captain / administrator sets another user's PIN. No old PIN needed —
+ * this is the recovery path for a forgotten or never-set PIN. Every call
+ * is recorded in the URY PIN Change Log.
+ */
+export async function adminSetUserPin(args: {
+  user: string;
+  new_pin: string;
+  terminal?: string | null;
+}): Promise<PinChangeResult> {
+  const res = await call.post<{ message: PinChangeResult }>(
+    `${MODULE}.admin_set_user_pin`,
+    args
+  );
   return res.message;
 }
 

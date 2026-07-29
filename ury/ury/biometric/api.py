@@ -259,6 +259,74 @@ def _enrollment_is_active(enrollment) -> bool:
 	return True
 
 
+def _log_pin_event(
+	user: str,
+	action: str,
+	*,
+	self_service: bool = False,
+	terminal: str | None = None,
+	notes: str | None = None,
+) -> None:
+	"""Append a row to URY PIN Change Log.
+
+	NEVER pass a PIN or a PIN hash in here. The log records only that a
+	change happened, who did it, to whom and when — it is an audit trail,
+	not a credential store.
+
+	Best-effort by design: a failure to write the log must not roll back
+	or block the PIN change the cashier just made. A cashier locked out
+	of the POS because an audit insert failed would be a far worse
+	outcome than a missing log line, so we swallow and record to the
+	Error Log instead.
+	"""
+	try:
+		doc = frappe.get_doc(
+			{
+				"doctype": "URY PIN Change Log",
+				"user": user,
+				"user_full_name": frappe.db.get_value("User", user, "full_name") or user,
+				"action": action,
+				"performed_by": frappe.session.user,
+				"performed_by_full_name": (
+					frappe.db.get_value("User", frappe.session.user, "full_name")
+					or frappe.session.user
+				),
+				"performed_at": now_datetime(),
+				"self_service": 1 if self_service else 0,
+				"terminal": terminal or None,
+				"ip_address": getattr(frappe.local, "request_ip", None),
+				"notes": notes,
+			}
+		)
+		doc.insert(ignore_permissions=True)
+	except Exception:
+		frappe.log_error(
+			title="URY: failed to write PIN change log",
+			message=frappe.get_traceback(),
+		)
+
+
+def _create_pin_only_enrollment(user: str):
+	"""Create a PIN-only URY Biometric Enrollment for `user`.
+
+	`fingerprint_template` is not a required field, so an enrollment can
+	legitimately exist with a PIN and no finger on file — that's the
+	normal state for a cashier who signs in by PIN on a terminal with no
+	reader attached. Without this, setting a first PIN was impossible for
+	anyone a captain hadn't already fingerprint-enrolled.
+	"""
+	doc = frappe.get_doc(
+		{
+			"doctype": "URY Biometric Enrollment",
+			"user": user,
+			"full_name": frappe.db.get_value("User", user, "full_name") or user,
+			"email": frappe.db.get_value("User", user, "email") or user,
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	return doc
+
+
 def _pin_is_expired(enrollment, settings) -> bool:
 	"""Return True when the user's PIN is older than the configured
 	expiry window (URY Biometric Settings.pin_expiry_days).
@@ -713,6 +781,18 @@ def enroll_biometric(
 		action = "created"
 
 	frappe.db.commit()
+	# A PIN set during enrollment belongs in the audit trail too — the
+	# captain is setting a credential for someone else, exactly what the
+	# log exists to record.
+	if pin_hash:
+		_log_pin_event(
+			user,
+			"PIN Set By Admin",
+			self_service=False,
+			notes=_("PIN set by {0} during biometric enrollment ({1}).").format(
+				frappe.session.user, action
+			),
+		)
 	return {
 		"user": user,
 		"enrollment": doc.name,
@@ -744,6 +824,11 @@ def admin_reset_enrollment(user: str, delete: int = 0) -> dict[str, Any]:
 	if cint(delete):
 		frappe.delete_doc("URY Biometric Enrollment", enrollment.name, ignore_permissions=True)
 		frappe.db.commit()
+		_log_pin_event(
+			user,
+			"Enrollment Deleted",
+			notes=_("Enrollment (fingerprint + PIN) deleted by {0}.").format(frappe.session.user),
+		)
 		return {"user": user, "action": "deleted"}
 	frappe.db.set_value(
 		"URY Biometric Enrollment",
@@ -752,6 +837,13 @@ def admin_reset_enrollment(user: str, delete: int = 0) -> dict[str, Any]:
 		update_modified=True,
 	)
 	frappe.db.commit()
+	_log_pin_event(
+		user,
+		"Enrollment Unlocked",
+		notes=_("Lockout cleared by {0}. PIN and fingerprint left intact.").format(
+			frappe.session.user
+		),
+	)
 	return {"user": user, "action": "unlocked"}
 
 
@@ -760,29 +852,154 @@ def admin_reset_enrollment(user: str, delete: int = 0) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @frappe.whitelist()
-def change_pin(old_pin: str, new_pin: str) -> dict[str, Any]:
-	"""Authenticated user changes their own PIN.
+def get_my_pin_status() -> dict[str, Any]:
+	"""Whether the signed-in user already has a PIN.
 
-	Verifies the old PIN, hashes and stores the new one, resets the failure
-	counter and any active lockout. No rate limiting here — the user is
-	already authenticated, and misusing this is self-harm.
+	Drives the Reset PIN dialog: with no PIN yet there is nothing to
+	verify, so the dialog asks for the new PIN only instead of demanding
+	a "current PIN" the user has never had. Deliberately exposes nothing
+	beyond two booleans.
+	"""
+	if frappe.session.user == "Guest":
+		frappe.throw(_("You must be logged in."), frappe.PermissionError)
+	enrollment = _get_enrollment(frappe.session.user)
+	return {
+		"user": frappe.session.user,
+		"has_enrollment": 1 if enrollment else 0,
+		"has_pin": 1 if (enrollment and enrollment.pin_hash) else 0,
+		"can_set_for_others": 1 if _is_enrollment_admin() else 0,
+	}
+
+
+@frappe.whitelist()
+def admin_set_user_pin(user: str, new_pin: str, terminal: str | None = None) -> dict[str, Any]:
+	"""Captain / administrator sets or replaces another user's PIN.
+
+	No old PIN is required — that is the entire point: this is the
+	recovery path for a cashier who has forgotten theirs or never had
+	one. Creates a PIN-only enrollment when the user has none, and
+	clears any lockout so they can sign in immediately.
+
+	Every call is written to URY PIN Change Log with the acting user, so
+	an administrator can review who set whose PIN and when.
+	"""
+	_require_enabled()
+	_require_enrollment_admin()
+	user = (user or "").strip()
+	if not user:
+		frappe.throw(_("User is required."), title=_("Invalid Request"))
+	if not frappe.db.exists("User", user):
+		frappe.throw(_("User {0} does not exist.").format(user), title=_("User Not Found"))
+	if not _user_has_ury_login_role(user):
+		frappe.throw(
+			_(
+				"User {0} does not have a URY login role. Assign URY Cashier / "
+				"URY Captain / URY Manager / URY Waiter first."
+			).format(user),
+			title=_("No URY Role"),
+		)
+
+	new_pin = _validate_pin_format(new_pin)
+
+	enrollment = _get_enrollment(user)
+	if not enrollment:
+		enrollment = _create_pin_only_enrollment(user)
+
+	now = now_datetime()
+	updates = {
+		"pin_hash": _hash_pin(new_pin),
+		"pin_changed_at": now,
+		# Clear the lockout too — the whole point of an admin reset is to
+		# get a locked-out cashier trading again.
+		"failed_pin_attempts": 0,
+		"pin_locked_until": None,
+	}
+	if not enrollment.pin_set_at:
+		updates["pin_set_at"] = now
+	frappe.db.set_value(
+		"URY Biometric Enrollment", enrollment.name, updates, update_modified=True
+	)
+	frappe.db.commit()
+
+	_log_pin_event(
+		user,
+		"PIN Set By Admin",
+		self_service=False,
+		terminal=terminal,
+		notes=_("PIN set by {0}.").format(frappe.session.user),
+	)
+	return {
+		"user": user,
+		"action": "pin_set_by_admin",
+		"changed_at": get_datetime_str(now),
+	}
+
+
+@frappe.whitelist()
+def change_pin(new_pin: str, old_pin: str | None = None, terminal: str | None = None) -> dict[str, Any]:
+	"""Authenticated user sets or changes their own PIN.
+
+	Two paths:
+
+	* **First PIN** — the user has no PIN yet (no enrollment at all, or an
+	  enrollment with an empty ``pin_hash``). There is nothing to verify,
+	  so ``old_pin`` is not required and is ignored if sent. An enrollment
+	  is created on the fly when missing. Previously this branch dead-ended
+	  with "Ask a captain to reset it", which meant a cashier could never
+	  give themselves a first PIN.
+	* **Change** — a PIN already exists, so ``old_pin`` is mandatory and is
+	  verified. Failures bump the same lockout counter used by ``pin_login``
+	  so this endpoint can't be used to brute-force around it.
+
+	`old_pin` is second in the signature because it is now optional. All
+	callers pass named arguments (Frappe posts a JSON body), so parameter
+	order is not part of the contract.
 	"""
 	_require_enabled()
 	if frappe.session.user == "Guest":
 		frappe.throw(_("You must be logged in to change your PIN."), frappe.PermissionError)
+
+	new_pin = _validate_pin_format(new_pin)
 	enrollment = _get_enrollment(frappe.session.user)
-	if not enrollment:
-		frappe.throw(
-			_("You don't have a biometric enrollment yet. Ask a captain to enrol you first."),
-			title=_("Not Enrolled"),
+
+	# ---- First-PIN path: nothing to verify ----
+	if not enrollment or not enrollment.pin_hash:
+		if not enrollment:
+			enrollment = _create_pin_only_enrollment(frappe.session.user)
+		now = now_datetime()
+		frappe.db.set_value(
+			"URY Biometric Enrollment",
+			enrollment.name,
+			{
+				"pin_hash": _hash_pin(new_pin),
+				"pin_set_at": now,
+				"pin_changed_at": now,
+				"failed_pin_attempts": 0,
+				"pin_locked_until": None,
+			},
+			update_modified=True,
 		)
-	if not enrollment.pin_hash:
+		frappe.db.commit()
+		_log_pin_event(
+			frappe.session.user,
+			"PIN Set",
+			self_service=True,
+			terminal=terminal,
+			notes=_("First PIN set by the user."),
+		)
+		return {
+			"user": frappe.session.user,
+			"action": "pin_set",
+			"changed_at": get_datetime_str(now),
+		}
+
+	# ---- Change path: a PIN exists, so the old one must be proven ----
+	if not old_pin:
 		frappe.throw(
-			_("No PIN is set on your enrollment. Ask a captain to reset it."),
-			title=_("PIN Not Set"),
+			_("Enter your current PIN to change it."),
+			title=_("Current PIN Required"),
 		)
 	_validate_pin_format(old_pin)
-	new_pin = _validate_pin_format(new_pin)
 	if old_pin == new_pin:
 		frappe.throw(
 			_("New PIN must be different from the old PIN."),
@@ -815,6 +1032,12 @@ def change_pin(old_pin: str, new_pin: str) -> dict[str, Any]:
 		update_modified=True,
 	)
 	frappe.db.commit()
+	_log_pin_event(
+		frappe.session.user,
+		"PIN Changed",
+		self_service=True,
+		terminal=terminal,
+	)
 	return {"user": frappe.session.user, "action": "pin_changed", "changed_at": get_datetime_str(now)}
 
 

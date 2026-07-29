@@ -15,10 +15,26 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { KeyRound, Loader2, CheckCircle2, X } from 'lucide-react';
+import {
+  KeyRound,
+  Loader2,
+  CheckCircle2,
+  X,
+  Search,
+  UserCog,
+  ArrowLeft,
+} from 'lucide-react';
 import { Button } from './ui/button';
+import { Input } from './ui/input';
 import { showToast } from './ui/toast';
-import { changePin } from '../lib/biometric-api';
+import {
+  changePin,
+  getMyPinStatus,
+  adminSetUserPin,
+  searchUsersForLogin,
+  type MyPinStatus,
+  type LoginUserCandidate,
+} from '../lib/biometric-api';
 import { extractFrappeServerError } from '../lib/utils';
 
 interface Props {
@@ -116,10 +132,72 @@ export default function ResetPinDialog({
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Who this dialog is acting on. 'self' is everyone's default; captains
+  // and admins can switch to 'other' to set a PIN for a cashier who has
+  // forgotten theirs (or never had one).
+  const [mode, setMode] = useState<'self' | 'other'>('self');
+  const [status, setStatus] = useState<MyPinStatus | null>(null);
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<LoginUserCandidate[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [target, setTarget] = useState<LoginUserCandidate | null>(null);
+  const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Forced mode: seed the old PIN from the just-used login PIN.
   useEffect(() => {
     if (forced && presetOldPin) setOldPin(presetOldPin);
   }, [forced, presetOldPin, open]);
+
+  // Ask the server whether this user already HAS a PIN. Without a PIN
+  // there is nothing to verify, so we must not demand a "current PIN"
+  // they have never had — that was the dead end this fixes. Skipped in
+  // forced mode, which by definition means a PIN already exists.
+  useEffect(() => {
+    if (!open || forced) return;
+    let cancelled = false;
+    setStatusLoading(true);
+    getMyPinStatus()
+      .then((s) => {
+        if (!cancelled) setStatus(s);
+      })
+      .catch(() => {
+        // Fail SAFE: assume a PIN exists, so we ask for the old one. The
+        // backend enforces the real rule either way, so the worst case is
+        // an extra field, never an unguarded change.
+        if (!cancelled) setStatus(null);
+      })
+      .finally(() => {
+        if (!cancelled) setStatusLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, forced]);
+
+  // Debounced user search for the admin "set someone else's PIN" mode.
+  useEffect(() => {
+    if (mode !== 'other') return;
+    if (searchDebounce.current) clearTimeout(searchDebounce.current);
+    if (!query.trim()) {
+      setResults([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    searchDebounce.current = setTimeout(async () => {
+      try {
+        setResults(await searchUsersForLogin(query));
+      } catch {
+        setResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 220);
+    return () => {
+      if (searchDebounce.current) clearTimeout(searchDebounce.current);
+    };
+  }, [query, mode]);
 
   const reset = useCallback(() => {
     setOldPin('');
@@ -128,6 +206,10 @@ export default function ResetPinDialog({
     setError(null);
     setSuccess(false);
     setSubmitting(false);
+    setMode('self');
+    setQuery('');
+    setResults([]);
+    setTarget(null);
   }, []);
 
   const handleClose = useCallback(() => {
@@ -135,22 +217,52 @@ export default function ResetPinDialog({
     onClose();
   }, [onClose, reset]);
 
+  // Setting someone ELSE's PIN never needs an old PIN — that's the whole
+  // point of an admin reset. Setting your OWN first PIN doesn't either.
+  // Only replacing an existing PIN of your own does. `status === null`
+  // (lookup failed) falls back to requiring it.
+  const needsOldPin =
+    mode === 'self' && (forced || status === null || status.has_pin === 1);
+  const isFirstPin = mode === 'self' && !forced && status?.has_pin === 0;
+  const canSetForOthers = status?.can_set_for_others === 1 && !forced;
+
   const mismatch = newPin.length === 6 && confirmPin.length === 6 && newPin !== confirmPin;
-  const sameAsOld = newPin.length === 6 && oldPin.length === 6 && newPin === oldPin;
+  const sameAsOld =
+    needsOldPin && newPin.length === 6 && oldPin.length === 6 && newPin === oldPin;
   const canSubmit =
-    oldPin.length === 6 && newPin.length === 6 && confirmPin.length === 6 && !mismatch && !sameAsOld && !submitting;
+    (!needsOldPin || oldPin.length === 6) &&
+    (mode !== 'other' || !!target) &&
+    newPin.length === 6 &&
+    confirmPin.length === 6 &&
+    !mismatch &&
+    !sameAsOld &&
+    !submitting &&
+    !statusLoading;
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
     setSubmitting(true);
     setError(null);
     try {
-      await changePin({ old_pin: oldPin, new_pin: newPin });
+      if (mode === 'other' && target) {
+        await adminSetUserPin({ user: target.name, new_pin: newPin });
+        showToast.success({
+          title: `PIN set for ${target.full_name || target.name}`,
+          description: 'They can sign in with it now. The change has been logged.',
+        });
+      } else {
+        await changePin({
+          new_pin: newPin,
+          // Omit entirely rather than sending an empty string — the
+          // backend treats a falsy old_pin as "not supplied".
+          ...(needsOldPin ? { old_pin: oldPin } : {}),
+        });
+        showToast.success({
+          title: isFirstPin ? 'PIN set' : 'PIN updated',
+          description: 'Use the new PIN next time you sign in.',
+        });
+      }
       setSuccess(true);
-      showToast.success({
-        title: 'PIN updated',
-        description: 'Use the new PIN next time you sign in.',
-      });
       // Auto-close after a brief success flash. In forced mode, hand off
       // to the caller (which redirects to the POS) instead of closing.
       setTimeout(() => {
@@ -161,14 +273,25 @@ export default function ResetPinDialog({
         }
       }, 1200);
     } catch (err) {
-      const parsed = extractFrappeServerError(err, 'Could not change your PIN.');
+      const parsed = extractFrappeServerError(err, 'Could not set the PIN.');
       setError(parsed.message);
       // Clear the old PIN so the user can retry without leaving stale digits
       setOldPin('');
     } finally {
       setSubmitting(false);
     }
-  }, [canSubmit, oldPin, newPin, handleClose, forced, onCompleted]);
+  }, [
+    canSubmit,
+    mode,
+    target,
+    oldPin,
+    newPin,
+    needsOldPin,
+    isFirstPin,
+    handleClose,
+    forced,
+    onCompleted,
+  ]);
 
   if (!open) return null;
 
@@ -183,12 +306,22 @@ export default function ResetPinDialog({
             </div>
             <div className="min-w-0">
               <h2 className="text-lg font-semibold text-gray-900">
-                {forced ? 'Your PIN has expired' : 'Reset PIN'}
+                {forced
+                  ? 'Your PIN has expired'
+                  : mode === 'other'
+                    ? 'Set PIN for a User'
+                    : isFirstPin
+                      ? 'Set Your PIN'
+                      : 'Reset PIN'}
               </h2>
               <p className="text-xs text-gray-500">
                 {forced
                   ? 'Set a new 6-digit PIN to continue.'
-                  : 'Change the 6-digit PIN you use to sign in.'}
+                  : mode === 'other'
+                    ? "Pick a user and give them a new 6-digit PIN."
+                    : isFirstPin
+                      ? "You don't have a PIN yet. Choose a 6-digit PIN to sign in with."
+                      : 'Change the 6-digit PIN you use to sign in.'}
               </p>
             </div>
           </div>
@@ -210,16 +343,146 @@ export default function ResetPinDialog({
               <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-emerald-100 mb-3">
                 <CheckCircle2 className="text-emerald-700" size={32} />
               </div>
-              <div className="text-base font-semibold text-gray-900">PIN changed</div>
-              <div className="text-sm text-gray-500 mt-1">Use it next time you sign in.</div>
+              <div className="text-base font-semibold text-gray-900">
+                {mode === 'other'
+                  ? `PIN set for ${target?.full_name || target?.name || 'user'}`
+                  : isFirstPin
+                    ? 'PIN set'
+                    : 'PIN changed'}
+              </div>
+              <div className="text-sm text-gray-500 mt-1">
+                {mode === 'other'
+                  ? 'They can sign in with it now. The change has been logged.'
+                  : 'Use it next time you sign in.'}
+              </div>
+            </div>
+          ) : statusLoading ? (
+            <div className="flex items-center justify-center py-8 text-gray-400">
+              <Loader2 size={18} className="animate-spin" />
+              <span className="ml-2 text-sm">Checking your PIN…</span>
             </div>
           ) : (
             <>
-              {!forced && (
-                <PinDigits value={oldPin} onChange={setOldPin} autoFocus label="Current PIN" />
+              {/* Admin: switch between own PIN and someone else's. */}
+              {canSetForOthers && mode === 'self' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('other');
+                    setError(null);
+                    setOldPin('');
+                  }}
+                  className="w-full flex items-center gap-2 text-sm text-blue-700 hover:text-blue-800 hover:bg-blue-50 rounded-md px-3 py-2 border border-blue-200"
+                >
+                  <UserCog size={16} />
+                  Set a PIN for another user instead
+                </button>
               )}
-              <PinDigits value={newPin} onChange={setNewPin} autoFocus={forced} label="New PIN" />
-              <PinDigits value={confirmPin} onChange={setConfirmPin} label="Confirm New PIN" />
+
+              {mode === 'other' && (
+                <div className="space-y-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('self');
+                      setTarget(null);
+                      setQuery('');
+                      setError(null);
+                    }}
+                    className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-800"
+                  >
+                    <ArrowLeft size={14} /> Back to my own PIN
+                  </button>
+
+                  {target ? (
+                    <div className="flex items-center justify-between gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2.5">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-gray-900 truncate">
+                          {target.full_name || target.name}
+                        </div>
+                        <div className="text-xs text-gray-500 truncate">{target.name}</div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          {target.has_pin === 1
+                            ? 'Has a PIN — it will be replaced.'
+                            : 'No PIN yet — this will be their first.'}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setTarget(null)}
+                        className="text-xs text-gray-500 hover:text-gray-900 shrink-0"
+                      >
+                        Change
+                      </button>
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                        Which user?
+                      </label>
+                      <div className="relative">
+                        <Search
+                          size={16}
+                          className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+                        />
+                        <Input
+                          autoFocus
+                          value={query}
+                          onChange={(e) => setQuery(e.target.value)}
+                          placeholder="Search by name or email…"
+                          className="pl-9"
+                        />
+                        {searching && (
+                          <Loader2
+                            size={14}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 animate-spin"
+                          />
+                        )}
+                      </div>
+                      {results.length > 0 && (
+                        <div className="mt-2 divide-y divide-gray-100 border border-gray-200 rounded-lg overflow-y-auto overscroll-contain max-h-52 bg-white">
+                          {results.map((u) => (
+                            <button
+                              key={u.name}
+                              type="button"
+                              onClick={() => setTarget(u)}
+                              className="w-full text-left px-3 py-2.5 hover:bg-blue-50 focus:bg-blue-50 focus:outline-none"
+                            >
+                              <div className="text-sm text-gray-900 truncate">
+                                {u.full_name || u.name}
+                              </div>
+                              <div className="text-xs text-gray-500 truncate">{u.name}</div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {needsOldPin && (
+                <PinDigits value={oldPin} onChange={setOldPin} autoFocus={!forced} label="Current PIN" />
+              )}
+              {(mode === 'self' || target) && (
+                <>
+                  <PinDigits
+                    value={newPin}
+                    onChange={setNewPin}
+                    autoFocus={forced || isFirstPin}
+                    label="New PIN"
+                  />
+                  <PinDigits value={confirmPin} onChange={setConfirmPin} label="Confirm New PIN" />
+                </>
+              )}
+
+              {mode === 'other' && target && (
+                <p className="text-xs text-gray-500">
+                  This change is recorded against your name in the PIN change
+                  log. Tell {target.full_name || target.name} their new PIN
+                  privately and ask them to change it.
+                </p>
+              )}
 
               {mismatch && (
                 <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">

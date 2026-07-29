@@ -203,6 +203,16 @@ CAPTAIN_EXTRA_WRITE_DOCTYPES: list[tuple[str, dict]] = [
         "URY Biometric Enrollment",
         {"read": 1, "write": 1, "create": 1, "delete": 1, "select": 1, "report": 1},
     ),
+    # PIN change audit trail (2026-07-29). Captains and managers can READ
+    # and report on it — that's the point, an administrator pulling a
+    # report of who set whose PIN. Deliberately NO write/create/delete:
+    # the log is evidence and must not be editable by the people it
+    # records. Rows are written only by `_log_pin_event` with
+    # ignore_permissions.
+    (
+        "URY PIN Change Log",
+        {"read": 1, "select": 1, "report": 1, "export": 1},
+    ),
 ]
 
 # URY Waiter is a self-serve waiter who logs in and rings her own orders —
