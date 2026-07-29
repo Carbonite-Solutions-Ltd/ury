@@ -1736,19 +1736,31 @@ def getPosInvoiceItems(invoice):
 def posOpening(terminal=None):
     """Return 1 if the current cashier needs to open POS, 0 otherwise.
 
-    Scope is decided by the POS Profile's ``custom_enable_multiple_cashier``
-    flag (set per profile in the desk):
+    **Scope is the POS Profile — not the terminal, and not the user.**
 
-    - **multi_cashier OFF (shared mode):** one POS Opening Entry per
-      terminal per shift. The first user to arrive on a terminal opens
-      it, everyone else just logs in. Returns 0 (POS is open) as soon
-      as ANY user has an open submitted entry on this terminal.
-    - **multi_cashier ON (strict mode):** each user opens their own
-      entry on the terminal. Returns 0 only if THIS user has an open
-      submitted entry on this terminal. Used when you want strict
-      per-cashier shift accounting.
+    That is forced on us by ERPNext core, which is the authority here:
+    ``POSOpeningEntry.check_open_pos_exists`` refuses to create a second
+    entry whenever ``{pos_profile, status: "Open"}`` already matches —
+    no user key, no terminal key. And ``check_user_already_assigned``
+    additionally refuses to give one user a second open entry anywhere.
+    So "one entry per terminal" and "one entry per cashier" are both
+    *unsatisfiable* whenever several terminals share a profile: URY
+    would keep prompting for an open that ERPNext will always reject.
+    That was the open/close deadlock fixed on 2026-07-28 — see the
+    CLAUDE.md "Fixes log" entry for the full loop.
 
-    See CLAUDE.md "Fixes log" 2026-04-08.
+    So the model is: **one open POS Opening Entry per POS Profile per
+    shift.** Whoever arrives first (typically the captain) opens the
+    day; every other cashier/waiter on any terminal of that profile
+    just walks in. Per-invoice attribution is not lost — it rides on
+    ``POS Invoice.owner`` + ``custom_terminal`` + ``cashier``.
+
+    This is correct under BOTH deployment shapes: when each terminal
+    has its own POS Profile, profile-scoping *is* terminal-scoping.
+
+    ``custom_enable_multiple_cashier`` deliberately does NOT affect this
+    check any more. It cannot: no flag can make ERPNext accept a second
+    open entry on the same profile.
 
     When ``terminal`` is omitted (legacy Vue POS, Administrator
     experiments), falls back to the historical branch-only check so
@@ -1766,30 +1778,31 @@ def posOpening(terminal=None):
         )
         return 0 if pos_opening_list else 1
 
-    # Per-terminal path. Determine scope from the POS Profile.
+    # Per-terminal path. The terminal only tells us WHICH POS Profile
+    # to scope against — the profile is the real unit of a shift.
     pos_profile = frappe.db.get_value(
         "URY POS Terminal", terminal, "pos_profile"
     )
-    multiple_cashier = (
-        frappe.db.get_value(
-            "POS Profile", pos_profile, "custom_enable_multiple_cashier"
-        )
-        if pos_profile
-        else 0
-    )
 
-    filters = {
-        "custom_terminal": terminal,
-        "status": "Open",
-        "docstatus": 1,
-    }
-    if multiple_cashier:
-        filters["user"] = frappe.session.user
+    if not pos_profile:
+        # Unconfigured terminal. Fall back to the branch-wide check
+        # rather than asking for an open we can't scope.
+        pos_opening_list = frappe.get_all(
+            "POS Opening Entry",
+            fields=["name"],
+            filters={"branch": branchName, "status": "Open", "docstatus": 1},
+            limit=1,
+        )
+        return 0 if pos_opening_list else 1
 
     pos_opening_list = frappe.get_all(
         "POS Opening Entry",
         fields=["name"],
-        filters=filters,
+        filters={
+            "pos_profile": pos_profile,
+            "status": "Open",
+            "docstatus": 1,
+        },
         limit=1,
     )
     needs_open = 0 if pos_opening_list else 1
@@ -1813,21 +1826,12 @@ def _scope_invoices_for_opening_entry(opening_doc):
     Scope:
       * Same pos_profile.
       * Not a consolidated invoice.
-      * When `custom_terminal` is set on the opening entry, also scope
-        to invoices stamped with that terminal.
       * Created on or after the opening entry's creation — defensive
         against timestamp drift caused by backdated posting_date or
         pre-opening test data polluting the shift.
-      * **Shared vs strict multi-cashier mode (2026-04-13):**
-        The profile's ``custom_enable_multiple_cashier`` flag decides
-        whether invoice ownership is part of the scope. Under shared
-        mode (flag OFF — the default), one POS Opening Entry serves
-        the whole terminal and any cashier on that terminal can ring
-        orders. The close must see every invoice on the terminal
-        regardless of who rang it, so the ``owner`` filter is DROPPED.
-        Under strict mode (flag ON), each user opens their own entry
-        and closes their own — so ``pi.owner = opening_doc.user`` is
-        kept to prevent A's close from consolidating B's orders.
+
+    That is the WHOLE scope. See the comment in the body for why there
+    is deliberately no ``owner`` and no ``custom_terminal`` filter.
 
     NOTE: we use `creation` (row insert timestamp), not
     `posting_date + posting_time`, which ERPNext's native helper does.
@@ -1846,31 +1850,24 @@ def _scope_invoices_for_opening_entry(opening_doc):
         opening_doc.creation,
     ]
 
-    # Strict mode: scope by opener so two users on the same terminal
-    # close their own shifts independently. Shared mode: skip the
-    # owner filter entirely — the single entry covers everyone on
-    # this terminal.
-    multi_cashier = int(
-        frappe.db.get_value(
-            "POS Profile",
-            opening_doc.pos_profile,
-            "custom_enable_multiple_cashier",
-        )
-        or 0
-    )
-    if multi_cashier:
-        where.append("pi.owner = %s")
-        params.append(opening_doc.user)
-
-    terminal = getattr(opening_doc, "custom_terminal", None)
-    if terminal:
-        # Defensive null fallback (same pattern as getPosInvoice): an
-        # invoice that predates the custom_terminal column is still
-        # counted if it's otherwise in scope.
-        where.append(
-            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
-        )
-        params.append(terminal)
+    # NO owner filter and NO terminal filter — deliberately. (2026-07-28)
+    #
+    # There is exactly ONE open entry per POS Profile (ERPNext's
+    # check_open_pos_exists guarantees it), and it covers every cashier
+    # on every terminal of that profile. Narrowing by `owner` or
+    # `custom_terminal` would silently EXCLUDE the invoices rung by
+    # everyone else / on the other tills — they would never be attached
+    # to any closing entry, never consolidate, and quietly rot as
+    # unconsolidated POS Invoices that then break the NEXT close.
+    #
+    # Both filters used to be here and both were orphan bugs on any
+    # site running several terminals off one profile. ERPNext's own
+    # `validate_pos_invoices` requirement that every invoice be owned by
+    # the closing user is satisfied downstream instead, by the ownership
+    # normalisation pass in `submit_pos_closing_entry` — which rehomes
+    # `owner` to the opener and records the original ringer. That is the
+    # right place for it: it keeps the SCOPE honest (everything on the
+    # shift) and fixes ownership once, at the boundary.
     return " AND ".join(where), params
 
 
@@ -2879,18 +2876,22 @@ def get_pos_open_entry(terminal=None):
     ``{name, period_start_date, posting_date, pos_profile, user}`` when
     there is one.
 
-    Scoping rules mirror ``posOpening()``:
-    - With ``terminal``: per-terminal (and per-user when the profile's
-      ``custom_enable_multiple_cashier`` is on).
-    - Without ``terminal``: legacy branch-only fallback so the old Vue
-      POS / Administrator paths keep working.
+    Scoping mirrors ``posOpening()``: **the POS Profile is the unit**,
+    because that is what ERPNext's ``check_open_pos_exists`` enforces.
+    With ``terminal`` we resolve the terminal's profile and look for the
+    single open entry on it; without ``terminal`` we fall back to the
+    legacy branch-only lookup for the old Vue POS / Administrator paths.
 
-    There's also a third lookup mode used by the Existing-Entry dialog:
-    when the per-terminal/per-user check returns nothing BUT ERPNext's
-    standard ``check_open_pos_exists`` would still fire (because some
-    *other* user on this profile has an open entry), the dialog needs
-    to find that other entry to deep-link to it. The frontend passes
-    ``include_profile_match=1`` to opt into this broader lookup.
+    The response carries ownership metadata so callers never have to
+    guess whose shift they are looking at:
+
+    * ``is_mine`` — 1 when the entry belongs to the session user.
+    * ``opened_by`` — the owner's full name (falls back to the user id).
+    * ``same_terminal`` — 1 when it was opened on THIS terminal.
+
+    That matters because a cashier must not be invited to close a
+    colleague's shift; the dialog uses ``is_mine`` to decide whether to
+    offer a Close button or a read-only "ask them to close it" card.
     """
     branch_name = getBranch()
 
@@ -2904,11 +2905,23 @@ def get_pos_open_entry(terminal=None):
                 "posting_date",
                 "pos_profile",
                 "user",
+                "custom_terminal",
             ],
             order_by="period_start_date desc",
             limit=1,
         )
-        return rows[0] if rows else None
+        if not rows:
+            return None
+        row = rows[0]
+        row["is_mine"] = 1 if row.get("user") == frappe.session.user else 0
+        row["opened_by"] = (
+            frappe.db.get_value("User", row.get("user"), "full_name")
+            or row.get("user")
+        )
+        row["same_terminal"] = (
+            1 if terminal and row.get("custom_terminal") == terminal else 0
+        )
+        return row
 
     if not terminal:
         return _entry(
@@ -2918,40 +2931,19 @@ def get_pos_open_entry(terminal=None):
     pos_profile = frappe.db.get_value(
         "URY POS Terminal", terminal, "pos_profile"
     )
-    multiple_cashier = (
-        frappe.db.get_value(
-            "POS Profile", pos_profile, "custom_enable_multiple_cashier"
-        )
-        if pos_profile
-        else 0
-    )
 
-    filters = {
-        "custom_terminal": terminal,
-        "status": "Open",
-        "docstatus": 1,
-    }
-    if multiple_cashier:
-        filters["user"] = frappe.session.user
-
-    found = _entry(filters)
-    if found:
-        return found
-
-    # Fallback: ERPNext's POS Opening Entry validate hook blocks new
-    # entries on `(pos_profile, status=Open)` regardless of terminal —
-    # so a same-profile entry from another user/terminal can still
-    # collide. The dialog needs to find that entry to deep-link.
-    if pos_profile:
+    if not pos_profile:
         return _entry(
-            {
-                "pos_profile": pos_profile,
-                "status": "Open",
-                "docstatus": 1,
-            }
+            {"branch": branch_name, "status": "Open", "docstatus": 1}
         )
 
-    return None
+    return _entry(
+        {
+            "pos_profile": pos_profile,
+            "status": "Open",
+            "docstatus": 1,
+        }
+    )
 
 
 @frappe.whitelist()
@@ -2996,18 +2988,19 @@ def getAggregatorItem(aggregator):
 def validate_pos_close(pos_profile, terminal=None):
     """Return the closing status for the previous business day.
 
-    Scoped per-terminal when ``terminal`` is supplied so an unclosed
-    entry on Bar 1 doesn't block the cashier on Restaurant A. When the
-    POS Profile has ``custom_enable_multiple_cashier`` enabled, the
-    check is also scoped per-user (strict per-cashier shift accounting).
+    Scoped to the POS Profile, matching ``posOpening()``. The
+    ``terminal`` argument is accepted for call-site compatibility but no
+    longer narrows the search: there is only ever one open entry per
+    profile, so narrowing by terminal or by user would hide a genuinely
+    unclosed previous day from everyone except the original opener.
 
-    Response shape (new — used by the React POS opening dialog so it can
+    Response shape (used by the React POS opening dialog so it can
     deep-link directly to the unclosed entry instead of dumping the user
     on /app):
         {"status": "Success"}
         {"status": "Failed", "unclosed_entry": "POS-OPEN-..."}
 
-    See CLAUDE.md "Fixes log" 2026-04-08 for context.
+    See CLAUDE.md "Fixes log" 2026-07-28 for context.
     """
     enable_unclosed_pos_check = frappe.db.get_value(
         "POS Profile", pos_profile, "custom_daily_pos_close"
@@ -3024,23 +3017,18 @@ def validate_pos_close(pos_profile, terminal=None):
     else:
         previous_day = start_of_day
 
-    # Match posOpening's scoping rules so the "previous day not closed"
-    # check follows the same per-terminal / per-user model. Without
-    # terminal scoping a single unclosed entry on Bar 1 would also
-    # block Restaurant A on the same branch.
+    # Match posOpening's scoping: the POS Profile is the unit. We must
+    # NOT narrow by terminal or user here. Under the shared model a
+    # single entry serves every terminal and every cashier on the
+    # profile, so narrowing would report "nothing unclosed" to everyone
+    # except the original opener — the exact blind spot that let a
+    # previous day's shift stay open unnoticed.
     filters = {
         "posting_date": previous_day.date(),
         "status": "Open",
         "pos_profile": pos_profile,
         "docstatus": 1,
     }
-    if terminal:
-        filters["custom_terminal"] = terminal
-        multiple_cashier = frappe.db.get_value(
-            "POS Profile", pos_profile, "custom_enable_multiple_cashier"
-        )
-        if multiple_cashier:
-            filters["user"] = frappe.session.user
 
     unclosed_pos_opening = frappe.db.exists("POS Opening Entry", filters)
 

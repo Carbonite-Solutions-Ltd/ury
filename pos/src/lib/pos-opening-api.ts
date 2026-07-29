@@ -128,6 +128,13 @@ export interface CurrentPOSOpenEntry {
   posting_date: string;
   pos_profile: string;
   user: string;
+  custom_terminal?: string | null;
+  /** 1 when the entry belongs to the session user. */
+  is_mine?: 0 | 1;
+  /** Full name of whoever opened it (falls back to the user id). */
+  opened_by?: string | null;
+  /** 1 when it was opened on the terminal we asked about. */
+  same_terminal?: 0 | 1;
 }
 
 export const getCurrentPosOpenEntry = async (
@@ -147,26 +154,12 @@ export const getCurrentPosOpenEntry = async (
   }
 };
 
-/**
- * @deprecated Captain/sub-cashier ordering was removed on 2026-04-08
- * when opening entries became per-terminal. Kept as a no-op-equivalent
- * helper in case the dialog's "Waiting for Main Cashier" / "Join
- * Session" branches are re-enabled for a future role-gated workflow.
- * Under the current model this should never be called.
- */
-export const hasMainCashierOpened = async (
-  mainCashierUser: string,
-  posProfile: string
-): Promise<boolean> => {
-  const rows = (await db.getDocList('POS Opening Entry', {
-    fields: ['name'],
-    filters: [
-      ['user', '=', mainCashierUser],
-      ['pos_profile', '=', posProfile],
-      ['status', '=', 'Open'],
-      ['docstatus', '=', 1],
-    ],
-    limit: 1,
-  })) as Array<{ name: string }>;
-  return rows.length > 0;
-};
+// `hasMainCashierOpened` was deleted on 2026-07-28 along with the
+// "Join Session" / "Waiting for Main Cashier" dialog branches it fed.
+// Do not reintroduce it. It existed to decide whether a sub-cashier
+// could create their own opening entry alongside the captain's — an
+// operation ERPNext's `check_open_pos_exists` has never permitted, so
+// the answer it produced could only ever lead to a guaranteed error.
+// Whether someone has already opened the POS is now answered by
+// `checkPOSOpening()` (backend `posOpening`), which scopes by POS
+// Profile and simply returns 0 — no dialog, straight into the POS.
