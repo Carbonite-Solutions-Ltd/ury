@@ -46,6 +46,7 @@ import {
   type LoginUserCandidate,
 } from '../lib/biometric-api';
 import { useFingerprintReader } from '../lib/use-fingerprint-reader';
+import { useKeyboardInset } from '../lib/use-keyboard-inset';
 import { auth } from '../lib/frappe-sdk';
 import ResetPinDialog from '../components/ResetPinDialog';
 
@@ -65,6 +66,26 @@ function UserPicker({ onPicked }: UserPickerProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const keyboardInset = useKeyboardInset();
+
+  // Cap the result list to whatever height is actually left once the
+  // keyboard is up, instead of a fixed 320px that would push the list
+  // straight off the bottom of a phone screen. ~230px covers the logo,
+  // heading, "Sign in as" label and the input above the list.
+  const listMaxHeight =
+    keyboardInset > 0 && typeof window !== 'undefined'
+      ? Math.max(132, window.innerHeight - keyboardInset - 230)
+      : 320;
+
+  // Belt-and-braces for browsers without visualViewport (where
+  // keyboardInset stays 0): once the keyboard has animated in, ask the
+  // browser to bring the field into view itself.
+  const handleFocus = () => {
+    setTimeout(() => {
+      inputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 300);
+  };
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -100,9 +121,11 @@ function UserPicker({ onPicked }: UserPickerProps) {
         <div className="relative">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
           <Input
+            ref={inputRef}
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onFocus={handleFocus}
             placeholder="Type your name or email…"
             className="pl-9"
           />
@@ -119,7 +142,10 @@ function UserPicker({ onPicked }: UserPickerProps) {
         // set doesn't grow the card past the viewport and scroll the whole
         // page. `overscroll-contain` stops a scroll at the list's edge from
         // chaining to the page behind it.
-        <div className="divide-y divide-gray-100 border border-gray-200 rounded-lg overflow-y-auto overscroll-contain max-h-80 bg-white">
+        <div
+          className="divide-y divide-gray-100 border border-gray-200 rounded-lg overflow-y-auto overscroll-contain bg-white"
+          style={{ maxHeight: listMaxHeight }}
+        >
           {results.map((u) => (
             <button
               key={u.name}
@@ -599,6 +625,9 @@ function PasswordTab({ user, terminalName }: { user: LoginUserCandidate; termina
 export default function BiometricLogin({ terminalName }: { terminalName?: string | null }) {
   const [pickedUser, setPickedUser] = useState<LoginUserCandidate | null>(null);
   const [method, setMethod] = useState<LoginMethod>('password');
+  // Px covered by the on-screen keyboard. Drives the layout so the card
+  // stays visible while typing on a phone/tablet. 0 on desktop.
+  const keyboardInset = useKeyboardInset();
 
   const availableMethods = useMemo<LoginMethod[]>(() => {
     if (!pickedUser) return ['password'];
@@ -622,16 +651,46 @@ export default function BiometricLogin({ terminalName }: { terminalName?: string
   }, [pickedUser]);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50 flex items-center justify-center px-4 py-8">
+    // Keyboard-aware shell.
+    //   * `100dvh` (not `100vh`) so the mobile browser's collapsing URL
+    //     bar doesn't leave the card cut off.
+    //   * `paddingBottom: keyboardInset` shrinks the centring box by the
+    //     height the on-screen keyboard covers, so the card re-centres in
+    //     the space the user can actually SEE instead of staying centred
+    //     against the full screen and hiding behind the keyboard.
+    //   * `overflow-y-auto` + `items-start` once the keyboard is up: with
+    //     little height left the card can exceed the visible area, and a
+    //     centred non-scrolling flex child would clip its own top with no
+    //     way to reach it.
+    <div
+      className={`min-h-[100dvh] bg-gradient-to-br from-blue-50 via-white to-blue-50 flex justify-center px-4 py-8 overflow-y-auto ${
+        keyboardInset > 0 ? 'items-start' : 'items-center'
+      }`}
+      style={{ paddingBottom: keyboardInset || undefined }}
+    >
       <div className="w-full max-w-md">
-        <div className="text-center mb-6">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-blue-600 shadow-lg mb-3">
-            <Fingerprint className="text-white" size={28} />
+        {/* The header is pure decoration — collapse it while the keyboard
+            is up so the list below gets the space instead. */}
+        <div className={`text-center ${keyboardInset > 0 ? 'mb-3' : 'mb-6'}`}>
+          <div
+            className={`inline-flex items-center justify-center rounded-2xl bg-blue-600 shadow-lg ${
+              keyboardInset > 0 ? 'w-10 h-10 mb-2' : 'w-14 h-14 mb-3'
+            }`}
+          >
+            <Fingerprint className="text-white" size={keyboardInset > 0 ? 20 : 28} />
           </div>
-          <h1 className="text-2xl font-bold text-gray-900">ExPOS Sign In</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Sign in to your terminal to start serving customers.
-          </p>
+          <h1
+            className={`font-bold text-gray-900 ${
+              keyboardInset > 0 ? 'text-lg' : 'text-2xl'
+            }`}
+          >
+            ExPOS Sign In
+          </h1>
+          {keyboardInset === 0 && (
+            <p className="text-sm text-gray-500 mt-1">
+              Sign in to your terminal to start serving customers.
+            </p>
+          )}
         </div>
 
         <Card className="border-gray-200 shadow-lg">

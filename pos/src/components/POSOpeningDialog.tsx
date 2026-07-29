@@ -1,9 +1,18 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, AlertTriangle, DoorOpen, CheckCircle2, Loader2 } from 'lucide-react';
+import {
+  RefreshCw,
+  AlertTriangle,
+  DoorOpen,
+  CheckCircle2,
+  Loader2,
+  LogOut,
+} from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
+import { showToast } from './ui/toast';
 import { usePOSStore } from '../store/pos-store';
 import { useRootStore } from '../store/root-store';
+import { logout } from '../lib/auth-api';
 import {
   createAndSubmitPOSOpening,
   getCurrentPosOpenEntry,
@@ -12,6 +21,26 @@ import {
 } from '../lib/pos-opening-api';
 import { extractFrappeServerError } from '../lib/utils';
 import POSClosingDialog from './POSClosingDialog';
+
+/**
+ * Sign out from any of the POS-gate screens.
+ *
+ * These dialogs cover the whole viewport and the POS runs as an
+ * installed PWA with NO browser chrome — no address bar, no back
+ * button. Without this the cashier is genuinely stuck: if they can't
+ * open the POS (wrong user, someone else's shift open, outside their
+ * shift window) their only escape is to force-quit the app. Every
+ * blocking branch of this dialog therefore offers a way out.
+ */
+async function handleGateLogout() {
+  try {
+    await logout();
+    // Land on /pos as guest → App.tsx renders the login screen.
+    window.location.href = '/pos';
+  } catch {
+    showToast.error('Failed to sign out. Please try again.');
+  }
+}
 
 type DialogType = 'opening' | 'closing';
 
@@ -83,6 +112,7 @@ const POSOpeningDialog = ({ type, onOpened, unclosedEntry }: POSOpeningDialogPro
           icon={<AlertTriangle className="h-8 w-8 text-orange-600" />}
           iconBg="bg-orange-100"
           title="Previous POS Not Closed"
+          showLogout
           subtitle={
             unclosedEntry
               ? `Entry ${unclosedEntry} is still open. Close it before starting today's session.`
@@ -334,6 +364,7 @@ const OpeningBranch = ({ posProfile, user, terminalName, onOpened }: OpeningBran
           icon={<AlertTriangle className="h-8 w-8 text-orange-600" />}
           iconBg="bg-orange-100"
           title={mode.isMine ? 'Your Shift Is Still Open' : 'POS Already Open'}
+          showLogout
           subtitle={
             mode.entryName
               ? mode.isMine
@@ -395,6 +426,7 @@ const OpeningBranch = ({ posProfile, user, terminalName, onOpened }: OpeningBran
       icon={<DoorOpen className="h-8 w-8 text-blue-600" />}
       iconBg="bg-blue-100"
       title="Open POS Entry"
+      showLogout
       subtitle="Enter your starting cash balances to begin the session."
       wide
     >
@@ -482,10 +514,29 @@ interface DialogShellProps {
   subtitle: string;
   wide?: boolean;
   children: React.ReactNode;
+  /**
+   * Render a "Sign out" escape hatch under the card's actions. On for
+   * every branch that can BLOCK the user (open form, existing entry,
+   * previous-day close); off for transient states (loading, the success
+   * flash) where there is nothing to be stuck on.
+   */
+  showLogout?: boolean;
 }
 
-const DialogShell = ({ icon, iconBg, title, subtitle, wide, children }: DialogShellProps) => (
-  <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+const DialogShell = ({
+  icon,
+  iconBg,
+  title,
+  subtitle,
+  wide,
+  children,
+  showLogout,
+}: DialogShellProps) => (
+  // overflow-y-auto + items-start on small screens: the card can be
+  // taller than the viewport on a phone (or once the on-screen keyboard
+  // eats half the height), and a centred non-scrolling flex child would
+  // clip its own top and bottom with no way to reach them.
+  <div className="fixed inset-0 bg-black/50 flex items-start sm:items-center justify-center z-50 overflow-y-auto py-6">
     <div
       className={`bg-white rounded-lg p-8 ${
         wide ? 'max-w-lg' : 'max-w-md'
@@ -501,6 +552,21 @@ const DialogShell = ({ icon, iconBg, title, subtitle, wide, children }: DialogSh
         <p className="text-gray-600 mb-6">{subtitle}</p>
       </div>
       <div>{children}</div>
+      {showLogout && (
+        <div className="mt-6 pt-4 border-t border-gray-100 text-center">
+          <button
+            type="button"
+            onClick={handleGateLogout}
+            className="inline-flex items-center justify-center gap-2 text-sm text-gray-500 hover:text-red-600 font-medium"
+          >
+            <LogOut className="w-4 h-4" />
+            Sign out
+          </button>
+          <p className="mt-1 text-xs text-gray-400">
+            Signed in as the wrong user? Sign out to switch.
+          </p>
+        </div>
+      )}
     </div>
   </div>
 );
