@@ -129,17 +129,95 @@ def get_order_invoice(table=None, invoiceNo=None, order_type=None, is_payment=No
     return invoice
 
 
-def _resolve_item_warehouse(item_code, company):
-    """An item's Default Warehouse for the given company (Item Defaults),
-    or None when the item has no default for that company. Used in
-    item-warehouse mode (POS Profile `custom_use_pos_warehouse` OFF) so each
-    sold item posts stock to its own warehouse. See CLAUDE.md 2026-06-11."""
+def _pick_outlet_warehouse(default_warehouse, cost_center, warehouses):
+    """Resolve the warehouse a sale should deduct from. PURE — unit-tested.
+
+    An item's Default Warehouse names the *category* of stock (Beverage Stores,
+    Food Warehouse …). The till's cost centre names the *outlet* (Airport,
+    Sitout, HO). One product can be sold at several outlets — a Fanta rung at
+    the Airport till must come out of the Airport beverage store, the same
+    Fanta at Sitout out of Sitout's. A single Item Default cannot express that,
+    because Item Default is keyed on (item, company) and there is one company.
+
+    So the two are combined: take the category group the item's default
+    warehouse belongs to, then pick the child of that group tagged with the
+    till's cost centre (`Warehouse.custom_cost_center`).
+
+    Falls back to the item's own default warehouse when there is no cost centre
+    on the till, or the group has no warehouse for that outlet — never guesses
+    at some other outlet's stock. If the fallback warehouse then has no stock,
+    ERPNext's own POS check raises "Item has no stock in warehouse X", which is
+    the error the cashier should see.
+
+    `warehouses` maps name -> {is_group, parent_warehouse, cost_center}.
+    """
+    if not default_warehouse:
+        return None
+    if not cost_center:
+        return default_warehouse
+
+    meta = warehouses.get(default_warehouse)
+    if not meta:
+        return default_warehouse
+
+    # Already the right outlet's warehouse — nothing to redirect.
+    if meta.get("cost_center") == cost_center:
+        return default_warehouse
+
+    # The category group is the default warehouse itself when an admin pointed
+    # the item at the group node, otherwise its parent.
+    group = default_warehouse if meta.get("is_group") else meta.get("parent_warehouse")
+    if not group:
+        return default_warehouse
+
+    for name, info in warehouses.items():
+        if (
+            not info.get("is_group")
+            and info.get("parent_warehouse") == group
+            and info.get("cost_center") == cost_center
+        ):
+            return name
+
+    return default_warehouse
+
+
+def _get_warehouse_tree(company):
+    """{name: {is_group, parent_warehouse, cost_center}} for a company."""
+    rows = frappe.get_all(
+        "Warehouse",
+        filters={"company": company, "disabled": 0},
+        fields=["name", "is_group", "parent_warehouse", "custom_cost_center"],
+    )
+    return {
+        r.name: {
+            "is_group": int(r.is_group or 0),
+            "parent_warehouse": r.parent_warehouse,
+            "cost_center": r.custom_cost_center,
+        }
+        for r in rows
+    }
+
+
+def _resolve_item_warehouse(item_code, company, cost_center=None):
+    """The warehouse this item should post stock to for this sale.
+
+    Used in item-warehouse mode (POS Profile `custom_use_pos_warehouse` OFF).
+    Without a cost centre this is the item's own Default Warehouse, exactly as
+    before. With one, the outlet is resolved too — see _pick_outlet_warehouse.
+    """
     if not item_code or not company:
         return None
-    return frappe.db.get_value(
+
+    default_warehouse = frappe.db.get_value(
         "Item Default",
         {"parent": item_code, "company": company},
         "default_warehouse",
+    )
+    if not default_warehouse or not cost_center:
+        return default_warehouse
+
+    return _pick_outlet_warehouse(
+        default_warehouse, cost_center, _get_warehouse_tree(company)
     )
 
 
@@ -505,6 +583,14 @@ def sync_order(
         if pos_profile
         else None
     )
+    # The till's cost centre identifies the OUTLET. In item-warehouse mode it
+    # selects which of the category's per-outlet warehouses the sale deducts
+    # from — see _resolve_item_warehouse. Fetched once, not per item row.
+    invoice_cost_center = (
+        frappe.db.get_value("POS Profile", pos_profile, "cost_center")
+        if pos_profile
+        else None
+    )
     if not use_pos_warehouse:
         invoice.set_warehouse = None
 
@@ -546,7 +632,11 @@ def sync_order(
                 qty=d.get("qty"),
                 **({"custom_course": course} if course else {}),
                 **(
-                    {"warehouse": _resolve_item_warehouse(d.get("item"), invoice_company)}
+                    {
+                        "warehouse": _resolve_item_warehouse(
+                            d.get("item"), invoice_company, invoice_cost_center
+                        )
+                    }
                     if not use_pos_warehouse
                     else {}
                 ),
@@ -554,9 +644,7 @@ def sync_order(
                 rate=item_prices[0].price_list_rate,
                 price_list_rate=item_prices[0].price_list_rate,
                 base_price_list_rate=item_prices[0].price_list_rate,
-                cost_center=frappe.db.get_value(
-                    "POS Profile", pos_profile, "cost_center"
-                ),
+                cost_center=invoice_cost_center,
             ),
         )
 
