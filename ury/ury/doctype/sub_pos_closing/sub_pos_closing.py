@@ -68,14 +68,23 @@ class SubPOSClosing(Document):
             pass
     
     def on_submit(self):
+        # The field is `custom_sub_pos_close_entry` (see
+        # ury/fixtures/custom_field.json). This wrote `custom_sub_pos_close`,
+        # which does not exist on the doctype — so Frappe just set a stray
+        # Python attribute and the link was silently dropped at save. The
+        # audit trail from Sub POS Closing back to its opening entry never
+        # actually persisted. Fixed 2026-07-28.
         opening_entry = frappe.get_doc("POS Opening Entry", self.pos_opening_entry)
-        opening_entry.custom_sub_pos_close = self.name
+        opening_entry.custom_sub_pos_close_entry = self.name
         opening_entry.status = "Closed"
         opening_entry.save()
-    
+
     def on_cancel(self):
+        # Cancelling must CLEAR the link, not re-stamp it. The original
+        # code set it to self.name on cancel too — a copy-paste of
+        # on_submit that left a cancelled closing pointing at the entry.
         opening_entry = frappe.get_doc("POS Opening Entry", self.pos_opening_entry)
-        opening_entry.custom_sub_pos_close = self.name
+        opening_entry.custom_sub_pos_close_entry = None
         opening_entry.status = "Open"
         opening_entry.save()
 
