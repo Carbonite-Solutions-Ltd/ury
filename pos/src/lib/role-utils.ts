@@ -238,3 +238,29 @@ export const isCaptainOrAbove = (user: User | null): boolean => {
   const allowed = ['System Manager', 'URY Manager', 'URY Captain'];
   return user.roles.some((role) => allowed.includes(role));
 };
+
+/**
+ * Whether the current user may choose to MARK a bill printed instead of
+ * physically printing it. When true, the Print / Reprint button opens a
+ * PrintChoiceDialog ("Print to Printer" vs "Mark as Printed") rather
+ * than going straight to the printer.
+ *
+ * This exists for admins testing invoices and payments, who otherwise
+ * burn a physical receipt on every single test order. "Mark as Printed"
+ * calls the same `qz_print_update` endpoint a real print calls, so the
+ * invoice still gets `invoice_printed = 1` and the Payment button still
+ * unlocks — the ONLY difference is that nothing is sent to a printer.
+ *
+ * Deliberately TIGHTER than `isCaptainOrAbove`: only Administrator and
+ * System Manager, i.e. actual system administrators. URY Manager and
+ * URY Captain are floor-ops roles who should be printing real bills for
+ * customers, and giving them a one-click "pretend I printed it" button
+ * on live orders is a control we don't want to hand out by default.
+ * Widen the list here if a site genuinely needs it.
+ */
+export const canSkipPhysicalPrint = (user: User | null): boolean => {
+  if (!user) return false;
+  if (user.name === 'Administrator') return true;
+  if (!user.roles) return false;
+  return user.roles.includes('System Manager');
+};
