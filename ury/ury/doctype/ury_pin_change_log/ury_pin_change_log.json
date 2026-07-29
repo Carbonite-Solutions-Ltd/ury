@@ -1,0 +1,152 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:PINLOG-{YYYY}-{MM}-{#####}",
+ "creation": "2026-07-29 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "user",
+  "user_full_name",
+  "action",
+  "column_break_actor",
+  "performed_by",
+  "performed_by_full_name",
+  "performed_at",
+  "context_section",
+  "self_service",
+  "terminal",
+  "column_break_context",
+  "ip_address",
+  "notes"
+ ],
+ "fields": [
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "User",
+   "options": "User",
+   "read_only": 1,
+   "reqd": 1,
+   "description": "The user whose PIN was affected."
+  },
+  {
+   "fieldname": "user_full_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "User Full Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "action",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Action",
+   "options": "PIN Set\nPIN Changed\nPIN Set By Admin\nEnrollment Unlocked\nEnrollment Deleted",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_actor",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "performed_by",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Performed By",
+   "options": "User",
+   "read_only": 1,
+   "reqd": 1,
+   "description": "Who carried out the change. Differs from User when a captain or administrator set someone else's PIN."
+  },
+  {
+   "fieldname": "performed_by_full_name",
+   "fieldtype": "Data",
+   "label": "Performed By Full Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "performed_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Performed At",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "context_section",
+   "fieldtype": "Section Break",
+   "label": "Context"
+  },
+  {
+   "fieldname": "self_service",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Self Service",
+   "read_only": 1,
+   "default": "0",
+   "description": "Ticked when the user changed their own PIN. Unticked means someone else did it for them."
+  },
+  {
+   "fieldname": "terminal",
+   "fieldtype": "Link",
+   "label": "Terminal",
+   "options": "URY POS Terminal",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_context",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "ip_address",
+   "fieldtype": "Data",
+   "label": "IP Address",
+   "read_only": 1
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-07-29 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "URY",
+ "name": "URY PIN Change Log",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "read": 1,
+   "report": 1,
+   "export": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "export": 1,
+   "delete": 1,
+   "role": "URY Manager"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "URY Captain"
+  }
+ ],
+ "sort_field": "performed_at",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}
