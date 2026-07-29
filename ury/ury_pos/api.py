@@ -2364,6 +2364,20 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
     closing_doc.total_quantity = total_qty
     closing_doc.total_taxes_and_charges = total_tax
 
+    # Soft gate on who closes the day (2026-07-29). Closing the day is
+    # normally a captain's job — it's where cash is counted and the
+    # shift's invoices are consolidated into the GL. But it is NOT
+    # blocked for cashiers: with `custom_daily_pos_close` enabled, an
+    # unclosed night blocks the NEXT day's trading entirely, so a hard
+    # captain-only rule would take the whole outlet down whenever a
+    # captain is away. Instead the cashier confirms in the UI and we
+    # record the fact here, so a captain can review it the next morning
+    # (filter POS Closing Entry on "Closed By Non-Captain").
+    #
+    # Resolved server-side from the SESSION user, never trusted from the
+    # client — the frontend confirmation is a prompt, not the record.
+    closing_doc.custom_closed_by_non_captain = 0 if _user_is_captain() else 1
+
     for row in paid:
         closing_doc.append(
             "pos_invoices",

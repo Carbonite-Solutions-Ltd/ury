@@ -908,6 +908,27 @@ def get_custom_fields():
 			},
 		],
   
+		"POS Closing Entry": [
+			{
+				# Soft gate on who closes the day (2026-07-29). Stamped
+				# server-side by submit_pos_closing_entry. Dual-sourced here
+				# as well as in custom_field.json because fixtures are
+				# install-only — without this, sites that already have URY
+				# would never get the column and the write would silently
+				# become a no-op. See CLAUDE.md "Gotchas".
+				"fieldname": "custom_closed_by_non_captain",
+				"fieldtype": "Check",
+				"label": "Closed By Non-Captain",
+				"insert_after": "user",
+				"default": "0",
+				"read_only": 1,
+				"no_copy": 1,
+				"print_hide": 1,
+				"in_standard_filter": 1,
+				"description": "Set automatically when the day was closed by someone without a captain/manager role. Closing is normally a captain's job, but it is deliberately NOT blocked for cashiers - with Daily POS Close enabled an unclosed night would block the next day's trading entirely. Filter on this to review who closed.",
+				"translatable": 0,
+			},
+		],
 		"POS Opening Entry": [
 			{
 				"fieldname": "restaurant_info",

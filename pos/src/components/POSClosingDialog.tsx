@@ -40,6 +40,8 @@ import {
   type POSClosingPreview,
 } from '../lib/pos-closing-api';
 import { extractFrappeServerError, formatCurrency } from '../lib/utils';
+import { isCaptainOrAbove } from '../lib/role-utils';
+import { useRootStore } from '../store/root-store';
 
 interface POSClosingDialogProps {
   /** Name of the POS Opening Entry to close. */
@@ -67,6 +69,22 @@ const POSClosingDialog = ({
   // Selected cashier to transfer unpaid drafts to. Required before
   // the Close Shift button is enabled when `preview.draft_count > 0`.
   const [transferTo, setTransferTo] = useState<string>('');
+
+  // Soft gate (2026-07-29): closing the day is normally the captain's
+  // job. A cashier is NOT blocked — with Daily POS Close enabled, an
+  // unclosed night blocks the next day's trading, so a hard rule would
+  // take the outlet down whenever a captain is away. They just have to
+  // acknowledge it once, and the backend records that a non-captain
+  // closed so a captain can review it. Gating here rather than at the
+  // call sites covers every route into this dialog (End Shift, the
+  // Shift Hours banner, and both POS-gate branches).
+  const { user } = useRootStore();
+  const [nonCaptainConfirmed, setNonCaptainConfirmed] = useState(false);
+  const showNonCaptainConfirm =
+    !isCaptainOrAbove(user) &&
+    !nonCaptainConfirmed &&
+    state.kind !== 'submitting' &&
+    state.kind !== 'success';
 
   // Initial preview fetch.
   useEffect(() => {
@@ -198,9 +216,12 @@ const POSClosingDialog = ({
 
         {/* Body */}
         <div className="flex-1 min-h-0 overflow-y-auto">
-          {state.kind === 'loading' && <LoadingBody />}
-          {state.kind === 'error' && <ErrorBody message={state.message} />}
-          {state.kind === 'form' && (
+          {showNonCaptainConfirm && <NonCaptainConfirmBody />}
+          {!showNonCaptainConfirm && state.kind === 'loading' && <LoadingBody />}
+          {!showNonCaptainConfirm && state.kind === 'error' && (
+            <ErrorBody message={state.message} />
+          )}
+          {!showNonCaptainConfirm && state.kind === 'form' && (
             <FormBody
               preview={state.preview}
               rows={state.rows}
@@ -226,8 +247,27 @@ const POSClosingDialog = ({
           )}
         </div>
 
+        {/* Footer — non-captain confirmation */}
+        {showNonCaptainConfirm && (
+          <div className="mt-6 pt-4 border-t border-gray-100 flex items-center justify-end gap-3 shrink-0">
+            <Button
+              variant="outline"
+              onClick={onCancel}
+              className="border-gray-300 text-gray-700 hover:bg-gray-50 font-medium py-2.5 px-5 rounded-lg"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => setNonCaptainConfirmed(true)}
+              className="bg-orange-600 hover:bg-orange-700 text-white font-medium py-2.5 px-5 rounded-lg"
+            >
+              Continue to Close
+            </Button>
+          </div>
+        )}
+
         {/* Footer */}
-        {state.kind === 'form' && (() => {
+        {!showNonCaptainConfirm && state.kind === 'form' && (() => {
           const hasDrafts = state.preview.draft_count > 0;
           const canTransfer = state.preview.can_transfer === 1;
           // Unpaid drafts always transfer up to a captain, whoever's closing.
@@ -288,6 +328,42 @@ const parseAmount = (raw: string, fallback: number): number => {
 };
 
 // ───── body subcomponents ─────
+
+/**
+ * Shown once to a non-captain before they reach the closing form.
+ *
+ * Deliberately a prompt and NOT a block. Closing is where cash is
+ * counted and the shift's invoices are consolidated into the GL, so it
+ * is normally a captain's job — but hard-blocking it would be worse
+ * than the problem: with Daily POS Close enabled an unclosed night
+ * blocks the NEXT day's trading, so a captain being away would stop the
+ * outlet selling entirely. So the cashier may proceed, and the backend
+ * stamps `custom_closed_by_non_captain` on the closing entry for review.
+ */
+const NonCaptainConfirmBody = () => (
+  <div className="py-4">
+    <div className="p-4 rounded-lg bg-amber-50 border border-amber-200 flex gap-3">
+      <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+      <div className="text-sm text-amber-900">
+        <p className="font-semibold mb-1">
+          Closing the day is normally your captain's job.
+        </p>
+        <p className="text-amber-800">
+          This counts the drawer and finalises the shift's sales. If your
+          captain is available, ask them to close instead.
+        </p>
+      </div>
+    </div>
+    <p className="mt-4 text-sm text-gray-600">
+      You can still continue — the day won't be left open. Your name is
+      recorded against this closing so a captain can review it.
+    </p>
+    <ul className="mt-3 text-sm text-gray-500 list-disc pl-5 space-y-1">
+      <li>Count each payment mode carefully before you submit.</li>
+      <li>Any unpaid orders must be handed to a captain first.</li>
+    </ul>
+  </div>
+);
 
 const LoadingBody = () => (
   <div className="flex items-center justify-center py-12">
