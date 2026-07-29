@@ -35,6 +35,8 @@ import {
 import { DEFAULT_PAYMENT_MODE } from '../data/order-types';
 import { chargeInvoiceToRoom } from '../lib/ihotel-api';
 import { printSplitReceipts, printOrder } from '../lib/print';
+import { canSkipPhysicalPrint } from '../lib/role-utils';
+import { useRootStore } from '../store/root-store';
 import ItemSplitFlow from './ItemSplitFlow';
 
 interface PaymentDialogProps {
@@ -118,6 +120,9 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
     fetchPaymentModes,
     posProfile: storePosProfile,
   } = usePOSStore();
+  // Used only to decide whether to skip the courtesy auto-print on
+  // payment for administrators. See the print branch in handlePayment.
+  const { user } = useRootStore();
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [discountValue, setDiscountValue] = useState<string>('');
@@ -505,6 +510,19 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
               'Payment went through, but the split receipts could not be printed. Reprint from the Orders page.',
           });
         }
+      } else if (storePosProfile && canSkipPhysicalPrint(user)) {
+        // Admin (Administrator / System Manager): skip the courtesy
+        // auto-print. Payment is already gated behind a first bill print,
+        // so this is a SECOND physical copy — pure waste when the admin
+        // is testing payments, which is exactly what they asked not to
+        // happen. Nothing is lost: the bill is already marked printed,
+        // and Print on the Orders page still offers a real print via
+        // PrintChoiceDialog whenever a copy is genuinely wanted.
+        showToast.info({
+          title: 'Auto-print skipped',
+          description:
+            "You're signed in as an administrator. Use Print on the Orders page if you need a copy.",
+        });
       } else if (storePosProfile) {
         // Auto-print the bill on payment (single payer). A print failure
         // must NOT undo the already-submitted payment.
