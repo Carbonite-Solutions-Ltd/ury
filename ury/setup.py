@@ -427,6 +427,20 @@ def get_custom_fields():
 
 		"POS Profile": [
 			{
+				# Declared here (not just in custom_field.json) purely so the
+				# DESCRIPTION reaches sites that installed URY before it was
+				# written — fixtures are install-only, setup.py runs on every
+				# migrate. The field itself has existed for a long time; this
+				# entry deliberately omits `default` so create_custom_fields
+				# cannot clobber whatever an admin already set.
+				"fieldname": "custom_enable_multiple_cashier",
+				"fieldtype": "Check",
+				"label": "Enable Multiple Cashier",
+				"insert_after": "custom_multiple_cashier_configuration",
+				"description": "Legacy flag — it does NOT control who may open or close the POS. There is always exactly ONE open POS Opening Entry per POS Profile (enforced by ERPNext), created by whoever starts the day; every other cashier or waiter on any terminal of this profile simply joins it, with no entry of their own. Per-order attribution is kept on each invoice (owner, terminal, cashier). Ticking this box now only affects bill-print routing. Safe to leave unticked.",
+				"translatable": 0,
+			},
+			{
 				"fieldname": "custom_use_pos_warehouse",
 				"fieldtype": "Check",
 				"label": "Use Single POS Warehouse",

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { RefreshCw, AlertTriangle, Clock, DoorOpen, CheckCircle2, Loader2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { RefreshCw, AlertTriangle, DoorOpen, CheckCircle2, Loader2 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { usePOSStore } from '../store/pos-store';
@@ -8,7 +8,6 @@ import {
   createAndSubmitPOSOpening,
   getCurrentPosOpenEntry,
   getOpeningBalanceDetails,
-  hasMainCashierOpened,
   type OpeningBalanceRow,
 } from '../lib/pos-opening-api';
 import { extractFrappeServerError } from '../lib/utils';
@@ -45,11 +44,23 @@ const formatLocalDate = (d: Date): string => {
  * daily-close rule is enabled.
  *
  * For (a) it renders an in-POS form that creates + submits a POS Opening
- * Entry without ever sending the user to the Frappe desk. In multi-cashier
- * mode it detects whether the current user is the "main cashier" (captain)
- * and adapts: main cashier sees the full form; sub-cashiers see a one-click
- * "Join Session" button once the captain has opened, or a "waiting for main
- * cashier" screen otherwise.
+ * Entry without ever sending the user to the Frappe desk.
+ *
+ * There is NO "Join Session" / "waiting for main cashier" flow any more,
+ * and there must not be one again. It was removed on 2026-07-28 because
+ * it could never work: the button called `handleOpen`, i.e. it tried to
+ * CREATE a second POS Opening Entry — exactly what ERPNext's
+ * `check_open_pos_exists` refuses whenever the profile already has one
+ * open. Clicking "Join Session" was therefore guaranteed to produce
+ * "…is open. Close the POS or cancel the existing POS Opening Entry…",
+ * which pushed cashiers toward closing the captain's shift. It never
+ * joined anything.
+ *
+ * Under the current model there is one open entry per POS Profile and
+ * `posOpening()` returns 0 for everyone once it exists — so a second
+ * cashier never reaches this dialog at all. The existing-entry branch
+ * below is now only a safety net, and it refuses to offer a Close button
+ * for someone else's shift.
  *
  * For (b) it shows a focused message + a "Close Previous Session" button
  * that opens the in-POS POSClosingDialog for the specific unclosed entry
@@ -137,14 +148,14 @@ interface OpeningBranchProps {
 
 type OpeningMode =
   | { kind: 'loading' }
-  | { kind: 'main-cashier' } // show full form
-  | { kind: 'sub-cashier-ready' } // show Join Session button (legacy, unreachable under new model)
-  | { kind: 'sub-cashier-waiting'; mainCashier: string } // show waiting screen (legacy, unreachable)
+  | { kind: 'open-form' } // show the full opening form
   | {
       kind: 'existing-entry';
       entryName: string | null;
       message: string;
-    }; // ERPNext rejected with "POS Opening Entry Exists" — deep-link to that entry
+      isMine: boolean;
+      openedBy: string | null;
+    }; // ERPNext rejected the create because the profile already has an open entry
 
 const OpeningBranch = ({ posProfile, user, terminalName, onOpened }: OpeningBranchProps) => {
   const [mode, setMode] = useState<OpeningMode>({ kind: 'loading' });
@@ -154,80 +165,35 @@ const OpeningBranch = ({ posProfile, user, terminalName, onOpened }: OpeningBran
   const [submitted, setSubmitted] = useState(false);
   const [showClosingDialog, setShowClosingDialog] = useState(false);
 
-  const multiCashier = posProfile?.custom_enable_multiple_cashier === 1;
   const currentUser = user?.name || null;
 
-  // Identify the main cashier (captain) from the POS Profile's applicable_for_users child table.
-  const mainCashierUser = useMemo(() => {
-    if (!multiCashier || !posProfile?.applicable_for_users) return null;
-    const row = posProfile.applicable_for_users.find(u => u.custom_main_cashier === 1);
-    return row?.user || null;
-  }, [multiCashier, posProfile]);
-
-  // Resolve which opening mode to show. Also seed balance rows.
+  // Seed the opening form. Every user who actually reaches this dialog
+  // sees the same form — there is no captain/sub-cashier fork any more.
+  // If someone has already opened this POS Profile, `posOpening()`
+  // returns 0 and the provider never renders this dialog in the first
+  // place, so reaching here genuinely means "nobody has opened yet".
   useEffect(() => {
     let cancelled = false;
 
     const resolve = async () => {
       if (!posProfile || !currentUser) return;
-
-      // Non-multi-cashier: everyone sees the full form.
-      if (!multiCashier) {
+      try {
         const rows = await getOpeningBalanceDetails();
         if (cancelled) return;
         setBalanceRows(rows);
-        setMode({ kind: 'main-cashier' });
-        return;
-      }
-
-      // Multi-cashier: branch on whether the current user is the captain.
-      if (mainCashierUser && currentUser === mainCashierUser) {
-        const rows = await getOpeningBalanceDetails();
+      } catch (err) {
+        console.error('Failed to load opening balance rows:', err);
         if (cancelled) return;
-        setBalanceRows(rows);
-        setMode({ kind: 'main-cashier' });
-        return;
+        setBalanceRows([]);
       }
-
-      // Sub-cashier path: has the captain opened yet?
-      if (mainCashierUser) {
-        try {
-          const captainOpen = await hasMainCashierOpened(mainCashierUser, posProfile.name);
-          if (cancelled) return;
-
-          if (captainOpen) {
-            // Preload zero-balance rows so "Join Session" creates a valid entry.
-            const rows = await getOpeningBalanceDetails();
-            if (cancelled) return;
-            setBalanceRows(rows.map(r => ({ ...r, opening_amount: 0 })));
-            setMode({ kind: 'sub-cashier-ready' });
-          } else {
-            setMode({ kind: 'sub-cashier-waiting', mainCashier: mainCashierUser });
-          }
-        } catch (err) {
-          console.error('Failed to resolve main cashier status:', err);
-          // Fall back to the full form — safer to let them try than to hard-block.
-          const rows = await getOpeningBalanceDetails();
-          if (cancelled) return;
-          setBalanceRows(rows);
-          setMode({ kind: 'main-cashier' });
-        }
-        return;
-      }
-
-      // Multi-cashier flag set but no captain marked — misconfiguration.
-      // Fall through to the full form so the user can still proceed.
-      const rows = await getOpeningBalanceDetails();
-      if (cancelled) return;
-      setBalanceRows(rows);
-      setMode({ kind: 'main-cashier' });
+      setMode({ kind: 'open-form' });
     };
 
     resolve();
     return () => {
       cancelled = true;
     };
-  }, [posProfile, currentUser, multiCashier, mainCashierUser]);
+  }, [posProfile, currentUser]);
 
   const handleOpen = async () => {
     if (!posProfile || !currentUser) return;
@@ -268,15 +234,21 @@ const OpeningBranch = ({ posProfile, user, terminalName, onOpened }: OpeningBran
         'Failed to open POS Entry. Please try again.'
       );
 
-      // ERPNext throws this when there's already an open entry for the
-      // same POS Profile (regardless of terminal). Look up which entry
-      // is blocking and switch the dialog to a focused "Existing Open
-      // Entry" mode with a deep-link button. See CLAUDE.md "Fixes log"
-      // 2026-04-09.
-      const titleMatches = parsed.title === 'POS Opening Entry Exists';
-      const msgMatches = /pos opening entry to create a new pos opening/i.test(
-        parsed.message
-      );
+      // Two different ERPNext guards can reject the create, and BOTH
+      // need to land in the existing-entry branch:
+      //
+      //  * "POS Opening Entry Exists"  — check_open_pos_exists: this
+      //    POS Profile already has an open entry (any user, any till).
+      //  * "Cannot Assign Cashier"     — check_user_already_assigned:
+      //    THIS user already has an open entry somewhere. That is what
+      //    fires when a cashier opens a second browser/terminal, and it
+      //    used to fall through to a dead-end raw error with no way out.
+      const titleMatches =
+        parsed.title === 'POS Opening Entry Exists' ||
+        parsed.title === 'Cannot Assign Cashier';
+      const msgMatches =
+        /pos opening entry to create a new pos opening/i.test(parsed.message) ||
+        /currently assigned to another pos/i.test(parsed.message);
       if (titleMatches || msgMatches) {
         try {
           const existing = await getCurrentPosOpenEntry(terminalName);
@@ -284,12 +256,16 @@ const OpeningBranch = ({ posProfile, user, terminalName, onOpened }: OpeningBran
             kind: 'existing-entry',
             entryName: existing?.name || null,
             message: parsed.message,
+            isMine: existing?.is_mine === 1,
+            openedBy: existing?.opened_by || null,
           });
         } catch {
           setMode({
             kind: 'existing-entry',
             entryName: null,
             message: parsed.message,
+            isMine: false,
+            openedBy: null,
           });
         }
         setSubmitting(false);
@@ -339,95 +315,61 @@ const OpeningBranch = ({ posProfile, user, terminalName, onOpened }: OpeningBran
     );
   }
 
-  // ───── sub-cashier waiting for captain ─────
-  if (mode.kind === 'sub-cashier-waiting') {
-    return (
-      <DialogShell
-        icon={<Clock className="h-8 w-8 text-amber-600" />}
-        iconBg="bg-amber-100"
-        title="Waiting for Main Cashier"
-        subtitle={`${mode.mainCashier} hasn't opened the POS yet. Ask them to open first, then reload.`}
-      >
-        <Button
-          onClick={() => window.location.reload()}
-          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-lg"
-        >
-          <RefreshCw className="w-5 h-5 mr-2" />
-          Reload
-        </Button>
-      </DialogShell>
-    );
-  }
-
-  // ───── sub-cashier ready to join captain's session ─────
-  if (mode.kind === 'sub-cashier-ready') {
-    return (
-      <DialogShell
-        icon={<DoorOpen className="h-8 w-8 text-blue-600" />}
-        iconBg="bg-blue-100"
-        title="Join Session"
-        subtitle="Your main cashier has opened the POS. Click below to join."
-      >
-        {submitError && (
-          <div className="mb-3 p-3 rounded-lg bg-red-50 text-red-700 text-sm">
-            {submitError}
-          </div>
-        )}
-        <Button
-          onClick={handleOpen}
-          disabled={submitting}
-          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-lg"
-        >
-          {submitting ? (
-            <>
-              <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-              Joining…
-            </>
-          ) : (
-            <>
-              <DoorOpen className="w-5 h-5 mr-2" />
-              Join Session
-            </>
-          )}
-        </Button>
-      </DialogShell>
-    );
-  }
-
   // ───── existing open entry blocking the new one ─────
-  // ERPNext's `check_open_pos_exists` rejected the create because the
-  // POS Profile already has an open entry (regardless of terminal). The
-  // user can't open a new shift until that one is closed. Show a focused
-  // card and let them close the entry IN-POS via POSClosingDialog rather
-  // than dropping them onto the desk. See CLAUDE.md "Fixes log" 2026-04-09.
+  // Safety net only. Normally `posOpening()` returns 0 as soon as the
+  // profile has an open entry, so nobody gets here. If we DO get here,
+  // an ERPNext guard rejected the create, and who owns the blocking
+  // entry decides what we may offer:
+  //
+  //   * it's mine  → offer to close it in-POS (the shift really is ours)
+  //   * it's someone else's → show it read-only. We must NOT invite a
+  //     cashier to close a colleague's shift: that consolidates their
+  //     invoices under our count and was how the old flow pushed people
+  //     into closing the captain's day just to get into the POS.
   if (mode.kind === 'existing-entry') {
+    const canClose = mode.isMine && !!mode.entryName;
     return (
       <>
         <DialogShell
           icon={<AlertTriangle className="h-8 w-8 text-orange-600" />}
           iconBg="bg-orange-100"
-          title="Existing Open Entry"
+          title={mode.isMine ? 'Your Shift Is Still Open' : 'POS Already Open'}
           subtitle={
             mode.entryName
-              ? `Entry ${mode.entryName} is still open on this POS Profile. Close it before starting a new shift.`
+              ? mode.isMine
+                ? `Your entry ${mode.entryName} is still open. Close it before starting a new shift.`
+                : `${mode.openedBy || 'Another cashier'} already opened this POS (${mode.entryName}). You don't need to open it — just reload to start serving.`
               : mode.message
           }
         >
-          <Button
-            onClick={() => mode.entryName && setShowClosingDialog(true)}
-            disabled={!mode.entryName}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-lg disabled:opacity-50"
-          >
-            <DoorOpen className="w-5 h-5 mr-2" />
-            Close Existing Entry
-          </Button>
+          {canClose ? (
+            <Button
+              onClick={() => setShowClosingDialog(true)}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-lg"
+            >
+              <DoorOpen className="w-5 h-5 mr-2" />
+              Close My Shift
+            </Button>
+          ) : (
+            mode.entryName && (
+              <p className="mb-3 p-3 rounded-lg bg-gray-50 text-gray-600 text-sm">
+                Only {mode.openedBy || 'the cashier who opened it'} or a manager
+                should close this shift. Closing it here would settle their
+                takings under your count.
+              </p>
+            )
+          )}
           <Button
             onClick={() => window.location.reload()}
-            variant="outline"
-            className="w-full mt-3 border-gray-300 text-gray-700 hover:bg-gray-50 font-medium py-3 px-6 rounded-lg"
+            variant={canClose ? 'outline' : 'default'}
+            className={
+              canClose
+                ? 'w-full mt-3 border-gray-300 text-gray-700 hover:bg-gray-50 font-medium py-3 px-6 rounded-lg'
+                : 'w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-lg'
+            }
           >
             <RefreshCw className="w-5 h-5 mr-2" />
-            I've Closed It — Reload
+            Reload
           </Button>
         </DialogShell>
 

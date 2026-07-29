@@ -168,7 +168,14 @@ doc_events = {
     "Customer": {"before_save": "ury.ury.hooks.ury_customer.before_insert"},
     "Item": {"validate": "ury.ury.hooks.ury_item.validate"},
     "POS Opening Entry": {
-        "validate":"ury.ury.hooks.ury_pos_opening_entry.set_cashier_room",
+        # Point at the module's validate() ORCHESTRATOR, not at one of
+        # its three sub-checks. This used to name `set_cashier_room`
+        # directly, which meant `validate_terminal_branch` and
+        # `enforce_shift_gate` never ran — the shift gate added on
+        # 2026-04-14 was silently dead for its whole life. Fixed
+        # 2026-07-28. Requires `bench restart` (doc_events are not
+        # picked up by clear-cache).
+        "validate": "ury.ury.hooks.ury_pos_opening_entry.validate",
         "before_save": "ury.ury.hooks.ury_pos_opening_entry.before_save",
         "before_insert":"ury.ury.api.ury_kot_order_number.set_last_invoice_in_pos_open",
         },

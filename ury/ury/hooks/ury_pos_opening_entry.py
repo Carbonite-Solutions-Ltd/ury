@@ -45,13 +45,18 @@ def set_cashier_room(doc, method):
 
 
 def set_current_time(doc, method):
-    """For multi-cashier strict mode, stamp ``period_start_date`` to now()
-    on save so each user's shift has an accurate start timestamp.
+    """Stamp ``period_start_date`` to now() when the entry is first
+    created, so the shift starts when the cashier actually opened it.
+
+    Only on insert. This used to re-stamp on EVERY save whenever
+    ``custom_enable_multiple_cashier`` was on — which moved the shift's
+    start time forward on the submit save (submit is a second save) and
+    again on any later desk edit. Anything measuring the shift from
+    ``period_start_date`` (the Shift Hours banner, the close's period
+    window) would silently lose the earlier part of the shift. Guarded
+    to new docs on 2026-07-28.
     """
-    multiple_cashier = frappe.db.get_value(
-        "POS Profile", doc.pos_profile, "custom_enable_multiple_cashier"
-    )
-    if multiple_cashier:
+    if doc.get("__islocal") and not doc.get("period_start_date"):
         doc.period_start_date = now()
 
 
