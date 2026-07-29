@@ -425,6 +425,18 @@ def get_custom_fields():
 				}
 				],
 
+		"Warehouse": [
+			{
+				"fieldname": "custom_cost_center",
+				"fieldtype": "Link",
+				"options": "Cost Center",
+				"label": "Cost Center (Outlet)",
+				"insert_after": "company",
+				"in_standard_filter": 1,
+				"description": "The outlet this warehouse belongs to. In item-warehouse mode the POS uses the till's cost centre to pick which of a category's per-outlet warehouses a sale deducts from.",
+			}
+		],
+
 		"POS Profile": [
 			{
 				# Declared here (not just in custom_field.json) purely so the
