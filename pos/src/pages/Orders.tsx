@@ -37,13 +37,16 @@ import {
   canMergeOrders,
   canReprintInvoice,
   canReturnOrders,
+  canSkipPhysicalPrint,
   isCaptainOrAbove,
   isWaiterOnly,
 } from '../lib/role-utils';
 import {
   reversePosReturn,
+  updatePrintStatus,
   type ReturnResult,
 } from '../lib/invoice-api';
+import PrintChoiceDialog, { type PrintChoice } from '../components/PrintChoiceDialog';
 import { approveTransfer, rejectTransfer } from '../lib/transfer-api';
 import { extractFrappeServerError } from '../lib/utils';
 import '../components/ui/merge-mode.css';
@@ -137,6 +140,8 @@ export default function Orders() {
   const [editLoading, setEditLoading] = React.useState(false);
   const [showPaymentDialog, setShowPaymentDialog] = React.useState(false);
   const [isPrinting, setIsPrinting] = React.useState(false);
+  // Admin-only "print or just mark printed?" prompt. See PrintChoiceDialog.
+  const [showPrintChoice, setShowPrintChoice] = React.useState(false);
   // Bump this whenever an action should force OrderStatusSidebar to
   // re-poll the pending-KOT badge count. Firing held KOTs at bill
   // print time is the main trigger — the cashier expects the badge
@@ -422,7 +427,24 @@ export default function Orders() {
     }
   }
 
+  /**
+   * Entry point for the Print / Reprint button.
+   *
+   * Administrators (canSkipPhysicalPrint) get a choice dialog first —
+   * print for real, or just mark the bill printed so Payment unlocks
+   * without burning a receipt on every test order. Everyone else keeps
+   * the unchanged one-click behaviour.
+   */
   async function handlePrintOrder() {
+    if (!selectedOrder || !posStore.posProfile) return;
+    if (canSkipPhysicalPrint(user)) {
+      setShowPrintChoice(true);
+      return;
+    }
+    await runPrintFlow('printer');
+  }
+
+  async function runPrintFlow(mode: PrintChoice) {
     if (!selectedOrder || !posStore.posProfile) return;
     setIsPrinting(true);
     try {
@@ -430,21 +452,35 @@ export default function Orders() {
       // holds Drinks at order-submit time) BEFORE the bill prints.
       // This is what bumps held bar tickets to the bar printer when
       // the cashier closes out an order.
-      const fired = await firePendingKotsForInvoice(selectedOrder.name);
-      if (fired.length > 0) {
-        const depts = Array.from(new Set(fired.map((f) => f.department))).join(
-          ', ',
-        );
-        showToast.info(`Fired held KOT(s): ${depts}`);
-        // Bump the badge-refresh version so OrderStatusSidebar re-polls
-        // immediately instead of waiting for the 15s tick.
-        setPendingKotRefreshVersion((v) => v + 1);
+      //
+      // Skipped in 'mark' mode: firing a KOT physically prints it, and
+      // the whole point of marking is that NOTHING reaches a printer.
+      // The held KOTs simply stay pending, which is honest — they
+      // genuinely haven't been sent anywhere.
+      if (mode === 'printer') {
+        const fired = await firePendingKotsForInvoice(selectedOrder.name);
+        if (fired.length > 0) {
+          const depts = Array.from(new Set(fired.map((f) => f.department))).join(
+            ', ',
+          );
+          showToast.info(`Fired held KOT(s): ${depts}`);
+          // Bump the badge-refresh version so OrderStatusSidebar re-polls
+          // immediately instead of waiting for the 15s tick.
+          setPendingKotRefreshVersion((v) => v + 1);
+        }
       }
-      await printOrder({
-        orderId: selectedOrder.name,
-        posProfile: posStore.posProfile
-      });
-      showToast.success(`Printed Successfully`);
+      if (mode === 'printer') {
+        await printOrder({
+          orderId: selectedOrder.name,
+          posProfile: posStore.posProfile
+        });
+        showToast.success(`Printed Successfully`);
+      } else {
+        // Same endpoint a real print calls on success, so the invoice
+        // ends up in exactly the state a printed one would be in.
+        await updatePrintStatus(selectedOrder.name);
+        showToast.success('Marked as printed — nothing sent to the printer');
+      }
       // Locally update selectedOrder.invoice_printed to 1
       if (selectedOrder && typeof selectedOrder === 'object') {
         selectOrder({ ...selectedOrder, invoice_printed: 1 });
@@ -454,18 +490,23 @@ export default function Orders() {
         showToast.info('Order moved to Draft after printing.');
         setSelectedStatus('Draft');
         fetchOrders();
-      } else if (selectedStatus === 'Pending KOTs') {
+      } else if (selectedStatus === 'Pending KOTs' && mode === 'printer') {
         // The held KOTs just fired, so this order no longer has any
         // pending KOTs — it drops out of this filter. Clear the panel and
         // refresh the list + the sidebar badge.
+        //
+        // Only in 'printer' mode: marking doesn't fire anything, so the
+        // order legitimately still has pending KOTs and must stay put.
         clearSelectedOrder();
         await fetchOrders();
         setPendingKotRefreshVersion((v) => v + 1);
       }
     } catch (err: any) {
-      showToast.error('Print failed: ' + (err?.message || err));
+      const verb = mode === 'printer' ? 'Print' : 'Mark as printed';
+      showToast.error(`${verb} failed: ` + (err?.message || err));
     } finally {
       setIsPrinting(false);
+      setShowPrintChoice(false);
     }
   }
 
@@ -1454,6 +1495,13 @@ export default function Orders() {
           onReturned={handleReturned}
         />
       )}
+      <PrintChoiceDialog
+        isOpen={showPrintChoice}
+        orderName={selectedOrder?.name || null}
+        busy={isPrinting}
+        onClose={() => setShowPrintChoice(false)}
+        onChoose={(choice: PrintChoice) => runPrintFlow(choice)}
+      />
       {showRejectDialog && selectedOrder && (
         <Dialog open={true} onOpenChange={() => setShowRejectDialog(false)}>
           <DialogContent className="max-w-md">

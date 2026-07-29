@@ -178,6 +178,54 @@ def _apply_pos_profile_taxes(invoice, pos_profile_name):
         invoice.append_taxes_from_master()
 
 
+def _apply_pos_profile_cost_center(invoice, pos_profile_name):
+    """Copy ``cost_center`` (and ``write_off_cost_center``) from the POS
+    Profile onto the POS Invoice HEADER.
+
+    URY already stamps ``cost_center`` on every item row (see the
+    ``invoice.append("items", ...)`` call in ``sync_order``), but never on
+    the header — it stayed NULL on every order. That is not cosmetic:
+    ERPNext uses the *header* cost center for all the postings that are
+    not item rows, notably
+
+      * the debtor / receivable entry  (``make_customer_gl_entry``)
+      * the POS cash & bank payment entries (``make_pos_gl_entries``)
+      * the write-off and rounding-adjustment entries
+
+    With the header blank those legs fall back to the COMPANY default
+    cost center, so part of every sale is booked against the wrong one.
+    Per-item reporting still looks right, which is exactly why this hides
+    well — and it is invisible on any site whose company default happens
+    to equal the profile's cost center.
+
+    Why ERPNext doesn't do it for us: ``POSInvoice.set_pos_fields`` copies
+    ``cost_center`` from the profile only under ``if not for_validate``.
+    URY builds the invoice with ``frappe.new_doc`` and then ``save()``,
+    and the save path runs ``set_missing_values(for_validate=True)`` — so
+    that copy is skipped every time.
+
+    Profile is the source of truth here, matching
+    ``_apply_pos_profile_taxes``. Blank profile fields are left alone
+    rather than clearing an existing value. Called from both
+    ``sync_order`` (creation) and ``make_invoice`` (payment), so drafts
+    created before this shipped are corrected when they are settled.
+    """
+    if not pos_profile_name:
+        return
+    row = frappe.db.get_value(
+        "POS Profile",
+        pos_profile_name,
+        ["cost_center", "write_off_cost_center"],
+        as_dict=True,
+    )
+    if not row:
+        return
+    if row.cost_center:
+        invoice.cost_center = row.cost_center
+    if row.write_off_cost_center:
+        invoice.write_off_cost_center = row.write_off_cost_center
+
+
 @frappe.whitelist()
 def sync_order(
     items,
@@ -339,6 +387,10 @@ def sync_order(
     # Pull the tax template + tax category from the POS Profile (if set
     # there) onto the draft at creation time. See _apply_pos_profile_taxes.
     _apply_pos_profile_taxes(invoice, pos_profile)
+    # Same for the header cost center — ERPNext skips its own copy on the
+    # save path, leaving the debtor and POS payment GL legs on the company
+    # default. See _apply_pos_profile_cost_center.
+    _apply_pos_profile_cost_center(invoice, pos_profile)
     invoice.waiter = waiter
     # Self-serve waiter (2026-07-14): if the ringing user is a URY Waiter
     # linked to a URY Waiter record, force HER waiter regardless of what the
@@ -683,6 +735,10 @@ def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDisc
     # the draft predates this config or was never re-synced after it was
     # set, so the tax is included in the totals below.
     _apply_pos_profile_taxes(invoice, pos_profile)
+    # Likewise the header cost center, so a draft rung before this fix
+    # shipped is corrected at payment time rather than posting its
+    # receivable and cash legs to the company default.
+    _apply_pos_profile_cost_center(invoice, pos_profile)
     invoice.additional_discount_percentage = additionalDiscount
     invoice.calculate_taxes_and_totals()
 
@@ -928,6 +984,10 @@ def split_invoice_by_item(source_invoice, bills, table=None):
         new_inv.pos_profile = source.pos_profile
         new_inv.taxes_and_charges = source.taxes_and_charges
         new_inv.selling_price_list = source.selling_price_list
+        # Split bills are brand-new invoices, so they need the header cost
+        # center applied too — otherwise splitting an order silently moves
+        # its receivable and cash legs back onto the company default.
+        _apply_pos_profile_cost_center(new_inv, source.pos_profile)
         new_inv.custom_terminal = source.get("custom_terminal")
         new_inv.waiter = source.get("waiter")
         new_inv.cashier = source.get("cashier")
