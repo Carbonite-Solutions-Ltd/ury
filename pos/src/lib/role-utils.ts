@@ -258,6 +258,26 @@ export const isCaptainOrAbove = (user: User | null): boolean => {
  * on live orders is a control we don't want to hand out by default.
  * Widen the list here if a site genuinely needs it.
  */
+/**
+ * Whether the current user can open the POS Settings page (avatar menu →
+ * Settings). Administrator / System Manager / URY Manager only.
+ *
+ * Deliberately EXCLUDES URY Captain, unlike most of the "elevated"
+ * helpers here: Settings exposes branch-wide configuration diagnostics,
+ * which is an owner/manager concern rather than a floor-ops one.
+ *
+ * Backend mirrors this in `_user_can_manage_settings`, which is the
+ * authoritative check — every settings endpoint re-validates, so hiding
+ * the menu item is only a UX courtesy.
+ */
+export const canAccessSettings = (user: User | null): boolean => {
+  if (!user) return false;
+  if (user.name === 'Administrator') return true;
+  if (!user.roles) return false;
+  const allowed = ['System Manager', 'URY Manager'];
+  return user.roles.some((role) => allowed.includes(role));
+};
+
 export const canSkipPhysicalPrint = (user: User | null): boolean => {
   if (!user) return false;
   if (user.name === 'Administrator') return true;
