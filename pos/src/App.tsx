@@ -12,6 +12,8 @@ import BiometricEnrollment from './pages/BiometricEnrollment';
 import BiometricLogin from './pages/BiometricLogin';
 import AuthGuard from './components/AuthGuard';
 import RequireNotWaiter from './components/RequireNotWaiter';
+import RequireSettingsAccess from './components/RequireSettingsAccess';
+import Settings from './pages/Settings';
 import POSOpeningProvider from './components/POSOpeningProvider';
 import ShiftHoursBanner from './components/ShiftHoursBanner';
 import OfflineBanner from './components/OfflineBanner';
@@ -337,6 +339,14 @@ function App() {
                     <Route path="/my-sales" element={<WaiterSales />} />
                     <Route path="/notifications" element={<Notifications />} />
                     <Route path="/biometric-enrollment" element={<BiometricEnrollment />} />
+                    <Route
+                      path="/settings"
+                      element={
+                        <RequireSettingsAccess>
+                          <Settings />
+                        </RequireSettingsAccess>
+                      }
+                    />
                   </Routes>
                 </div>
                 <Footer />

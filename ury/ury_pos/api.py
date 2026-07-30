@@ -8379,3 +8379,153 @@ def _enforce_shift_gate_for_open(terminal=None):
             title=_("Outside Shift Window"),
         )
 
+
+
+# ---------------------------------------------------------------------------
+# Settings page: KOT routing coverage audit
+# ---------------------------------------------------------------------------
+
+
+def _user_can_manage_settings(user=None):
+    """Gate for the POS Settings page. Administrator / System Manager /
+    URY Manager only — deliberately EXCLUDES URY Captain, which is a
+    floor-ops role. Mirrored by `canAccessSettings` in the frontend's
+    role-utils; this is the authoritative check.
+    """
+    user = user or frappe.session.user
+    if user == "Administrator":
+        return True
+    roles = set(frappe.get_roles(user))
+    return bool(roles & {"System Manager", "URY Manager"})
+
+
+@frappe.whitelist()
+def get_kot_coverage_audit(terminal=None):
+    """Report which menu item groups will NOT produce a KOT.
+
+    Why this exists: in **URY Production Unit** KDS mode, an item whose
+    `item_group` matches no production unit gets **no KOT at all** — it is
+    dropped on purpose so a drink doesn't raise a spurious kitchen chit
+    (see `process_items_for_kot`). The cost is that an item group nobody
+    remembered to attach to a production unit vanishes SILENTLY: it bills
+    correctly, prints on the receipt, and never reaches any kitchen or bar
+    screen. No error, no log line.
+
+    That is exactly what happened on a live site: a `BEER DRINKS` group was
+    never added to the Bar unit, so every beer ever sold was invisible to
+    the bar — noticed only by accident months later. This endpoint turns
+    that into something an admin can check in ten seconds, BEFORE service,
+    instead of discovering it from a customer complaint.
+
+    In **Menu Course** mode unmatched items fall into a fallback KOT and
+    are department-split downstream, so nothing is lost. The audit says so
+    rather than raising false alarms.
+
+    Returns a per-item-group breakdown with a `covered` flag, the
+    production unit(s) each group routes to, and a `sample_items` list so
+    the admin can recognise what a group actually contains.
+    """
+    if not _user_can_manage_settings():
+        frappe.throw(
+            _("Only an administrator or manager can view POS settings."),
+            frappe.PermissionError,
+            title=_("Permission Denied"),
+        )
+
+    branch_name = getBranch()
+    pos_profile = None
+    if terminal:
+        pos_profile = frappe.db.get_value(
+            "URY POS Terminal", terminal, "pos_profile"
+        )
+    if not pos_profile:
+        pos_profile = frappe.db.get_value(
+            "POS Profile", {"branch": branch_name, "disabled": 0}, "name"
+        )
+
+    kds_mode = (
+        frappe.db.get_value("POS Profile", pos_profile, "custom_kds_routing_mode")
+        if pos_profile
+        else None
+    ) or "Menu Course"
+
+    # --- Production units and the item groups they claim -------------
+    productions = []
+    group_to_productions = {}
+    for unit in frappe.get_all(
+        "URY Production Unit", filters={"branch": branch_name}, fields=["name"]
+    ):
+        groups = frappe.get_all(
+            "URY Production Item Groups",
+            filters={"parent": unit.name, "parenttype": "URY Production Unit"},
+            pluck="item_group",
+        )
+        groups = [g for g in groups if g]
+        productions.append({"production": unit.name, "item_groups": sorted(groups)})
+        for g in groups:
+            group_to_productions.setdefault(g, []).append(unit.name)
+
+    # --- Every item group actually reachable from this branch's menus --
+    restaurant = frappe.db.get_value(
+        "URY Restaurant", {"branch": branch_name}, "name"
+    )
+    menu_names = set()
+    if restaurant:
+        from ury.ury.hooks.ury_pos_profile import _collect_menus_for_restaurant
+
+        try:
+            menu_names = _collect_menus_for_restaurant(restaurant)
+        except Exception:
+            menu_names = set()
+
+    item_codes = []
+    if menu_names:
+        item_codes = frappe.get_all(
+            "URY Menu Item",
+            filters={"parenttype": "URY Menu", "parent": ("in", list(menu_names))},
+            pluck="item",
+        )
+    item_codes = sorted({c for c in item_codes if c})
+
+    groups = []
+    if item_codes:
+        rows = frappe.get_all(
+            "Item",
+            filters={"name": ("in", item_codes), "disabled": 0},
+            fields=["name", "item_name", "item_group"],
+        )
+        by_group = {}
+        for r in rows:
+            by_group.setdefault(r.item_group or "(no item group)", []).append(r)
+        for group_name in sorted(by_group):
+            members = by_group[group_name]
+            routed_to = group_to_productions.get(group_name, [])
+            groups.append(
+                {
+                    "item_group": group_name,
+                    "item_count": len(members),
+                    "covered": 1 if routed_to else 0,
+                    "productions": sorted(routed_to),
+                    "sample_items": [
+                        m.item_name or m.name for m in members[:5]
+                    ],
+                }
+            )
+
+    uncovered = [g for g in groups if not g["covered"]]
+    return {
+        "branch": branch_name,
+        "pos_profile": pos_profile,
+        "restaurant": restaurant,
+        "kds_routing_mode": kds_mode,
+        # Only PU mode silently drops unmatched items. Menu Course mode
+        # bundles them into a fallback KOT, so a gap there is harmless.
+        "drops_unmatched_items": 1 if kds_mode == "URY Production Unit" else 0,
+        "menus_checked": sorted(menu_names),
+        "productions": productions,
+        "item_groups": groups,
+        "uncovered_count": len(uncovered),
+        "uncovered_item_total": sum(g["item_count"] for g in uncovered),
+        "total_item_groups": len(groups),
+        "total_items": len(item_codes),
+    }

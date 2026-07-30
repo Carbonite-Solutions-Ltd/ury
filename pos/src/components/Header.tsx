@@ -11,6 +11,7 @@ import {
   DoorClosed,
   Fingerprint,
   KeyRound,
+  Settings as SettingsIcon,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Button, Input } from './ui';
@@ -20,7 +21,11 @@ import type { RootState } from '../store/root-store';
 import { logout } from '../lib/auth-api';
 import { showToast } from './ui/toast';
 import { clearSavedTerminal } from '../lib/terminal-api';
-import { canAccessDeskAndTerminalSwitch, isWaiterOnly } from '../lib/role-utils';
+import {
+  canAccessDeskAndTerminalSwitch,
+  canAccessSettings,
+  isWaiterOnly,
+} from '../lib/role-utils';
 import { getCurrentPosOpenEntry } from '../lib/pos-opening-api';
 import POSClosingDialog from './POSClosingDialog';
 import { extractFrappeServerError } from '../lib/utils';
@@ -35,6 +40,7 @@ const Header = () => {
   const [endShiftLoading, setEndShiftLoading] = useState(false);
   const [showResetPin, setShowResetPin] = useState(false);
   const canSeeAdminActions = canAccessDeskAndTerminalSwitch(user);
+  const canOpenSettings = canAccessSettings(user);
   // Waiter-only users don't manage shifts — the cashier opens/closes the day.
   const waiterMode = isWaiterOnly(user);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -309,6 +315,23 @@ const Header = () => {
                         Enroll Biometrics
                       </Button>
                     </>
+                  )}
+                  {/* Settings — Administrator / System Manager / URY Manager
+                      only (canAccessSettings, tighter than the admin-ish
+                      gate above, which also lets captains in). Holds
+                      branch-wide configuration checks. */}
+                  {canOpenSettings && (
+                    <Button
+                      variant="ghost"
+                      className="flex justify-start items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
+                      onClick={() => {
+                        setShowUserMenu(false);
+                        navigate('/settings');
+                      }}
+                    >
+                      <SettingsIcon className="w-4 h-4 mr-3" />
+                      Settings
+                    </Button>
                   )}
                   {/* End Shift is visible to every billing user — cashiers
                       need it to close their own day. Hidden for waiter-only
