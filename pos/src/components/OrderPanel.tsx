@@ -630,7 +630,7 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
               ) : isUpdatingOrder ? (
                 'Update Order'
               ) : (
-                'Add New Order'
+                'Place Order'
               )}
             </Button>
           </div>
