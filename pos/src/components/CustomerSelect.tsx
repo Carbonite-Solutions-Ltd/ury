@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { UserPlus, Mail, Phone, Loader, BedDouble, User, AlertCircle } from 'lucide-react';
+import { UserPlus, Phone, Loader, BedDouble, User, AlertCircle } from 'lucide-react';
 import { usePOSStore, type Customer } from '../store/pos-store';
 import { Button, Dialog, DialogContent, Input } from './ui';
 import { Select, SelectItem } from './ui';
@@ -313,7 +313,7 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
           setSearchResults(results);
           setIsSearching(false);
         })
-        .catch(err => {
+        .catch(() => {
           setSearchError('Failed to search customers');
           setIsSearching(false);
         });
@@ -547,7 +547,7 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
                 setHighlightedIndex(0);
               }}
               onFocus={() => setIsOpen(true)}
-              onBlur={e => {
+              onBlur={() => {
                 setTimeout(() => setIsOpen(false), 100);
               }}
               onKeyDown={handleKeyDown}

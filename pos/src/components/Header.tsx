@@ -122,7 +122,7 @@ const Header = () => {
       await logout();
       // Land on /pos as guest → App.tsx renders the new BiometricLogin
       window.location.href = '/pos';
-    } catch (error) {
+    } catch {
       showToast.error('Failed to logout. Please try again.');
     }
   };

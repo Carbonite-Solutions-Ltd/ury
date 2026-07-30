@@ -13,7 +13,6 @@ import { Waiter, loadWaitersWithCache } from '../lib/waiter-api';
 // Constants
 const MAX_QUANTITY = 99;
 const MIN_QUANTITY = 0;
-const ITEMS_PER_PAGE = 10;
 
 // Custom error class for cart operations
 class CartError extends Error {
@@ -630,7 +629,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
     try {
       const newOrders = get().activeOrders.filter(item => item.uniqueId !== uniqueId);
       set({ activeOrders: newOrders });
-    } catch (error) {
+    } catch {
       set({ error: 'Failed to remove item from cart' });
     }
   },
@@ -670,7 +669,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   clearOrder: async () => {
     try {
       set({ activeOrders: [] });
-    } catch (error) {
+    } catch {
       set({ error: 'Failed to clear cart' });
     }
   },
@@ -722,7 +721,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
 
   processPayment: async (paymentMode: string, amount: number) => {
     try {
-      const { activeOrders, cartId, selectedCustomer, selectedOrderType } = get();
+      const { cartId, selectedCustomer, selectedOrderType } = get();
       
       const order: Order = {
         id: uuidv4(),
@@ -891,7 +890,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
           ihotelProfile: null,
         });
       }
-    } catch (error) {
+    } catch {
       set({
         error: 'Failed to load table order',
         tableOrder: null,

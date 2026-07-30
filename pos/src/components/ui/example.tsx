@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Button, Input, Select, Badge, Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './index';
+import { Button, Input, Select, Badge, Card, CardHeader, CardTitle, CardDescription, CardContent, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './index';
 
 export const UIExample = () => {
   const [dialogOpen, setDialogOpen] = useState(false);

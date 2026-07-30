@@ -28,7 +28,7 @@ export async function loadQzPrinter(host: string): Promise<void> {
   });
 
   // Bypass signature - return empty string
-  qz.security.setSignaturePromise((toSign: string) => {
+  qz.security.setSignaturePromise((_toSign: string) => {
     return (resolve: (sig: string) => void) => {
       console.log('⚠️ Signature bypassed for testing');
       resolve('');

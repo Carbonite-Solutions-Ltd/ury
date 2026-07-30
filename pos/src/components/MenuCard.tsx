@@ -13,12 +13,10 @@ interface MenuCardProps {
 }
 
 const MenuCard: FC<MenuCardProps> = ({ 
-  id, 
   name, 
   price, 
   item_image, 
   course, 
-  item, 
   onClick,
   disabled 
 }) => {

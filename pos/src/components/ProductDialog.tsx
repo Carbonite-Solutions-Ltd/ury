@@ -57,8 +57,8 @@ const ProductDialog: React.FC<ProductDialogProps> = ({
 
   // State for the full item doc (used for all dialog content)
   const [itemDoc, setItemDoc] = useState<any | null>(null);
-  const [isItemLoading, setIsItemLoading] = useState(false);
-  const [itemError, setItemError] = useState<string | null>(null);
+  const [, setIsItemLoading] = useState(false);
+  const [, setItemError] = useState<string | null>(null);
 
   // Fetch Item doc when dialog opens or selectedItem changes
   useEffect(() => {
@@ -127,7 +127,7 @@ const ProductDialog: React.FC<ProductDialogProps> = ({
   const [comments, setComments] = useState<string>(itemToReplace?.comment || existingCartItem?.comment || '');
   const dialogRef = useRef<HTMLDivElement>(null);
 
-  const [addonItemCodes, setAddonItemCodes] = useState<string[]>([]);
+  const [, setAddonItemCodes] = useState<string[]>([]);
   const [isAddonLoading, setIsAddonLoading] = useState(false);
   const [addonError, setAddonError] = useState<string | null>(null);
 
@@ -151,7 +151,7 @@ const ProductDialog: React.FC<ProductDialogProps> = ({
           setAddonItemCodes([]);
         }
       })
-      .catch((err: any) => {
+      .catch(() => {
         setAddonError('Failed to fetch add-ons');
         setAddonItemCodes([]);
       })
