@@ -58,6 +58,9 @@ export interface POSInvoice {
   custom_charge_to_room?: number;
   /** iHotel Room the draft is tagged against (persists from Customer picker). */
   custom_hotel_room?: string | null;
+  /** Take-away / delivery contact (optional, editable after the fact). */
+  custom_order_contact_name?: string | null;
+  custom_order_contact_mobile?: string | null;
   /** iHotel Profile the charge is written to. */
   custom_ihotel_profile?: string | null;
   /** Times this bill has been printed (drives the cashier reprint cap). */
@@ -477,3 +480,27 @@ export async function selectNetworkPrinter(orderId: string, posProfile: string, 
 export async function updatePrintStatus(orderId: string) {
   await call.post('ury.ury.api.ury_print.qz_print_update', { invoice: orderId });
 } 
+export interface OrderContactUpdateResult {
+  invoice: string;
+  contact_name: string | null;
+  contact_mobile: string | null;
+}
+
+/**
+ * Set or clear the take-away / delivery contact on an existing order.
+ *
+ * Sending a blank string CLEARS the field, so a mistyped number can be
+ * removed rather than only overwritten. Works on paid orders too — for a
+ * delivery that's usually when the number is finally known.
+ */
+export async function updateOrderContact(args: {
+  invoice: string;
+  contact_name?: string;
+  contact_mobile?: string;
+}): Promise<OrderContactUpdateResult> {
+  const res = await call.post<{ message: OrderContactUpdateResult }>(
+    'ury.ury.doctype.ury_order.ury_order.update_order_contact',
+    args
+  );
+  return res.message;
+}

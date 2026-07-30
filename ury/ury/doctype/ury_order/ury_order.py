@@ -326,6 +326,8 @@ def sync_order(
     hotel_room=None,
     selected_waiter=None,
     idempotency_key=None,
+    contact_name=None,
+    contact_mobile=None,
 ):
     # `owner` is optional. The frontend deliberately omits it when
     # updating an existing order so we don't overwrite the original
@@ -461,6 +463,15 @@ def sync_order(
     if comments:
         invoice.custom_comments = comments
     invoice.no_of_pax = no_of_pax
+    # Take-away / delivery contact (2026-07-30). Optional by design — the
+    # POS prompts for it on the first submit and the cashier can skip.
+    # Only stamped when a value is actually supplied, so a later update
+    # that doesn't carry the contact can't wipe one already recorded (the
+    # Orders page edits it through `update_order_contact` instead).
+    if contact_name is not None and str(contact_name).strip():
+        invoice.custom_order_contact_name = str(contact_name).strip()
+    if contact_mobile is not None and str(contact_mobile).strip():
+        invoice.custom_order_contact_mobile = str(contact_mobile).strip()
     invoice.pos_profile = pos_profile
     # Pull the tax template + tax category from the POS Profile (if set
     # there) onto the draft at creation time. See _apply_pos_profile_taxes.
@@ -1317,3 +1328,51 @@ def change_table_in_kot(invoice, new_table, branch):
         production = frappe.db.get_value("URY KOT", kot.name, "production")
         kot_channel = "{}_{}_{}".format("kot_update", branch, production)
         frappe.publish_realtime(kot_channel)
+
+
+@frappe.whitelist()
+def update_order_contact(invoice, contact_name=None, contact_mobile=None):
+    """Set or clear the take-away / delivery contact on an existing order.
+
+    Backs the "edit it later" half of the feature: the prompt at order
+    time is skippable, so a cashier must be able to add or correct the
+    name and number afterwards — for a delivery that is often the only
+    time the number is known.
+
+    Both values are optional and a blank string CLEARS the field, so a
+    mistyped number can be removed rather than only overwritten.
+
+    Works on paid invoices as well as drafts (both fields are
+    `allow_on_submit`) because a delivery is usually already settled by
+    the time someone chases the phone number. Cancelled invoices are
+    rejected — there is nothing to contact about. This writes only two
+    non-financial Data fields via `db.set_value`, so it never re-runs
+    invoice validation or touches totals.
+    """
+    if not invoice:
+        frappe.throw(_("Invoice is required."), title=_("Invalid Request"))
+
+    row = frappe.db.get_value(
+        "POS Invoice", invoice, ["name", "docstatus"], as_dict=True
+    )
+    if not row:
+        frappe.throw(
+            _("Order {0} not found.").format(invoice), title=_("Not Found")
+        )
+    if row.docstatus == 2:
+        frappe.throw(
+            _("This order has been cancelled — its contact details can't be changed."),
+            title=_("Order Cancelled"),
+        )
+
+    updates = {
+        "custom_order_contact_name": (contact_name or "").strip() or None,
+        "custom_order_contact_mobile": (contact_mobile or "").strip() or None,
+    }
+    frappe.db.set_value("POS Invoice", invoice, updates, update_modified=True)
+    frappe.db.commit()
+    return {
+        "invoice": invoice,
+        "contact_name": updates["custom_order_contact_name"],
+        "contact_mobile": updates["custom_order_contact_mobile"],
+    }

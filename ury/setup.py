@@ -71,6 +71,42 @@ def get_custom_fields():
 					"insert_after": "order_info",
 					"translatable": 0
 				},
+				# Take-away / delivery contact details (2026-07-30). Captured
+				# by an optional prompt when the order is first placed, and
+				# editable afterwards from the Orders page. `allow_on_submit`
+				# so a phone number can still be added to an already-paid
+				# delivery, which is exactly when it tends to be needed.
+				# Dual-sourced here AND in custom_field.json: fixtures are
+				# install-only, so without this entry pre-existing installs
+				# would never get the columns and every write would silently
+				# become a no-op.
+				{
+					"fieldname": "custom_order_contact_name",
+					"fieldtype": "Data",
+					"label": "Contact Name",
+					"insert_after": "order_type",
+					"allow_on_submit": 1,
+					"no_copy": 1,
+					"print_hide_if_no_value": 1,
+					"depends_on": "eval:doc.order_type=='Take Away' || doc.order_type=='Delivery'",
+					"description": "Who the take-away / delivery order is for. Optional.",
+					"translatable": 0,
+				},
+				{
+					"fieldname": "custom_order_contact_mobile",
+					"fieldtype": "Data",
+					"options": "Phone",
+					"label": "Contact Mobile",
+					"insert_after": "custom_order_contact_name",
+					"allow_on_submit": 1,
+					"no_copy": 1,
+					"search_index": 1,
+					"in_standard_filter": 1,
+					"print_hide_if_no_value": 1,
+					"depends_on": "eval:doc.order_type=='Take Away' || doc.order_type=='Delivery'",
+					"description": "Contact number for the take-away / delivery order. Optional. Indexed so an order can be found by phone number.",
+					"translatable": 0,
+				},
 				{
 					"fieldname": "waiter",
 					"fieldtype": "Data",
