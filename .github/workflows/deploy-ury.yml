@@ -1,7 +1,8 @@
 # ═══════════════════════════════════════════════════════════════
-#  Deploy ury (ExPOS) to the landing bench
+#  ury (ExPOS) — checks & deploy
 #  File: .github/workflows/deploy-ury.yml
-#  Lives in this app's own GitHub repo.
+#  The ONLY workflow in this repo. ci.yml was folded in here on
+#  2026-07-30 and deleted.
 # ═══════════════════════════════════════════════════════════════
 #
 # NOTE ON THE APP NAME: the Frappe app is `ury` (see hooks.py
@@ -11,10 +12,20 @@
 # still `ury` and must never be renamed (it would break the
 # database schema and every existing record). So every path and
 # `--app` flag below says `ury`, not `ex_pos`.
+#
+# TWO JOBS:
+#   checks  — fast, bench-free. Runs on PRs AND before every deploy.
+#   deploy  — SSHes into the server. `needs: checks`, and never on a PR.
+#
+# The real TEST SUITE is NOT here: it runs on the local bench via
+#   bench --site <site> execute ury.<module>.run_<name>_tests
+# because standing up frappe + erpnext + MariaDB + Redis on an
+# ephemeral runner cost ~4 minutes per run for nothing cached. A public
+# prebuilt container is the planned way to bring it back.
 
-name: Deploy ExPOS (ury)
+name: ExPOS (ury) — CI & Deploy
 
-# ── TRIGGER ────────────────────────────────────────────────────
+# ── TRIGGERS ───────────────────────────────────────────────────
 on:
   push:
     branches: [version-16] # fires when version-16 receives commits (incl. a merge)
@@ -36,19 +47,140 @@ on:
       - ".gitignore"
       - ".editorconfig"
 
+  # Checks only — the deploy job is skipped for pull_request events.
+  # Without this, deleting ci.yml would leave PRs with NO validation at
+  # all, since the deploy only fires on push to version-16.
+  pull_request:
+
   # Manual "Run workflow" button — redeploy without a new push.
   workflow_dispatch:
 
-# ── CONCURRENCY (repo-wide for this workflow) ──────────────────
-# Stops two runs of THIS workflow overlapping. If you push twice
-# quickly, the newer run queues behind the older one.
-concurrency:
-  group: deploy-ury
-  cancel-in-progress: false # false = queue; never kill a deploy mid-flight
+# Concurrency is set PER JOB, not workflow-wide, because the two jobs
+# want opposite behaviour: superseded PR checks should be cancelled,
+# but a deploy must never be killed mid-flight.
 
 jobs:
+  # ═════════════════════════════════════════════════════════════
+  #  JOB 1 — bench-free checks
+  # ═════════════════════════════════════════════════════════════
+  checks:
+    runs-on: ubuntu-latest
+    name: Static Checks
+    concurrency:
+      group: ury-checks-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true # a newer commit supersedes the old check run
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v4
+
+      # Match the stack's real target so syntax checking is faithful:
+      # frappe's pyproject.toml declares requires-python ">=3.14,<3.15".
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      # frappe's package.json declares engines.node ">=24".
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          check-latest: true
+          cache: yarn
+          # ONLY pos/yarn.lock — it's the only lockfile committed to the
+          # repo. The root and URYMosaic lockfiles are untracked, and
+          # setup-node hard-errors ("Some specified paths were not
+          # resolved") if a cache-dependency-path matches nothing.
+          cache-dependency-path: pos/yarn.lock
+
+      # A compile, not an import, so `import frappe` at module top level
+      # is irrelevant — no bench needed.
+      - name: Python syntax
+        run: python -m compileall -q ury
+
+      # Guards the fixture-mangling trap: round-tripping
+      # custom_field.json through Python's json module rewrites every
+      # em-dash and renormalises the indent. A broken file here breaks
+      # `bench migrate` on every site.
+      - name: JSON validity (fixtures + doctypes)
+        run: |
+          python - <<'PYEOF'
+          import json, glob, sys
+          bad = []
+          for p in sorted(set(glob.glob('ury/fixtures/*.json') + glob.glob('ury/**/*.json', recursive=True))):
+              try:
+                  json.load(open(p))
+              except Exception as e:
+                  bad.append(f"{p}: {e}")
+          if bad:
+              print("Invalid JSON:")
+              [print("  " + b) for b in bad]
+              sys.exit(1)
+          print("all JSON files parse")
+          PYEOF
+
+      # `get_custom_fields()` is one big dict literal, so a second
+      # `"POS Invoice": [...]` key silently DISCARDS the first — Python
+      # keeps only the last. That shipped once and quietly dropped a
+      # batch of custom fields on every install.
+      - name: No duplicate doctype keys in setup.py
+        run: |
+          python - <<'PYEOF'
+          import ast, sys
+          dupes = set()
+          for node in ast.walk(ast.parse(open('ury/setup.py').read())):
+              if isinstance(node, ast.Dict):
+                  keys = [k.value for k in node.keys
+                          if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+                  dupes |= {k for k in keys if keys.count(k) > 1}
+          if dupes:
+              print(f"Duplicate keys in setup.py (later ones silently win): {sorted(dupes)}")
+              sys.exit(1)
+          print("no duplicate doctype keys")
+          PYEOF
+
+      # THE reason this job gates the deploy. The deploy runs `yarn build`
+      # ON THE SERVER, *after* `git reset --hard` — so a build that fails
+      # there leaves the bench half-updated: new Python code, stale or
+      # missing frontend assets, POS serving whatever was there before.
+      # Building here first means a broken build never reaches the server.
+      #
+      # Does NOT typecheck: `yarn build` is `vite build`, and `tsc` can't
+      # be gated while the committed pos/src/privateKey.ts placeholder is
+      # intentionally invalid TS.
+      - name: Build frontends (pos + URYMosaic)
+        run: |
+          # Plain `yarn install` — NOT --frozen-lockfile. The root
+          # yarn.lock isn't committed, so a fresh clone has none and
+          # --frozen-lockfile would fail outright. The root install's
+          # postinstall hook is what installs both frontends.
+          yarn install
+          yarn build
+
+      # Non-blocking on purpose: there are pre-existing lint errors in the
+      # POS, so gating would paint this red from day one and train everyone
+      # to ignore it. Still surfaces NEW problems as annotations. Flip to a
+      # hard gate once the existing ones are cleared.
+      - name: ESLint (advisory)
+        continue-on-error: true
+        working-directory: pos
+        run: npx eslint src
+
+  # ═════════════════════════════════════════════════════════════
+  #  JOB 2 — deploy
+  # ═════════════════════════════════════════════════════════════
   deploy:
     runs-on: ubuntu-latest
+
+    # Gate: a broken build, a mangled fixture or a syntax error can never
+    # reach the server — the deploy simply doesn't start.
+    needs: checks
+
+    # NEVER deploy from a pull request. PRs run `checks` only; a PR from a
+    # fork wouldn't even have the secrets. Deploys come from a push to
+    # version-16 (i.e. a merge) or the manual Run workflow button.
+    if: github.event_name != 'pull_request'
 
     # ── THE MATRIX = your bench registry ───────────────────────
     # One job runs PER row below. It's a single bench today, but the
