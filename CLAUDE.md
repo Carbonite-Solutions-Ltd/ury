@@ -131,11 +131,20 @@ bench --site <site> run-tests --app ury --doctype "URY KOT"   # one doctype
 bench --site <site> run-tests --app ury --module ury.ury.doctype.ury_kot.test_ury_kot
 ```
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) spins up a fresh bench with MariaDB, installs ERPNext **then** URY, and runs `bench run-tests --app ury`. Modernised 2026-07-30 — it had been failing at "Set up job" in ~3s because GitHub now hard-blocks `actions/cache@v2`, and it could not have passed even before that: it pinned **Python 3.10** and **Node 14** against a version-16 stack that requires **Python >=3.14,<3.15** (frappe/erpnext `pyproject.toml`) and **Node >=24** (frappe `package.json`), used the long-disabled `::set-output`, and never installed ERPNext despite `required_apps = ["erpnext"]` in [hooks.py](ury/hooks.py) — so `install-app ury` would have refused to run.
+**There is ONE workflow: [.github/workflows/deploy-ury.yml](.github/workflows/deploy-ury.yml).** `ci.yml` was folded into it and deleted on 2026-07-30. Two jobs:
 
-**When bumping the bench's frappe/erpnext, re-check those three pins in `ci.yml`.** They are the first thing to rot and the failure is opaque (a 3-second job with no test output).
+* **`checks`** — fast and **bench-free**. Runs on **pull requests AND before every deploy**. Python syntax (`compileall`), JSON validity across all fixtures + doctype files, a guard against duplicate doctype keys in `setup.py`, and a **frontend build**; ESLint is advisory (non-blocking — there are pre-existing `catch (err: any)` errors; flip it to a gate once cleared).
+* **`deploy`** — `needs: checks` and `if: github.event_name != 'pull_request'`. SSHes into each bench in the matrix and runs pull → `yarn install && yarn build` → `bench build --app ury` → `migrate` → `restart`. Needs repo secrets `SERVER_HOST`, `SERVER_USER`, `SSH_PRIVATE_KEY`.
 
-Deploy ([.github/workflows/deploy-ury.yml](.github/workflows/deploy-ury.yml)) SSHes into the server on push to `version-16` and runs pull → `yarn install && yarn build` → `bench build --app ury` → `migrate` → `restart`, per bench in a matrix. **The `yarn build` step is not optional**: every frontend artifact (`ury/public/pos`, `ury/www/pos.html`, `ury/www/sw-min.js`, `ury/public/URYMosaic`, `ury/www/URYMosaic.html`) is gitignored, so a `git reset --hard` never delivers them and a deploy without it would report success while the served POS stayed stale. Needs repo secrets `SERVER_HOST`, `SERVER_USER`, `SSH_PRIVATE_KEY`.
+**CI does NOT run the test suite.** It used to stand up a whole bench per run — install frappe, clone erpnext, start MariaDB + Redis, create a site, install ury — ~4 minutes before a single assertion, because a GitHub runner is a fresh bare VM with nothing cached. **Decision 2026-07-30: the real suite runs on the LOCAL bench** (`bench --site <site> execute ury.<module>.run_<name>_tests`); a prebuilt public container with frappe + erpnext baked in is the planned way to bring it back to CI.
+
+**Why the two jobs are wired this way** (each bit is load-bearing):
+* The deploy runs `yarn build` **on the server, after `git reset --hard`** — every frontend artifact (`ury/public/pos`, `ury/www/pos.html`, `ury/www/sw-min.js`, `ury/public/URYMosaic`, `ury/www/URYMosaic.html`) is gitignored, so a `reset --hard` never delivers them. A deploy without that step reports success while the served POS stays stale; a build that FAILS there leaves the bench half-updated (new Python, missing assets). Hence `needs: checks` — the same build runs on the runner first, so a broken one never reaches the server.
+* The `pull_request` trigger exists so PRs still get checks. Without it, deleting `ci.yml` would have left PRs with **no validation at all**, since the deploy only fires on push to `version-16`.
+* Concurrency is **per job**, not workflow-wide: superseded PR checks should cancel (`cancel-in-progress: true`), a deploy must never be killed mid-flight (`false`, per-bench group).
+
+**Gotchas:** only **`pos/yarn.lock` is committed** (root + URYMosaic lockfiles are untracked), so `cache-dependency-path` must reference only that one — `setup-node` hard-errors if a cache path resolves to nothing — and `yarn install` must NOT use `--frozen-lockfile` at the repo root for the same reason. The build does **not** typecheck: `yarn build` is `vite build`, and `tsc` can't be gated while the committed `pos/src/privateKey.ts` placeholder is intentionally invalid TS.
+
 
 No frontend test suites are configured. `pos/` has `yarn lint` (ESLint); the Vue projects have no lint script wired up in their `package.json`.
 
