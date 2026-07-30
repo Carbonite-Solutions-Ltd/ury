@@ -11,7 +11,7 @@ const Spotlight = () => {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const { menuItems, addToOrder, setSelectedItem } = usePOSStore();
+  const { menuItems, setSelectedItem } = usePOSStore();
 
   const filteredItems = menuItems.filter(item =>
     item.name.toLowerCase().includes(query.toLowerCase()) ||

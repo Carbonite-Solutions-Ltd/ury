@@ -186,7 +186,7 @@ export default function Notifications() {
       );
 
       showToast.success('Marked as served');
-    } catch (err) {
+    } catch {
       showToast.error('Failed to mark as served');
     }
   };

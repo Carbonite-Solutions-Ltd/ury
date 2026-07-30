@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   TrendingUp,
   DollarSign,
@@ -152,7 +152,6 @@ export default function Reports() {
   const [paymentSplits, setPaymentSplits] =
     useState<PaymentSplitsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const printRef = useRef<HTMLDivElement>(null);
 
   const { terminalName } = usePOSStore();
   const { user } = useRootStore();
@@ -677,15 +676,6 @@ export default function Reports() {
     printWindow.document.close();
   };
 
-  const formatDateTime = (date: string, time: string) => {
-    return new Date(date + ' ' + time).toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: 'numeric',
-      hour12: true
-    });
-  };
 
   return (
     <div className="flex flex-col h-full bg-gray-50">
@@ -1445,8 +1435,6 @@ function ShiftSummaryView({ summary }: { summary: ShiftSummaryResponse | null })
     );
   }
 
-  const diff = (p: { opening_amount: number; expected_amount: number; closing_amount: number }) =>
-    (p.closing_amount || 0) - (p.opening_amount || 0) - (p.expected_amount || 0);
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">

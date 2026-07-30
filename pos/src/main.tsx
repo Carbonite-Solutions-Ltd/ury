@@ -3,7 +3,6 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import './lib/qz-init';
-import { setupKotListener } from './lib/kot-listener';
 import { registerServiceWorker } from './lib/register-sw';
 import { initConnectivityWatch } from './lib/connectivity';
 import { initOutbox } from './lib/outbox';

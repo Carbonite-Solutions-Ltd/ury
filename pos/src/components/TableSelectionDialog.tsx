@@ -55,7 +55,7 @@ const TableSelectionDialog: React.FC<Props> = ({ onClose }) => {
           // Store in session storage
           sessionStorage.setItem(sessionKey, JSON.stringify(fetchedRooms));
         }
-      } catch (e) {
+      } catch {
         setError('Failed to load rooms');
       } finally {
         setLoadingRooms(false);
@@ -81,7 +81,7 @@ const TableSelectionDialog: React.FC<Props> = ({ onClose }) => {
         const sortedTables = sortTables(fetchedTables);
         setTables(sortedTables);
         setTablesCache(prev => ({ ...prev, [selectedRoom]: fetchedTables }));
-      } catch (e) {
+      } catch {
         setError('Failed to load tables');
         setTables([]);
       } finally {

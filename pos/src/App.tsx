@@ -39,7 +39,7 @@ import {
   getGeofenceConfig,
   validateGeofence,
 } from './lib/geofence-api';
-import { Monitor, MapPin, LogIn, MapPinOff, ShieldAlert } from 'lucide-react';
+import { Monitor, MapPin, MapPinOff, ShieldAlert } from 'lucide-react';
 import { extractFrappeServerError } from './lib/utils';
 
 

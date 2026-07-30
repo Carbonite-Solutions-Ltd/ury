@@ -14,7 +14,6 @@ import {
   ArrowRightLeft,
 } from 'lucide-react';
 import { Input } from '../components/ui/input';
-import { usePOSStore } from '../store/pos-store';
 import { useRootStore } from '../store/root-store';
 import {
   getWaitersWithPendingOrders,
@@ -51,7 +50,6 @@ const moveOrderLocally = (
 
 const Waiters = () => {
   const navigate = useNavigate();
-  const posStore = usePOSStore();
   const openOrderByName = useRootStore((s) => s.openOrderByName);
   const [waiters, setWaiters] = useState<WaiterWithOrders[]>([]);
   const [loading, setLoading] = useState(true);

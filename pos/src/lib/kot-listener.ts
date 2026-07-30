@@ -143,7 +143,7 @@ async function checkForNewKots() {
         console.error(`❌ Failed to print KOT to ${printerName}:`, error);
       }
     }
-  } catch (error) {
+  } catch {
     // Silently fail if no KOTs found
   }
 }

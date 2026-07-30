@@ -378,7 +378,7 @@ export class BiometricClient {
     let resp: Response;
     try {
       resp = await fetch(url, init);
-    } catch (err) {
+    } catch {
       // Network failure — agent isn't running, port closed, etc.
       throw new AgentError(
         'agent_unreachable',
