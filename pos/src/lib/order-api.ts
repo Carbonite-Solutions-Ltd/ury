@@ -94,6 +94,14 @@ export interface SyncOrderRequest {
    * duplicating it. See ury_order.sync_order.
    */
   idempotency_key?: string;
+  /**
+   * Optional take-away / delivery contact, captured by a prompt on the
+   * first submit. Omitted (or blank) leaves any existing value alone —
+   * the backend only stamps a non-empty value, so a later update can't
+   * wipe a contact the cashier added from the Orders page.
+   */
+  contact_name?: string;
+  contact_mobile?: string;
 }
 
 export const syncOrder = async (data: SyncOrderRequest) => {

@@ -56,6 +56,9 @@ export interface POSInvoice {
   /** iHotel: 1 when this draft has been charged to a hotel room. */
   custom_charge_to_room?: number;
   custom_hotel_room?: string | null;
+  /** Take-away / delivery contact (optional, editable after the fact). */
+  custom_order_contact_name?: string | null;
+  custom_order_contact_mobile?: string | null;
   custom_ihotel_profile?: string | null;
   /** Times this bill has been printed (drives the cashier reprint cap). */
   custom_print_count?: number;
@@ -426,6 +429,8 @@ export const createOrdersSlice: StateCreator<
         custom_waiter: doc.custom_waiter,
         custom_charge_to_room: doc.custom_charge_to_room,
         custom_hotel_room: doc.custom_hotel_room,
+        custom_order_contact_name: doc.custom_order_contact_name,
+        custom_order_contact_mobile: doc.custom_order_contact_mobile,
         custom_ihotel_profile: doc.custom_ihotel_profile,
         custom_print_count: doc.custom_print_count,
       } as POSInvoice;

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { Trash2, Edit, FrownIcon, Plus, Loader2, MessageSquare, Users, X } from 'lucide-react';
 import { usePOSStore } from '../store/pos-store';
@@ -10,6 +10,7 @@ import { CustomerSelect } from './CustomerSelect';
 import ProductDialog from './ProductDialog';
 import OrderTypeSelect from './OrderTypeSelect';
 import CommentDialog from './CommentDialog';
+import OrderContactDialog, { type OrderContact } from './OrderContactDialog';
 import { Button } from './ui/button';
 import { Spinner } from './ui/spinner';
 import { syncOrder } from '../lib/order-api';
@@ -70,11 +71,35 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
   // Cart line whose per-item note is being edited (null = dialog closed).
   const [noteItem, setNoteItem] = useState<any | null>(null);
   const [showWaiterDialog, setShowWaiterDialog] = useState(false);
+  // Take-away / delivery contact prompt. `contactPrompted` records that we
+  // already asked — the details are optional, so blank is a valid answer
+  // and can't be used to mean "not yet asked". `pendingWaiter` carries the
+  // waiter across the prompt when a profile uses both dialogs.
+  const [showContactDialog, setShowContactDialog] = useState(false);
+  const [contactPrompted, setContactPrompted] = useState(false);
+  const [pendingWaiter, setPendingWaiter] = useState<Waiter | undefined>(undefined);
   const [numberOfPeople, setNumberOfPeople] = useState<number>(1);
 
   // Waiter feature: pop a waiter picker when CREATING a new order on a
   // profile that uses waiters. Not on updates (the order already has one).
   const useWaiter = posProfile?.custom_use_waiter === 1;
+
+  // Re-arm the contact prompt once the cart empties (a successful submit
+  // clears it, as does Clear cart). Without this the flag would stay set
+  // for the rest of the session and only the FIRST take-away order of a
+  // shift would ever be asked.
+  useEffect(() => {
+    if (activeOrders.length === 0) {
+      setContactPrompted(false);
+      setPendingWaiter(undefined);
+    }
+  }, [activeOrders.length]);
+
+  // Switching order type mid-cart (e.g. Dine In → Delivery) means we've
+  // never asked for THIS type's contact, so ask again.
+  useEffect(() => {
+    setContactPrompted(false);
+  }, [selectedOrderType]);
 
   const calculateItemTotal = (item: typeof activeOrders[0]) => {
     const basePrice = item.selectedVariant?.price || item.price;
@@ -108,7 +133,10 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
     }
   };
 
-  const handleSubmit = async (waiterOverride?: Waiter) => {
+  const handleSubmit = async (
+    waiterOverride?: Waiter,
+    contactOverride?: OrderContact
+  ) => {
     try {
       if (!posProfile) {
         throw new Error('POS Profile not found');
@@ -168,6 +196,28 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
         return;
       }
 
+      // Take-away / delivery contact prompt (2026-07-30). Asked ONCE, on
+      // the first submit of a NEW order of those types — never on an
+      // update, where the contact already rides on the draft and is
+      // edited from the Orders page instead.
+      //
+      // Runs AFTER the waiter gate so the two prompts compose in sequence
+      // instead of racing: the waiter dialog re-enters handleSubmit with
+      // its choice, we land here, and this dialog re-enters again with
+      // BOTH values. `contactPrompted` is what stops a loop — the contact
+      // is optional, so "skipped" and "left blank" are the same thing and
+      // we can't use emptiness to mean "not yet asked".
+      const needsContact =
+        !isUpdatingOrder &&
+        (selectedOrderType === 'Take Away' || selectedOrderType === 'Delivery');
+      if (needsContact && !contactOverride && !contactPrompted) {
+        // Remember the resolved waiter so the contact dialog can hand
+        // both back — otherwise a profile using waiters would lose it.
+        setPendingWaiter(orderWaiter);
+        setShowContactDialog(true);
+        return;
+      }
+
       setIsSubmitting(true);
 
       // One idempotency key per submit, sent on EVERY attempt (online +
@@ -207,6 +257,11 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
         terminal: terminalName || undefined,
         hotel_room: hotelRoom || undefined,
         idempotency_key: idempotencyKey,
+        // Only sent when the cashier actually entered something. Blank
+        // values are omitted so the backend's "don't overwrite" guard
+        // never has to distinguish "skipped" from "cleared".
+        contact_name: contactOverride?.contact_name || undefined,
+        contact_mobile: contactOverride?.contact_mobile || undefined,
       };
 
       const itemCount = activeOrders.length;
@@ -681,6 +736,18 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
           onCancel={() => setShowWaiterDialog(false)}
         />
       )}
+      <OrderContactDialog
+        open={showContactDialog}
+        orderType={selectedOrderType}
+        onClose={() => setShowContactDialog(false)}
+        onSubmit={(contact) => {
+          setShowContactDialog(false);
+          // Mark as asked BEFORE re-entering, so a skipped (empty)
+          // contact can't send us straight back into the prompt.
+          setContactPrompted(true);
+          handleSubmit(pendingWaiter, contact);
+        }}
+      />
     </div>
   );
 };

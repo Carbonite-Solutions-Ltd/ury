@@ -590,6 +590,7 @@ def get_incoming_transfers(terminal=None, posting_date=None):
             pi.order_type, pi.custom_order_status, pi.custom_terminal,
             pi.owner, pi.is_return, pi.return_against,
             pi.custom_charge_to_room, pi.custom_hotel_room,
+            pi.custom_order_contact_name, pi.custom_order_contact_mobile,
             pi.custom_ihotel_profile, pi.custom_transfer_status,
             t.name AS transfer_name, t.from_user AS transfer_from_user,
             t.requested_at AS transfer_requested_at,
@@ -940,6 +941,7 @@ def getPosInvoice(
             pi.order_type, pi.custom_order_status, pi.custom_terminal,
             pi.owner, pi.is_return, pi.return_against,
             pi.custom_charge_to_room, pi.custom_hotel_room,
+            pi.custom_order_contact_name, pi.custom_order_contact_mobile,
             pi.custom_ihotel_profile, pi.custom_print_count, pi.custom_waiter,
             pi.cancel_reason,
             u.full_name AS owner_full_name,
@@ -1100,6 +1102,7 @@ def searchPosInvoice(
             pi.custom_order_status, pi.custom_terminal, pi.owner,
             pi.is_return, pi.return_against,
             pi.custom_charge_to_room, pi.custom_hotel_room,
+            pi.custom_order_contact_name, pi.custom_order_contact_mobile,
             pi.custom_ihotel_profile,
             u.full_name AS owner_full_name,
             (

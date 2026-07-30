@@ -16,6 +16,8 @@ import {
   BedDouble,
   ArrowLeft,
   Menu,
+  Phone,
+  Edit,
 } from 'lucide-react';
 import { Badge, Button, Card, CardContent } from '../components/ui';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../components/ui/dialog';
@@ -44,9 +46,11 @@ import {
 import {
   reversePosReturn,
   updatePrintStatus,
+  updateOrderContact,
   type ReturnResult,
 } from '../lib/invoice-api';
 import PrintChoiceDialog, { type PrintChoice } from '../components/PrintChoiceDialog';
+import OrderContactDialog, { type OrderContact } from '../components/OrderContactDialog';
 import { approveTransfer, rejectTransfer } from '../lib/transfer-api';
 import { extractFrappeServerError } from '../lib/utils';
 import '../components/ui/merge-mode.css';
@@ -142,6 +146,9 @@ export default function Orders() {
   const [isPrinting, setIsPrinting] = React.useState(false);
   // Admin-only "print or just mark printed?" prompt. See PrintChoiceDialog.
   const [showPrintChoice, setShowPrintChoice] = React.useState(false);
+  // Take-away / delivery contact edit dialog (2026-07-30).
+  const [showContactDialog, setShowContactDialog] = React.useState(false);
+  const [savingContact, setSavingContact] = React.useState(false);
   // Bump this whenever an action should force OrderStatusSidebar to
   // re-poll the pending-KOT badge count. Firing held KOTs at bill
   // print time is the main trigger — the cashier expects the badge
@@ -1186,6 +1193,62 @@ export default function Orders() {
                     )}
                   </div>
                 </div>
+
+                {/* Take-away / delivery contact (2026-07-30). Shown only
+                    for those order types, and always editable — the prompt
+                    at order time is skippable, so this is where a name or
+                    number gets added or corrected afterwards. */}
+                {(selectedOrder.order_type === 'Take Away' ||
+                  selectedOrder.order_type === 'Delivery') && (
+                  <div className="mt-4 pt-3 border-t border-gray-100">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">
+                          Contact
+                        </div>
+                        {selectedOrder.custom_order_contact_name ||
+                        selectedOrder.custom_order_contact_mobile ? (
+                          <div className="space-y-1">
+                            {selectedOrder.custom_order_contact_name && (
+                              <div className="flex items-center gap-2 text-sm text-gray-900">
+                                <User className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                                <span className="truncate">
+                                  {selectedOrder.custom_order_contact_name}
+                                </span>
+                              </div>
+                            )}
+                            {selectedOrder.custom_order_contact_mobile && (
+                              <div className="flex items-center gap-2 text-sm text-gray-900">
+                                <Phone className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                                <a
+                                  href={`tel:${selectedOrder.custom_order_contact_mobile}`}
+                                  className="truncate hover:text-blue-700 hover:underline"
+                                >
+                                  {selectedOrder.custom_order_contact_mobile}
+                                </a>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="text-sm text-gray-400 italic">
+                            No contact details
+                          </div>
+                        )}
+                      </div>
+                      <Button
+                        variant="outline"
+                        onClick={() => setShowContactDialog(true)}
+                        className="shrink-0 border-gray-300 text-gray-700 hover:bg-gray-50 px-3 py-1.5 h-auto text-xs"
+                      >
+                        <Edit className="w-3.5 h-3.5 mr-1" />
+                        {selectedOrder.custom_order_contact_name ||
+                        selectedOrder.custom_order_contact_mobile
+                          ? 'Edit'
+                          : 'Add'}
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Order Items */}
@@ -1493,6 +1556,43 @@ export default function Orders() {
           invoiceName={selectedOrder.name}
           onCancel={() => setShowReturnDialog(false)}
           onReturned={handleReturned}
+        />
+      )}
+      {selectedOrder && (
+        <OrderContactDialog
+          open={showContactDialog}
+          mode="edit"
+          orderType={selectedOrder.order_type}
+          initialName={selectedOrder.custom_order_contact_name || ''}
+          initialMobile={selectedOrder.custom_order_contact_mobile || ''}
+          busy={savingContact}
+          onClose={() => setShowContactDialog(false)}
+          onSubmit={async (contact: OrderContact) => {
+            setSavingContact(true);
+            try {
+              const res = await updateOrderContact({
+                invoice: selectedOrder.name,
+                contact_name: contact.contact_name,
+                contact_mobile: contact.contact_mobile,
+              });
+              // Update the open panel straight away so the cashier sees the
+              // change without waiting for a list refetch.
+              selectOrder({
+                ...selectedOrder,
+                custom_order_contact_name: res.contact_name,
+                custom_order_contact_mobile: res.contact_mobile,
+              });
+              showToast.success('Contact details saved');
+              setShowContactDialog(false);
+            } catch (err) {
+              showToast.error(
+                extractFrappeServerError(err, 'Could not save the contact details.')
+                  .message
+              );
+            } finally {
+              setSavingContact(false);
+            }
+          }}
         />
       )}
       <PrintChoiceDialog
