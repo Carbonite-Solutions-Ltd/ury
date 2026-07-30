@@ -1,0 +1,177 @@
+# ═══════════════════════════════════════════════════════════════
+#  Deploy ury (ExPOS) to the landing bench
+#  File: .github/workflows/deploy-ury.yml
+#  Lives in this app's own GitHub repo.
+# ═══════════════════════════════════════════════════════════════
+#
+# NOTE ON THE APP NAME: the Frappe app is `ury` (see hooks.py
+# `app_name = "ury"`), installed at `apps/ury`. "ExPOS" is a
+# BRAND applied through the translation layer only — the app,
+# the DocTypes, the Python package and the URL slugs are all
+# still `ury` and must never be renamed (it would break the
+# database schema and every existing record). So every path and
+# `--app` flag below says `ury`, not `ex_pos`.
+
+name: Deploy ExPOS (ury)
+
+# ── TRIGGER ────────────────────────────────────────────────────
+on:
+  push:
+    branches: [version-16] # fires when version-16 receives commits (incl. a merge)
+    #                        ^ NOT "main" — this app tracks version-16, so
+    #                          that's the branch a merge lands on and the
+    #                          branch the server pulls from. The trigger
+    #                          branch and the pulled branch must match.
+    #
+    # We use paths-IGNORE, not a paths allowlist, on purpose.
+    # An allowlist silently STOPS DEPLOYING the moment code appears in a
+    # path or extension nobody remembered to list — and a deploy that
+    # quietly does nothing is far worse than one that runs unnecessarily.
+    # (Concretely: an allowlist of "**/*.py" + "**/*.js" would miss the
+    # entire React POS, which is .ts/.tsx.) A denylist fails safe: worst
+    # case you get a harmless extra deploy.
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+      - ".gitignore"
+      - ".editorconfig"
+
+  # Manual "Run workflow" button — redeploy without a new push.
+  workflow_dispatch:
+
+# ── CONCURRENCY (repo-wide for this workflow) ──────────────────
+# Stops two runs of THIS workflow overlapping. If you push twice
+# quickly, the newer run queues behind the older one.
+concurrency:
+  group: deploy-ury
+  cancel-in-progress: false # false = queue; never kill a deploy mid-flight
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    # ── THE MATRIX = your bench registry ───────────────────────
+    # One job runs PER row below. It's a single bench today, but the
+    # matrix shape means adding the next one is just one more
+    # "- bench: / site:" pair — no other change needed.
+    strategy:
+      # Don't let one failing bench cancel deploys to the others.
+      fail-fast: false
+      # Cap parallelism: benches share ONE server, so you don't want
+      # several yarn builds thrashing it at once.
+      max-parallel: 2
+      matrix:
+        include:
+          - bench: frappe-bench-landing
+            site: landing.erpxpand.com
+          # ... add more benches here later:
+          # - bench: frappe-bench-creditmall
+          #   site: creditmall.local
+
+    # ── PER-BENCH CONCURRENCY ──────────────────────────────────
+    # Each bench gets its OWN lane, so two deploys to the SAME bench can
+    # never overlap (concurrent builds in one bench directory would
+    # corrupt each other) while different benches still run in parallel.
+    # Redundant with the workflow-level group while there's one bench —
+    # kept because it's exactly what stops the first added bench from
+    # introducing a race nobody notices.
+    concurrency:
+      group: deploy-ury-${{ matrix.bench }}
+      cancel-in-progress: false
+
+    # Name each job after its bench: "deploy (frappe-bench-landing)".
+    name: deploy (${{ matrix.bench }})
+
+    steps:
+      # ── SSH in and run the deploy ────────────────────────────
+      # The runner builds nothing — the SERVER pulls and builds. The
+      # runner just opens an SSH session and runs the script below.
+      - name: Deploy to ${{ matrix.bench }}
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }} # your server
+          username: ${{ secrets.SERVER_USER }} # e.g. erpnext
+          key: ${{ secrets.SSH_PRIVATE_KEY }} # the deploy key's PRIVATE half
+          # Give the frontend build room; a cold `yarn install` on a
+          # small VPS can take a few minutes. Default is 10m.
+          command_timeout: 30m
+          # "script" runs ON THE SERVER, inside this bench's directory.
+          script: |
+            # ── fail fast & loud ──
+            # -e : stop immediately if any command fails
+            # -u : error on undefined variables (catches typos)
+            # -o pipefail : a failure anywhere in a pipe fails the line
+            set -euo pipefail
+
+            echo "▶ Deploying ury to ${{ matrix.bench }} (site: ${{ matrix.site }})"
+
+            # Move into THIS bench (literal folder name).
+            cd ~/${{ matrix.bench }}
+
+            # Make bench/node/yarn visible to a NON-INTERACTIVE shell.
+            # ssh-action doesn't load ~/.bashrc or ~/.profile, so PATH is
+            # bare and `bench`/`yarn` are often "command not found" even
+            # though they work fine when you SSH in by hand.
+            export PATH="$HOME/.local/bin:$HOME/.nvm/versions/node/$(ls -1 "$HOME/.nvm/versions/node" 2>/dev/null | tail -1)/bin:/usr/local/bin:$PATH"
+            command -v bench >/dev/null || { echo "✖ bench not on PATH"; exit 1; }
+            command -v yarn  >/dev/null || { echo "✖ yarn not on PATH";  exit 1; }
+            echo "  node $(node -v 2>/dev/null || echo '?') · yarn $(yarn -v 2>/dev/null || echo '?')"
+
+            # 1. Pull the new app code from version-16.
+            #    -C points git at the app's repo without cd-ing in and out.
+            echo "▶ Pulling ury (version-16)..."
+            git -C apps/ury fetch origin version-16
+            #    reset --hard makes the server match origin exactly, even if
+            #    local edits were left behind. Pull can fail on conflicts;
+            #    reset can't.
+            #
+            #    ⚠ THIS SILENTLY DISCARDS ANY UNCOMMITTED EDIT ON THE
+            #    SERVER. That has bitten this app before: a resolver was
+            #    hand-edited on landing, the app was re-cloned, the edit
+            #    vanished while the DB changes it depended on stayed, and
+            #    every drink sale started failing. Never hand-edit app code
+            #    on prod — put it in a commit. We print anything that is
+            #    about to be thrown away so it's at least visible in the
+            #    run log rather than lost without trace.
+            if ! git -C apps/ury diff --quiet HEAD 2>/dev/null; then
+              echo "⚠ WARNING: discarding uncommitted changes on the server:"
+              git -C apps/ury --no-pager diff --stat HEAD || true
+            fi
+            git -C apps/ury reset --hard origin/version-16
+            echo "  now at $(git -C apps/ury rev-parse --short HEAD)"
+
+            # 2. Build the FRONTENDS (React POS + URYMosaic KDS).
+            #    THIS STEP IS NOT OPTIONAL and `bench build` does not do it.
+            #    Every frontend build output is gitignored —
+            #      ury/public/pos, ury/www/pos.html, ury/www/sw-min.js,
+            #      ury/public/URYMosaic, ury/www/URYMosaic.html
+            #    — so `git reset --hard` never delivers them. Without this
+            #    step the served /pos would stay whatever was last built on
+            #    the box (or 404 on a fresh clone), and every frontend
+            #    change would deploy "successfully" while never appearing.
+            echo "▶ Installing frontend deps..."
+            (cd apps/ury && yarn install)
+            echo "▶ Building frontends (pos + URYMosaic)..."
+            (cd apps/ury && yarn build)
+
+            # 3. Frappe asset pipeline — bundles ury/public/** for the desk
+            #    (app_include_js, doctype_js, page_js). Runs AFTER yarn so
+            #    it sees the freshly built assets.
+            echo "▶ Building bench assets..."
+            bench build --app ury
+
+            # 4. DB migrations for the site (per-site step). Also re-runs
+            #    URY's after_migrate hooks: create_custom_fields (the
+            #    dual-source custom fields), ensure_role_permissions, and
+            #    ensure_pos_settings_configured.
+            echo "▶ Migrating ${{ matrix.site }}..."
+            bench --site ${{ matrix.site }} migrate
+
+            # 5. Reload workers/web so new Python code is actually live.
+            #    REQUIRED for hooks.py doc_events changes — a
+            #    `bench clear-cache` is NOT enough, the worker keeps the
+            #    old hooks module in memory.
+            echo "▶ Restarting bench..."
+            bench restart
+
+            echo "✔ ${{ matrix.bench }} done."
