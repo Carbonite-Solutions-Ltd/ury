@@ -31,6 +31,28 @@ jobs:
           - 3306:3306
         options: --health-cmd="mysqladmin ping" --health-interval=5s --health-timeout=2s --health-retries=3
 
+      # Redis is REQUIRED, and its absence is what actually killed the run
+      # (MariaDB alone is not enough). `bench init
+      # --skip-redis-config-generation` tells bench not to generate a local
+      # redis config because it expects redis to already be reachable — it
+      # does NOT mean "no redis needed". ERPNext's after_install →
+      # set_single_defaults → doc.save() writes through the cache, so the
+      # install died with:
+      #   "An error occurred while installing erpnext:
+      #    Error 111 connecting to 127.0.0.1:11000. Connection refused."
+      # The ports below are the defaults frappe writes into
+      # common_site_config.json: 13000 = cache, 11000 = queue.
+      redis-cache:
+        image: redis:alpine
+        ports:
+          - 13000:6379
+        options: --health-cmd="redis-cli ping" --health-interval=5s --health-timeout=2s --health-retries=5
+      redis-queue:
+        image: redis:alpine
+        ports:
+          - 11000:6379
+        options: --health-cmd="redis-cli ping" --health-interval=5s --health-timeout=2s --health-retries=5
+
     steps:
       # All four actions below were pinned at @v2. GitHub now HARD-FAILS
       # actions/cache@v2 during "Set up job", before a single step runs —
@@ -83,7 +105,13 @@ jobs:
       - name: Setup
         run: |
           pip install frappe-bench
-          bench init --skip-redis-config-generation --skip-assets --python "$(which python)" ~/frappe-bench
+          # --frappe-branch is REQUIRED. Without it `bench init` clones
+          # frappe's `develop` (currently 17.0.0-dev), while erpnext
+          # version-16 requires frappe ">=16.21.0,<17.0.0" — CI then warns
+          # "App 'erpnext' might not work as expected" and carries on onto
+          # a mismatched stack, which is worse than failing outright. Pin
+          # frappe to the same branch as erpnext and as the real bench.
+          bench init --frappe-branch version-16 --skip-redis-config-generation --skip-assets --python "$(which python)" ~/frappe-bench
           mysql --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL character_set_server = 'utf8mb4'"
           mysql --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL collation_server = 'utf8mb4_unicode_ci'"
 
