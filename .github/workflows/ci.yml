@@ -1,4 +1,3 @@
-
 name: CI
 
 on:
@@ -8,7 +7,12 @@ on:
   pull_request:
 
 concurrency:
-  group: develop-ury-${{ github.event.number }}
+  # PRs key on the PR number; pushes fall back to the ref, so a push to
+  # develop can't share a lane with an unrelated PR and cancel it. The
+  # old group was "develop-ury-${{ github.event.number }}", which
+  # evaluates to "develop-ury-" for EVERY push event — with
+  # cancel-in-progress on, concurrent pushes cancelled each other.
+  group: ci-ury-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -28,22 +32,31 @@ jobs:
         options: --health-cmd="mysqladmin ping" --health-interval=5s --health-timeout=2s --health-retries=3
 
     steps:
+      # All four actions below were pinned at @v2. GitHub now HARD-FAILS
+      # actions/cache@v2 during "Set up job", before a single step runs —
+      # which is why every run died in ~3s with no useful output. The
+      # others sit on retired Node runtimes and were next in line.
       - name: Clone
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
+      # Python 3.10 could never have worked against version-16: frappe's
+      # pyproject.toml declares requires-python = ">=3.14,<3.15" and
+      # erpnext's ">=3.14", so `bench init` fails the interpreter check.
       - name: Setup Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.14'
 
+      # Likewise Node 14 — frappe's package.json declares engines.node
+      # ">=24", and this repo's own React POS needs a modern Node to build.
       - name: Setup Node
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v4
         with:
-          node-version: 14
+          node-version: 24
           check-latest: true
 
       - name: Cache pip
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('**/*requirements.txt', '**/pyproject.toml', '**/setup.py', '**/setup.cfg') }}
@@ -53,9 +66,13 @@ jobs:
 
       - name: Get yarn cache directory path
         id: yarn-cache-dir-path
-        run: 'echo "::set-output name=dir::$(yarn cache dir)"'
+        # `::set-output` was disabled by GitHub in 2023. Writing to the
+        # $GITHUB_OUTPUT file is the replacement; the old form produced an
+        # empty `dir`, so the cache step below was keyed on an empty path
+        # and never actually cached anything.
+        run: echo "dir=$(yarn cache dir)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v2
+      - uses: actions/cache@v4
         id: yarn-cache
         with:
           path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
@@ -73,9 +90,15 @@ jobs:
       - name: Install
         working-directory: /home/runner/frappe-bench
         run: |
-          bench get-app ury $GITHUB_WORKSPACE
+          # ERPNext is a HARD dependency: ury/hooks.py declares
+          # `required_apps = ["erpnext"]`, so `install-app ury` refuses to
+          # run without it. The old workflow never fetched it, so this job
+          # could not have passed even before the actions went stale.
+          bench get-app --branch version-16 erpnext
+          bench get-app ury "$GITHUB_WORKSPACE"
           bench setup requirements --dev
           bench new-site --db-root-password root --admin-password admin test_site
+          bench --site test_site install-app erpnext
           bench --site test_site install-app ury
           bench build
         env:

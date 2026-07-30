@@ -131,7 +131,11 @@ bench --site <site> run-tests --app ury --doctype "URY KOT"   # one doctype
 bench --site <site> run-tests --app ury --module ury.ury.doctype.ury_kot.test_ury_kot
 ```
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) spins up a fresh bench with MariaDB, installs URY, and runs `bench run-tests --app ury`. Note CI currently pins Python 3.10 and Node 14 — the Node 14 pin is stale relative to the ≥18.20 requirement in `INSTALLATION.md`; prefer local Node 18+ for development.
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) spins up a fresh bench with MariaDB, installs ERPNext **then** URY, and runs `bench run-tests --app ury`. Modernised 2026-07-30 — it had been failing at "Set up job" in ~3s because GitHub now hard-blocks `actions/cache@v2`, and it could not have passed even before that: it pinned **Python 3.10** and **Node 14** against a version-16 stack that requires **Python >=3.14,<3.15** (frappe/erpnext `pyproject.toml`) and **Node >=24** (frappe `package.json`), used the long-disabled `::set-output`, and never installed ERPNext despite `required_apps = ["erpnext"]` in [hooks.py](ury/hooks.py) — so `install-app ury` would have refused to run.
+
+**When bumping the bench's frappe/erpnext, re-check those three pins in `ci.yml`.** They are the first thing to rot and the failure is opaque (a 3-second job with no test output).
+
+Deploy ([.github/workflows/deploy-ury.yml](.github/workflows/deploy-ury.yml)) SSHes into the server on push to `version-16` and runs pull → `yarn install && yarn build` → `bench build --app ury` → `migrate` → `restart`, per bench in a matrix. **The `yarn build` step is not optional**: every frontend artifact (`ury/public/pos`, `ury/www/pos.html`, `ury/www/sw-min.js`, `ury/public/URYMosaic`, `ury/www/URYMosaic.html`) is gitignored, so a `git reset --hard` never delivers them and a deploy without it would report success while the served POS stayed stale. Needs repo secrets `SERVER_HOST`, `SERVER_USER`, `SSH_PRIVATE_KEY`.
 
 No frontend test suites are configured. `pos/` has `yarn lint` (ESLint); the Vue projects have no lint script wired up in their `package.json`.
 
