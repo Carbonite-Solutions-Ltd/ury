@@ -1,141 +1,144 @@
 name: CI
 
+# ═══════════════════════════════════════════════════════════════
+#  Fast, bench-free checks.
+#
+#  This workflow used to stand up a WHOLE Frappe bench on every run —
+#  install frappe, clone erpnext, start MariaDB + Redis, create a site,
+#  install ury — just to reach `bench run-tests --app ury`. That is
+#  ~4 minutes of setup before a single assertion, repeated per push,
+#  because a GitHub-hosted runner is a fresh bare VM with nothing cached.
+#
+#  By decision (2026-07-30) the real test suite runs on the LOCAL bench
+#  instead, where the world already exists. The 171 tests in this repo
+#  all ship a `run_*_tests()` wrapper for exactly that:
+#
+#      bench --site <site> execute ury.<module>.run_<name>_tests
+#
+#  A public prebuilt container with frappe + erpnext baked in is the
+#  planned way to bring those tests back here without paying the setup
+#  cost every time. Until then CI only runs what needs NO bench.
+#
+#  That is not nothing. These checks catch the failure modes this repo
+#  has actually hit — a syntax error, a mangled fixture, a duplicated
+#  doctype key, a broken frontend build.
+# ═══════════════════════════════════════════════════════════════
+
 on:
   push:
     branches:
       - develop
+      - version-16
   pull_request:
 
 concurrency:
-  # PRs key on the PR number; pushes fall back to the ref, so a push to
-  # develop can't share a lane with an unrelated PR and cancel it. The
-  # old group was "develop-ury-${{ github.event.number }}", which
-  # evaluates to "develop-ury-" for EVERY push event — with
-  # cancel-in-progress on, concurrent pushes cancelled each other.
+  # PRs key on the PR number; pushes fall back to the ref, so a push
+  # can't share a lane with an unrelated PR and cancel it.
   group: ci-ury-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  tests:
+  checks:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-    name: Server
-
-    services:
-      mariadb:
-        image: mariadb:10.6
-        env:
-          MYSQL_ROOT_PASSWORD: root
-        ports:
-          - 3306:3306
-        options: --health-cmd="mysqladmin ping" --health-interval=5s --health-timeout=2s --health-retries=3
-
-      # Redis is REQUIRED, and its absence is what actually killed the run
-      # (MariaDB alone is not enough). `bench init
-      # --skip-redis-config-generation` tells bench not to generate a local
-      # redis config because it expects redis to already be reachable — it
-      # does NOT mean "no redis needed". ERPNext's after_install →
-      # set_single_defaults → doc.save() writes through the cache, so the
-      # install died with:
-      #   "An error occurred while installing erpnext:
-      #    Error 111 connecting to 127.0.0.1:11000. Connection refused."
-      # The ports below are the defaults frappe writes into
-      # common_site_config.json: 13000 = cache, 11000 = queue.
-      redis-cache:
-        image: redis:alpine
-        ports:
-          - 13000:6379
-        options: --health-cmd="redis-cli ping" --health-interval=5s --health-timeout=2s --health-retries=5
-      redis-queue:
-        image: redis:alpine
-        ports:
-          - 11000:6379
-        options: --health-cmd="redis-cli ping" --health-interval=5s --health-timeout=2s --health-retries=5
+    name: Static Checks
 
     steps:
-      # All four actions below were pinned at @v2. GitHub now HARD-FAILS
-      # actions/cache@v2 during "Set up job", before a single step runs —
-      # which is why every run died in ~3s with no useful output. The
-      # others sit on retired Node runtimes and were next in line.
       - name: Clone
         uses: actions/checkout@v4
 
-      # Python 3.10 could never have worked against version-16: frappe's
-      # pyproject.toml declares requires-python = ">=3.14,<3.15" and
-      # erpnext's ">=3.14", so `bench init` fails the interpreter check.
+      # Match the stack's real target so syntax checking is faithful:
+      # frappe's pyproject.toml declares requires-python ">=3.14,<3.15".
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.14'
 
-      # Likewise Node 14 — frappe's package.json declares engines.node
-      # ">=24", and this repo's own React POS needs a modern Node to build.
+      # frappe's package.json declares engines.node ">=24".
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 24
           check-latest: true
+          cache: yarn
+          # ONLY pos/yarn.lock — it's the only lockfile committed to the
+          # repo. The root and URYMosaic lockfiles are untracked, and
+          # setup-node hard-errors ("Some specified paths were not
+          # resolved") if a cache-dependency-path matches nothing in a
+          # fresh clone.
+          cache-dependency-path: pos/yarn.lock
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/*requirements.txt', '**/pyproject.toml', '**/setup.py', '**/setup.cfg') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-            ${{ runner.os }}-
+      # Catches syntax errors without needing frappe importable — this is
+      # a compile, not an import, so `import frappe` at module top level
+      # is irrelevant.
+      - name: Python syntax
+        run: python -m compileall -q ury
 
-      - name: Get yarn cache directory path
-        id: yarn-cache-dir-path
-        # `::set-output` was disabled by GitHub in 2023. Writing to the
-        # $GITHUB_OUTPUT file is the replacement; the old form produced an
-        # empty `dir`, so the cache step below was keyed on an empty path
-        # and never actually cached anything.
-        run: echo "dir=$(yarn cache dir)" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/cache@v4
-        id: yarn-cache
-        with:
-          path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
-          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-yarn-
-
-      - name: Setup
+      # Guards the fixture-mangling trap: round-tripping
+      # custom_field.json through Python's json module rewrites every
+      # em-dash as — and renormalises the indent, producing a
+      # 2000-line diff. A broken file here silently breaks `bench migrate`
+      # on every site.
+      - name: JSON validity (fixtures + doctypes)
         run: |
-          pip install frappe-bench
-          # --frappe-branch is REQUIRED. Without it `bench init` clones
-          # frappe's `develop` (currently 17.0.0-dev), while erpnext
-          # version-16 requires frappe ">=16.21.0,<17.0.0" — CI then warns
-          # "App 'erpnext' might not work as expected" and carries on onto
-          # a mismatched stack, which is worse than failing outright. Pin
-          # frappe to the same branch as erpnext and as the real bench.
-          bench init --frappe-branch version-16 --skip-redis-config-generation --skip-assets --python "$(which python)" ~/frappe-bench
-          mysql --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL character_set_server = 'utf8mb4'"
-          mysql --host 127.0.0.1 --port 3306 -u root -proot -e "SET GLOBAL collation_server = 'utf8mb4_unicode_ci'"
+          python - <<'PY'
+          import json, glob, sys
+          bad = []
+          for p in sorted(set(glob.glob('ury/fixtures/*.json') + glob.glob('ury/**/*.json', recursive=True))):
+              try:
+                  json.load(open(p))
+              except Exception as e:
+                  bad.append(f"{p}: {e}")
+          if bad:
+              print("Invalid JSON:")
+              [print("  " + b) for b in bad]
+              sys.exit(1)
+          print("all JSON files parse")
+          PY
 
-      - name: Install
-        working-directory: /home/runner/frappe-bench
+      # A repeat offender: `get_custom_fields()` is one big dict literal,
+      # so a second `"POS Invoice": [...]` key silently DISCARDS the first
+      # — Python keeps only the last. That shipped once and quietly
+      # dropped a batch of custom fields on every install.
+      - name: No duplicate doctype keys in setup.py
         run: |
-          # ERPNext is a HARD dependency: ury/hooks.py declares
-          # `required_apps = ["erpnext"]`, so `install-app ury` refuses to
-          # run without it. The old workflow never fetched it, so this job
-          # could not have passed even before the actions went stale.
-          bench get-app --branch version-16 erpnext
-          bench get-app ury "$GITHUB_WORKSPACE"
-          bench setup requirements --dev
-          bench new-site --db-root-password root --admin-password admin test_site
-          bench --site test_site install-app erpnext
-          bench --site test_site install-app ury
-          bench build
-        env:
-          CI: 'Yes'
+          python - <<'PY'
+          import ast, sys
+          dupes = set()
+          for node in ast.walk(ast.parse(open('ury/setup.py').read())):
+              if isinstance(node, ast.Dict):
+                  keys = [k.value for k in node.keys
+                          if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+                  dupes |= {k for k in keys if keys.count(k) > 1}
+          if dupes:
+              print(f"Duplicate keys in setup.py (later ones silently win): {sorted(dupes)}")
+              sys.exit(1)
+          print("no duplicate doctype keys")
+          PY
 
-      - name: Run Tests
-        working-directory: /home/runner/frappe-bench
+      # The highest-value check here. The deploy workflow runs `yarn build`
+      # ON THE SERVER, *after* `git reset --hard` — so a build that fails
+      # there leaves the bench half-updated: new Python code, stale or
+      # missing frontend assets. Catching it on the runner first means a
+      # broken build never reaches production.
+      #
+      # Note this does NOT typecheck: `yarn build` is `vite build`, and
+      # `tsc` can't be gated here because the committed
+      # pos/src/privateKey.ts placeholder is intentionally not valid TS.
+      - name: Build frontends (pos + URYMosaic)
         run: |
-          bench --site test_site set-config allow_tests true
-          bench --site test_site run-tests --app ury
-        env:
-          TYPE: server
+          # Plain `yarn install` — NOT --frozen-lockfile. The root
+          # yarn.lock isn't committed, so a fresh clone has none and
+          # --frozen-lockfile would fail outright. The root install's
+          # postinstall hook is what installs both frontends.
+          yarn install
+          yarn build
+
+      # Non-blocking on purpose. There are pre-existing lint errors in the
+      # POS (mostly `catch (err: any)`), so gating on this would paint CI
+      # red from day one and train everyone to ignore it. It still surfaces
+      # new problems as annotations. Flip to a hard gate once the existing
+      # ones are cleared.
+      - name: ESLint (advisory)
+        continue-on-error: true
+        working-directory: pos
+        run: npx eslint src
