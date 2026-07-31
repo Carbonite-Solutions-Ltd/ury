@@ -321,8 +321,33 @@ jobs:
             # 1. Pull the new app code from version-16.
             #    -C points git at the app's repo without cd-ing in and out.
             echo "▶ Pulling ury (version-16)..."
-            git -C apps/ury fetch origin version-16
-            #    reset --hard makes the server match origin exactly, even if
+
+            #    RESOLVE THE REMOTE NAME — do not hardcode `origin`.
+            #    `bench get-app` names the app's remote **upstream**; only a
+            #    plain `git clone` gives you `origin`. Assuming `origin` failed
+            #    the first real deploy with:
+            #        fatal: 'origin' does not appear to be a git repository
+            #    Both shapes exist in the wild (and a bench that was later
+            #    re-pointed by hand can have either), so pick one rather than
+            #    betting on it. Preference order: upstream, origin, whatever
+            #    is first.
+            REMOTES=$(git -C apps/ury remote)
+            if echo "$REMOTES" | grep -qx upstream; then
+              URY_REMOTE=upstream
+            elif echo "$REMOTES" | grep -qx origin; then
+              URY_REMOTE=origin
+            else
+              URY_REMOTE=$(echo "$REMOTES" | head -1)
+            fi
+            if [ -z "$URY_REMOTE" ]; then
+              echo "✖ apps/ury has no git remote at all — nothing to pull from."
+              exit 1
+            fi
+            echo "  remote: $URY_REMOTE ($(git -C apps/ury remote get-url "$URY_REMOTE"))"
+            echo "  branch: $(git -C apps/ury rev-parse --abbrev-ref HEAD)"
+
+            git -C apps/ury fetch "$URY_REMOTE" version-16
+            #    reset --hard makes the server match the remote exactly, even if
             #    local edits were left behind. Pull can fail on conflicts;
             #    reset can't.
             #
@@ -338,7 +363,11 @@ jobs:
               echo "⚠ WARNING: discarding uncommitted changes on the server:"
               git -C apps/ury --no-pager diff --stat HEAD || true
             fi
-            git -C apps/ury reset --hard origin/version-16
+            #    Reset to FETCH_HEAD, not "<remote>/version-16": FETCH_HEAD is
+            #    exactly what the fetch above just retrieved, so it holds even
+            #    if the clone is single-branch or has a narrowed refspec that
+            #    never writes a refs/remotes/<remote>/version-16 tracking ref.
+            git -C apps/ury reset --hard FETCH_HEAD
             echo "  now at $(git -C apps/ury rev-parse --short HEAD)"
 
             # 2. Build the FRONTENDS (React POS + URYMosaic KDS).
