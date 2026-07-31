@@ -203,18 +203,59 @@ jobs:
     # ── PER-BENCH CONCURRENCY ──────────────────────────────────
     # Each bench gets its OWN lane, so two deploys to the SAME bench can
     # never overlap (concurrent builds in one bench directory would
-    # corrupt each other) while different benches still run in parallel.
-    # Redundant with the workflow-level group while there's one bench —
-    # kept because it's exactly what stops the first added bench from
-    # introducing a race nobody notices.
+    # corrupt each other).
+    #
+    # NOTE: keyed on the REF, not on `matrix.bench`. Job-level
+    # `concurrency` is evaluated when the job starts, and a context that
+    # can't be resolved there fails THAT JOB ONLY while `checks` stays
+    # green — exactly the "static checks ✓ / deploy ✗" shape we were
+    # debugging. Removing `matrix` from the expression eliminates that as
+    # a possible cause at no real cost: with one bench the per-bench group
+    # bought nothing, and this still stops two deploy runs overlapping.
+    # If a second bench is added and per-bench lanes are genuinely wanted,
+    # re-introduce it deliberately and watch the first run.
     concurrency:
-      group: deploy-ury-${{ matrix.bench }}
+      group: deploy-ury-${{ github.ref }}
       cancel-in-progress: false
 
     # Name each job after its bench: "deploy (frappe-bench-landing)".
     name: deploy (${{ matrix.bench }})
 
     steps:
+      # ── PRE-FLIGHT: are the secrets actually there? ──────────
+      # Without this, a missing or truncated secret surfaces as an opaque
+      # ssh-action failure ("missing address", "ssh: handshake failed")
+      # that reads like a server problem rather than a config one.
+      #
+      # Prints LENGTHS ONLY, never values. The length of the key is the
+      # useful bit: the single most common mistake is pasting the private
+      # key without its `-----BEGIN OPENSSH PRIVATE KEY-----` /
+      # `-----END ...-----` boundary lines, which yields a plausible-looking
+      # but unusable secret. A real ed25519 key is ~400+ characters.
+      - name: Verify deploy secrets are present
+        env:
+          H: ${{ secrets.SERVER_HOST }}
+          U: ${{ secrets.SERVER_USER }}
+          K: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          missing=""
+          [ -n "$H" ] || missing="$missing SERVER_HOST"
+          [ -n "$U" ] || missing="$missing SERVER_USER"
+          [ -n "$K" ] || missing="$missing SSH_PRIVATE_KEY"
+          if [ -n "$missing" ]; then
+            echo "✖ Missing repo secret(s):$missing"
+            echo "  Add them under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          echo "✔ all three deploy secrets are set"
+          echo "  SERVER_HOST     : ${#H} chars"
+          echo "  SERVER_USER     : ${#U} chars"
+          echo "  SSH_PRIVATE_KEY : ${#K} chars"
+          case "$K" in
+            *"BEGIN"*"PRIVATE KEY"*) echo "  key: has a BEGIN header" ;;
+            *) echo "  ⚠ key has NO 'BEGIN ... PRIVATE KEY' header — it was probably pasted without its boundary lines, which will fail the SSH handshake." ;;
+          esac
+
       # ── SSH in and run the deploy ────────────────────────────
       # The runner builds nothing — the SERVER pulls and builds. The
       # runner just opens an SSH session and runs the script below.
