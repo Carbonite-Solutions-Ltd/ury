@@ -14,6 +14,25 @@ def getTable(room):
     `merge_info` object for master tables that have an Active merge
     log, so the frontend can render the "Merged +N" badge without an
     extra round-trip. See CLAUDE.md "Fixes log" 2026-04-11.
+
+    **Ordering is NATURAL (numeric), not lexicographic.** Table names end
+    in a number ("MR-Tab 1" … "MR-Tab 30"), and a plain `ORDER BY t.name`
+    compares them as TEXT — so "MR-Tab 10" sorts before "MR-Tab 2" and
+    the grid read 1, 10, 11 … 19, 2, 20 … 29, 3, 30, 4. Table 3 ended up
+    near the bottom, which is confusing on a busy floor.
+
+    Sorting on the trailing digits fixes it for any prefix and any
+    starting number, so a room numbered 37-50 or 51-70 stays in order
+    too. `REGEXP_SUBSTR` anchors on the END of the name specifically so a
+    digit in the PREFIX can't hijack the sort (a room coded "R2-Tab 5"
+    must sort on 5, not 25). Names with no trailing number fall back to
+    999999 and sort alphabetically at the end.
+
+    The `NULLIF` is load-bearing and easy to drop by mistake:
+    `REGEXP_SUBSTR` returns an EMPTY STRING (not NULL) when nothing
+    matches, and `CAST('' AS UNSIGNED)` is 0 — so without it the COALESCE
+    never fires and a non-numeric name like "Bar Counter" sorts FIRST
+    instead of last.
     """
     branch_name = getBranch()
     tables = frappe.db.sql(
@@ -41,7 +60,12 @@ def getTable(room):
         WHERE t.branch = %s
           AND t.restaurant_room = %s
           AND (t.merged_into IS NULL OR t.merged_into = '')
-        ORDER BY t.name
+        ORDER BY
+            COALESCE(
+                CAST(NULLIF(REGEXP_SUBSTR(t.name, '[0-9]+$'), '') AS UNSIGNED),
+                999999
+            ),
+            t.name
         """,
         (branch_name, room),
         as_dict=True,
