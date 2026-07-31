@@ -625,6 +625,10 @@ const TableView = () => {
                         ? 0
                         : -1
                     }
+                    // The status word no longer sits on the card (see the
+                    // left-edge flag below), so carry it here — hover and
+                    // screen readers both get the full "name · status".
+                    title={`${table.name} · ${isOccupied ? 'Occupied' : 'Available'}`}
                     onClick={() => {
                       if (mergeMode) {
                         if (!mergeableInMergeMode) {
@@ -672,36 +676,57 @@ const TableView = () => {
                         </svg>
                       </div>
                     )}
+                    {/*
+                      STATUS FLAG — a colour bar down the card's left edge.
+
+                      It used to be an "Occupied"/"Available" Badge sitting
+                      beside the table name. At 5–6 columns a card is only
+                      ~150px wide inside its padding, and the name (~85px)
+                      plus that badge (~70px) doesn't fit — so every name
+                      truncated to "BG-Ta…" and the table NUMBER, the one
+                      thing a cashier scans for, was the part that got cut.
+
+                      A left-edge bar costs zero horizontal space on the
+                      name row and zero vertical height, so the name gets
+                      the full width back. Status is still over-determined
+                      elsewhere: the card's own background and border are
+                      colour-coded, occupied cards uniquely show "Started
+                      at" plus the Preview/Print row, the grid has a legend
+                      underneath, and the card carries a title tooltip.
+                    */}
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        'absolute left-0 top-0 bottom-0 w-1.5 rounded-l-md',
+                        isOccupied ? 'bg-amber-400' : 'bg-emerald-400'
+                      )}
+                    />
+
                     <div>
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <TableShapeIcon
-                            shape={table.table_shape || 'Rectangle'}
-                          />
-                          <span className="font-semibold text-sm sm:text-base text-gray-900 truncate">
-                            {table.name}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          {isMerged && (
-                            <Badge
-                              variant="default"
-                              className="bg-amber-500 hover:bg-amber-600 text-white flex items-center gap-1 px-2 py-0.5"
-                              title={`Merged from ${table.merge_source_count} table${table.merge_source_count === 1 ? '' : 's'}`}
-                            >
-                              <Merge className="w-3 h-3" />
-                              <span className="text-xs">
-                                +{table.merge_source_count}
-                              </span>
-                            </Badge>
-                          )}
-                          <Badge variant={isOccupied ? 'warning' : 'success'}>
-                            {isOccupied ? 'Occupied' : 'Available'}
+                      <div className="flex items-center gap-1.5 mb-2 pl-1">
+                        <TableShapeIcon
+                          shape={table.table_shape || 'Rectangle'}
+                        />
+                        {/* min-w-0 lets truncate work inside the flex row;
+                            it's a last resort now rather than the norm. */}
+                        <span className="font-bold text-sm sm:text-base text-gray-900 truncate min-w-0 flex-1">
+                          {table.name}
+                        </span>
+                        {isMerged && (
+                          <Badge
+                            variant="default"
+                            className="shrink-0 bg-amber-500 hover:bg-amber-600 text-white flex items-center gap-1 px-1.5 py-0.5"
+                            title={`Merged from ${table.merge_source_count} table${table.merge_source_count === 1 ? '' : 's'}`}
+                          >
+                            <Merge className="w-3 h-3" />
+                            <span className="text-xs">
+                              +{table.merge_source_count}
+                            </span>
                           </Badge>
-                        </div>
+                        )}
                       </div>
 
-                      <div className="space-y-1 text-xs text-gray-700">
+                      <div className="space-y-1 text-xs text-gray-700 pl-1">
                         <div className="flex items-center justify-between">
                           <span className="font-medium">Room</span>
                           <span className="truncate ml-1">{table.restaurant_room}</span>

@@ -18,6 +18,7 @@ import {
   Menu,
   Phone,
   Edit,
+  AlertTriangle,
 } from 'lucide-react';
 import { Badge, Button, Card, CardContent } from '../components/ui';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../components/ui/dialog';
@@ -370,17 +371,32 @@ export default function Orders() {
     }
     setCancelLoading(true);
     try {
-      await call.post('ury.ury.doctype.ury_order.ury_order.cancel_order', {
+      const res = await call.post('ury.ury.doctype.ury_order.ury_order.cancel_order', {
         invoice_id: selectedOrder.name,
         reason: cancelReason
       })
-      showToast.success('Order cancelled successfully');
+      // Past the grace window the order is NOT cancelled yet - the
+      // kitchen has been asked and has to accept first. Saying
+      // "cancelled successfully" there would be a lie the cashier acts
+      // on: they'd walk away from a table whose bill is still open and
+      // now locked. See CLAUDE.md "Fixes log" 2026-07-31.
+      const mode = (res as { message?: { mode?: string } })?.message?.mode;
+      if (mode === 'request') {
+        showToast.info({
+          title: 'Sent to the kitchen',
+          description:
+            'The food may already be cooking, so the kitchen has to accept this. The order stays open and locked until they do.',
+        });
+      } else {
+        showToast.success('Order cancelled successfully');
+      }
       setCancelDialogOpen(false);
       setCancelReason('');
       clearSelectedOrder();
       fetchOrders();
     } catch (err) {
-      showToast.error(err instanceof Error ? err.message : 'Failed to cancel order');
+      const parsed = extractFrappeServerError(err, 'Failed to cancel order');
+      showToast.error({ title: parsed.title || 'Failed to cancel order', description: parsed.message });
     } finally {
       setCancelLoading(false);
     }
@@ -1132,6 +1148,32 @@ export default function Orders() {
                 </div>
               </div>
             )}
+            {/*
+              Cancellation sent, kitchen hasn't accepted yet (2026-07-31).
+              The order is locked until they do, so say so plainly and
+              name the way out - otherwise a cashier stares at a bill
+              with no Payment button and no explanation.
+            */}
+            {selectedOrder.custom_cancel_pending === 1 && (
+              <div className="mx-6 mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-amber-800">
+                  <AlertTriangle className="w-4 h-4" />
+                  Cancellation pending kitchen
+                </div>
+                <div className="mt-1 text-sm text-amber-900">
+                  {selectedOrder.cancel_reason && (
+                    <div>
+                      <span className="font-medium">Reason:</span>{' '}
+                      {selectedOrder.cancel_reason}
+                    </div>
+                  )}
+                  <div className="mt-1">
+                    This order can't be paid or edited until the kitchen
+                    accepts it on their screen.
+                  </div>
+                </div>
+              </div>
+            )}
             {/* Cancel Order Dialog */}
             <Dialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
               <DialogContent>
@@ -1437,7 +1479,17 @@ export default function Orders() {
                     can re-print) + the full-width Payment button.
                     Cashiers just see the Payment button.
                 */}
-                {(selectedOrder.status === 'Draft' || selectedOrder.status === 'Unbilled' || selectedOrder.status === 'Recently Paid') &&
+                {/*
+                  A cancellation waiting on the kitchen LOCKS the order
+                  (2026-07-31). Print and Payment are both hidden rather
+                  than disabled: the backend refuses either outright, so
+                  a clickable-but-failing button would just teach the
+                  cashier to ignore errors. The banner above says what to
+                  do instead. Chosen with no override on purpose - see
+                  the Fixes log for the trade-off.
+                */}
+                {selectedOrder.custom_cancel_pending === 1 ? null :
+                 (selectedOrder.status === 'Draft' || selectedOrder.status === 'Unbilled' || selectedOrder.status === 'Recently Paid') &&
                  selectedOrder.custom_charge_to_room !== 1 &&
                  String(selectedOrder.invoice_printed) === '0' ? (
                   <Button
@@ -1478,7 +1530,8 @@ export default function Orders() {
                         excluded — iHotel posts the real accounting
                         when the guest settles their folio at checkout. */}
                     {(selectedOrder.status === 'Draft' || selectedOrder.status === 'Unbilled' || selectedOrder.status === 'Recently Paid') &&
-                     selectedOrder.custom_charge_to_room !== 1 && (
+                     selectedOrder.custom_charge_to_room !== 1 &&
+                     selectedOrder.custom_cancel_pending !== 1 && (
                       <Button
                         className="flex-1"
                         onClick={() => setShowPaymentDialog(true)}

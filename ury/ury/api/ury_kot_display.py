@@ -638,6 +638,12 @@ def get_late_orders():
             k.creation                          AS kot_creation,
             k.user                              AS waiter,
             k.type                              AS kot_type,
+            k.cancel_status                     AS cancel_status,
+            k.cancel_scope                      AS cancel_scope,
+            k.cancel_reason                     AS cancel_reason,
+            k.cancel_items                      AS cancel_items,
+            k.cancel_requested_by               AS cancel_requested_by,
+            k.cancel_requested_at               AS cancel_requested_at,
             pi.customer_name                    AS customer_name,
             pi.grand_total                      AS grand_total,
             pi.posting_date                     AS posting_date,
@@ -942,3 +948,629 @@ def get_served_summary(production=None, date=None):
         "ticket_count": ticket_row[0].n if ticket_row else 0,
     }
 
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Cancellation grace window + POS → kitchen cancellation handshake
+#  (2026-07-31)
+# ══════════════════════════════════════════════════════════════════════
+#
+# THE PROBLEM THIS SOLVES. Cancelling an order used to leave the kitchen
+# guessing. `cancel_order` raised a "CNCL-" chit and cancelled the
+# originals, but (a) the whole call sat inside `try/except: pass`, so any
+# failure in that chain was silent and the card simply stayed on the
+# board, (b) the chit itself is `type = "Cancelled"`, which the board
+# query explicitly INCLUDES, so a new card appeared and lingered for the
+# full 3-hour window with nobody required to acknowledge it, and (c) the
+# reason lived on the invoice's `cancel_reason` and never reached the
+# cook at all.
+#
+# THE MODEL. Time decides who is in charge:
+#
+#   within the grace window   the food has not started. Cancelling
+#                             DELETES the ticket outright - the card
+#                             vanishes, no chit, nobody is interrupted.
+#
+#   after the grace window    the food may already be on the pass. A
+#                             captain can only REQUEST cancellation, with
+#                             a reason, and the kitchen must Accept before
+#                             anything is removed. The order is LOCKED
+#                             meanwhile so the POS and the kitchen cannot
+#                             disagree about what was actually served.
+#
+# The window is read from the URY Production Unit first and the POS
+# Profile second. The profile fallback is load-bearing rather than
+# decorative: in Menu Course KDS mode a KOT has NO production unit at
+# all, so a unit-only setting could never fire and the feature would
+# silently do nothing on those sites.
+#
+# This is deliberately a SEPARATE field set from `change_status` and
+# friends. That is the opposite direction (kitchen asks the waiter) and
+# the two can legitimately be in flight on the same KOT at once.
+
+DEFAULT_CANCEL_GRACE_MINUTES = 2
+
+# order_status the KDS board filters on. A cancelled ticket is parked on
+# a value that matches neither the active board ("Ready For Prepare") nor
+# the served list ("Served"), so it simply drops out. order_status is a
+# free-text Data field, so this needs no schema change - the same trick
+# `kitchen_ack_change` already uses for "Cancelled by Waiter".
+CANCELLED_BY_CAPTAIN = "Cancelled by Captain"
+
+
+def _profile_grace_minutes(pos_profile):
+    """POS Profile fallback window, or None.
+
+    Guarded with has_column because a site that has pulled the code but
+    not yet run `bench migrate` would otherwise throw on every cancel.
+    """
+    if not pos_profile:
+        return None
+    if not frappe.db.has_column("POS Profile", "custom_cancel_grace_minutes"):
+        return None
+    value = frappe.db.get_value(
+        "POS Profile", pos_profile, "custom_cancel_grace_minutes"
+    )
+    return int(value) if value else None
+
+
+def _unit_grace_minutes(production):
+    """URY Production Unit window, or None. Wins over the profile."""
+    if not production:
+        return None
+    if not frappe.db.has_column("URY Production Unit", "cancel_grace_minutes"):
+        return None
+    value = frappe.db.get_value(
+        "URY Production Unit", production, "cancel_grace_minutes"
+    )
+    return int(value) if value else None
+
+
+def _pick_grace_minutes(unit_minutes, profile_minutes):
+    """Unit setting wins, profile is the fallback, 2 if neither.
+
+    0/blank at either level means "not set", NOT "no grace". A zero
+    window would send every single cancellation through a kitchen
+    round-trip, which is not a thing anyone configures on purpose -
+    whereas leaving a field at its 0 default is something everyone does.
+
+    Pure so the precedence can be tested without a database.
+    """
+    return unit_minutes or profile_minutes or DEFAULT_CANCEL_GRACE_MINUTES
+
+
+def _grace_expired(created, now, grace_minutes):
+    """Has the window closed? Pure, so the boundary is testable.
+
+    Strictly greater-than: a ticket exactly ON the boundary is still
+    inside its window. The difference only matters for one instant, but
+    the rule should be stated rather than fallen into.
+    """
+    return (now - created).total_seconds() / 60.0 > grace_minutes
+
+
+def _cancel_grace_minutes(kot):
+    """Minutes this ticket may be deleted outright before the kitchen
+    has to be asked."""
+    return _pick_grace_minutes(
+        _unit_grace_minutes(kot.get("production")),
+        _profile_grace_minutes(kot.get("pos_profile")),
+    )
+
+
+def _kot_needs_kitchen_ack(kot, now=None):
+    """True when this ticket is past its grace window, so cancelling it
+    has to go through the kitchen instead of just deleting it."""
+    # A served ticket is out of the kitchen's hands whatever the clock
+    # says - the food reached the customer, so the kitchen is told
+    # regardless. (It is also the only way a sub-grace ticket can be
+    # served, but the rule stands on its own merit.)
+    if (kot.get("order_status") or "") == "Served":
+        return True
+
+    now = now or frappe.utils.now_datetime()
+    return _grace_expired(
+        get_datetime(kot.get("creation")), now, _cancel_grace_minutes(kot)
+    )
+
+
+def _live_kots_for_invoice(invoice):
+    """Submitted, not-yet-cancelled tickets for this invoice.
+
+    Excludes Duplicate (a reprint - cancelling it means nothing) and
+    Cancelled / Partially cancelled (already chits about a cancellation).
+    """
+    return frappe.get_all(
+        "URY KOT",
+        filters={
+            "invoice": invoice,
+            "docstatus": 1,
+            "type": ("in", ("New Order", "Order Modified")),
+            "order_status": ("not in", (CANCELLED_BY_CAPTAIN, "Cancelled by Waiter")),
+        },
+        fields=[
+            "name",
+            "creation",
+            "production",
+            "pos_profile",
+            "order_status",
+            "cancel_status",
+            "branch",
+        ],
+    )
+
+
+def _publish_cancel_to_kds(kot_row, event):
+    """Ping the KDS screens this ticket appears on so the cancellation
+    panel shows without waiting for the 30s poll.
+
+    Targeted per screen via the same helper the change-request loop uses:
+    an untargeted publish gets scoped by Frappe to the CALLING user's own
+    room, which is the captain's browser - precisely not the kitchen.
+    """
+    try:
+        branch = kot_row.get("branch") or frappe.db.get_value(
+            "URY KOT", kot_row["name"], "branch"
+        )
+        if not branch:
+            return
+        for target in _kot_kds_targets(kot_row["name"], kot_row.get("production")):
+            frappe.publish_realtime(
+                f"{event}_{branch}_{target}", {"kot": kot_row["name"]}
+            )
+    except Exception:
+        # Never let a realtime hiccup roll back the cancellation itself.
+        # Worst case the board picks it up on the next poll.
+        frappe.log_error(
+            frappe.get_traceback(), "URY: KDS cancel publish failed"
+        )
+
+
+def _require_captain():
+    """Cancelling after the grace window is a captain/manager call.
+
+    Mirrors the gate in `cancel_order` - the POS hides the control for a
+    cashier, and this is the half that actually enforces it.
+    """
+    if frappe.session.user == "Administrator":
+        return
+    roles = set(frappe.get_roles(frappe.session.user))
+    if not (roles & {"System Manager", "URY Manager", "URY Captain"}):
+        frappe.throw(
+            _("Only a captain or manager can cancel an order."),
+            title=_("Not Permitted"),
+        )
+
+
+@frappe.whitelist()
+def get_order_cancel_state(invoice):
+    """What the POS needs to know before offering a cancel control.
+
+    Returns `mode`:
+      "delete"   every live ticket is still inside its grace window, so
+                 cancelling removes it outright.
+      "request"  at least one ticket is past it - cancelling needs a
+                 reason and the kitchen's acceptance.
+      "pending"  a request is already in flight; the order is locked.
+      "none"     nothing is on the kitchen at all (no KOTs), so this is
+                 a plain invoice cancellation.
+
+    `grace_expires_in` is the seconds left on the SHORTEST remaining
+    window, so the POS can show a live countdown and flip the button
+    from Delete to Request without the cashier having to reload.
+    """
+    kots = _live_kots_for_invoice(invoice)
+    if not kots:
+        return {"invoice": invoice, "mode": "none", "kots": []}
+
+    if any((k.get("cancel_status") or "") == "Awaiting Kitchen" for k in kots):
+        pending = [k for k in kots if (k.get("cancel_status") or "") == "Awaiting Kitchen"]
+        first = frappe.db.get_value(
+            "URY KOT",
+            pending[0]["name"],
+            ["cancel_reason", "cancel_scope", "cancel_requested_by", "cancel_requested_at"],
+            as_dict=True,
+        )
+        return {
+            "invoice": invoice,
+            "mode": "pending",
+            "pending_count": len(pending),
+            "reason": (first or {}).get("cancel_reason"),
+            "scope": (first or {}).get("cancel_scope"),
+            "requested_by": (first or {}).get("cancel_requested_by"),
+            "requested_at": (first or {}).get("cancel_requested_at"),
+        }
+
+    now = frappe.utils.now_datetime()
+    remaining = []
+    needs_ack = False
+    for kot in kots:
+        if _kot_needs_kitchen_ack(kot, now=now):
+            needs_ack = True
+        else:
+            grace = _cancel_grace_minutes(kot)
+            elapsed = (now - get_datetime(kot["creation"])).total_seconds()
+            remaining.append(max(0, int(grace * 60 - elapsed)))
+
+    return {
+        "invoice": invoice,
+        "mode": "request" if needs_ack else "delete",
+        "kot_count": len(kots),
+        # None once anything has expired - there is no countdown left to
+        # show, the decision is already made.
+        "grace_expires_in": min(remaining) if remaining and not needs_ack else None,
+    }
+
+
+def request_order_cancellation(invoice, reason, kots=None):
+    """Park a whole-order cancellation on every live ticket and lock the
+    order. Called by `cancel_order` once it finds the grace window shut.
+    """
+    if not (reason or "").strip():
+        frappe.throw(
+            _("Give a reason - the kitchen is being asked to bin food that may already be cooking."),
+            title=_("Reason Required"),
+        )
+
+    kots = kots if kots is not None else _live_kots_for_invoice(invoice)
+    if not kots:
+        return {"invoice": invoice, "requested": 0}
+
+    stamp = {
+        "cancel_status": "Awaiting Kitchen",
+        "cancel_scope": "Order",
+        "cancel_reason": reason.strip(),
+        "cancel_items": None,
+        "cancel_requested_by": frappe.session.user,
+        "cancel_requested_at": frappe.utils.now(),
+        "cancel_accepted_by": None,
+        "cancel_accepted_at": None,
+    }
+    for kot in kots:
+        frappe.db.set_value("URY KOT", kot["name"], stamp, update_modified=False)
+        _publish_cancel_to_kds(kot, "kot_cancel_requested")
+
+    frappe.db.set_value(
+        "POS Invoice", invoice, "custom_cancel_pending", 1, update_modified=False
+    )
+    frappe.db.commit()
+    return {"invoice": invoice, "requested": len(kots), "mode": "request"}
+
+
+def _kots_carrying_items(invoice, item_codes):
+    """Map item_code → the live KOT names that actually contain it.
+
+    An order's items are split across tickets (per production unit, or
+    per course department), so "cancel 2x Fanta" has to find the BAR's
+    ticket and leave the kitchen's alone.
+    """
+    if not item_codes:
+        return {}
+    live = {k["name"]: k for k in _live_kots_for_invoice(invoice)}
+    if not live:
+        return {}
+    rows = frappe.get_all(
+        "URY KOT Items",
+        filters={"parent": ("in", list(live)), "item": ("in", list(item_codes))},
+        fields=["parent", "item"],
+    )
+    carried = {}
+    for row in rows:
+        carried.setdefault(row["item"], set()).add(row["parent"])
+    return carried
+
+
+def _finalize_invoice_cancellation(invoice, reason):
+    """Actually cancel the invoice once the kitchen has signed off.
+
+    Implemented with direct db writes rather than importing
+    `ury_order.cancel_order`: that module imports this one's siblings and
+    a back-import would be circular. These are the same six writes it
+    performs, minus the KOT handling, which the caller has already done.
+    """
+    table = frappe.db.get_value("POS Invoice", invoice, "restaurant_table")
+    if table:
+        frappe.db.set_value(
+            "URY Table", table, {"occupied": 0, "latest_invoice_time": None}
+        )
+
+    frappe.db.sql(
+        "UPDATE `tabPOS Invoice Item` SET docstatus = 2 WHERE parent = %s", (invoice,)
+    )
+    frappe.db.set_value(
+        "POS Invoice",
+        invoice,
+        {
+            "docstatus": 2,
+            "status": "Cancelled",
+            "cancel_reason": reason,
+            "custom_cancel_pending": 0,
+        },
+        update_modified=False,
+    )
+
+
+@frappe.whitelist()
+def kitchen_accept_cancellation(kot):
+    """The kitchen signs off on a cancellation it was asked to make.
+
+    Whole-order scope: this ticket leaves the board, and once EVERY
+    ticket on the invoice has been accepted the order itself is
+    cancelled. The last screen to accept is what releases it - a two-unit
+    order cancelled while the bar has acknowledged but the kitchen has
+    not is still, correctly, a live order.
+
+    Item scope: the listed lines come off this ticket and off the
+    invoice; the card stays with what is left, unless nothing is.
+    """
+    row = frappe.db.get_value(
+        "URY KOT",
+        kot,
+        ["name", "invoice", "cancel_status", "cancel_scope", "cancel_reason", "cancel_items", "production", "branch"],
+        as_dict=True,
+    )
+    if not row:
+        frappe.throw(_("That ticket no longer exists."), title=_("Not Found"))
+    if (row.cancel_status or "") != "Awaiting Kitchen":
+        frappe.throw(
+            _("There's no cancellation waiting on this ticket."),
+            title=_("Nothing to Accept"),
+        )
+
+    invoice = row.invoice
+    reason = row.cancel_reason or ""
+
+    accepted = {
+        "cancel_status": "Accepted",
+        "cancel_accepted_by": frappe.session.user,
+        "cancel_accepted_at": frappe.utils.now(),
+    }
+
+    if (row.cancel_scope or "Order") == "Items":
+        removals = json.loads(row.cancel_items or "[]")
+        _apply_item_removal(invoice, removals, kot_name=kot)
+        # The request is spent - clear it so the card reads normally
+        # again. The ticket itself carries on being cooked.
+        frappe.db.set_value(
+            "URY KOT",
+            kot,
+            dict(accepted, cancel_status="", cancel_scope=None, cancel_reason=None, cancel_items=None),
+            update_modified=False,
+        )
+        remaining = frappe.db.count("URY KOT Items", {"parent": kot})
+        if not remaining:
+            frappe.db.set_value(
+                "URY KOT", kot, "order_status", CANCELLED_BY_CAPTAIN, update_modified=False
+            )
+    else:
+        frappe.db.set_value(
+            "URY KOT",
+            kot,
+            dict(accepted, order_status=CANCELLED_BY_CAPTAIN),
+            update_modified=False,
+        )
+
+    # Release the invoice only when nothing is still waiting on a screen.
+    still_waiting = frappe.db.count(
+        "URY KOT",
+        {
+            "invoice": invoice,
+            "docstatus": 1,
+            "cancel_status": "Awaiting Kitchen",
+        },
+    )
+    finalized = 0
+    if not still_waiting:
+        if (row.cancel_scope or "Order") == "Items":
+            frappe.db.set_value(
+                "POS Invoice", invoice, "custom_cancel_pending", 0, update_modified=False
+            )
+        else:
+            _finalize_invoice_cancellation(invoice, reason)
+            finalized = 1
+
+    frappe.db.commit()
+    return {
+        "kot": kot,
+        "invoice": invoice,
+        "scope": row.cancel_scope or "Order",
+        "still_waiting": still_waiting,
+        "order_cancelled": finalized,
+    }
+
+
+def _apply_item_removal(invoice, removals, kot_name=None):
+    """Pull the requested quantities off the ticket AND the invoice.
+
+    Both sides move together on purpose. Taking the line off the KOT
+    alone would leave the customer billed for food nobody is cooking;
+    taking it off the invoice alone would leave the cook making
+    something nobody is paying for.
+    """
+    from frappe.utils import flt
+
+    wanted = {}
+    for entry in removals or []:
+        code = entry.get("item_code") or entry.get("item")
+        if not code:
+            continue
+        wanted[code] = wanted.get(code, 0) + flt(entry.get("quantity") or entry.get("qty") or 0)
+    if not wanted:
+        return
+
+    # ── invoice side FIRST ──
+    # Order matters. If the invoice save fails (a stale POS Opening
+    # Entry is the usual culprit, and it throws on ANY POS Invoice save)
+    # we must not already have stripped the lines off the ticket: the
+    # kitchen would stop cooking food the customer is still being billed
+    # for. Doing the throwing half first means a failure leaves both
+    # sides untouched and the whole acceptance aborts cleanly.
+    doc = frappe.get_doc("POS Invoice", invoice)
+    invoice_open = doc.docstatus == 0
+
+    if invoice_open:
+        keep, leftover = _plan_item_removal(doc.items, wanted)
+
+        if leftover and any(v > 0 for v in leftover.values()):
+            # Asked to pull more than the bill actually carries. Not
+            # fatal -- the intent is unambiguous -- but log it, because
+            # it means the POS and the invoice had drifted.
+            frappe.log_error(
+                f"Invoice {invoice}: asked to cancel more than was billed: {leftover}",
+                "URY: item cancellation over-asked",
+            )
+
+        if not keep:
+            # Every line pulled is a cancelled order, not a zero-value
+            # invoice -- ERPNext will not save one without items anyway.
+            _finalize_invoice_cancellation(invoice, _("All items cancelled"))
+        else:
+            # Always save: _plan_item_removal mutates qty in place on a
+            # partially-pulled row, so an unchanged row COUNT does not
+            # mean an unchanged invoice.
+            doc.items = keep
+            for idx, item in enumerate(doc.items, start=1):
+                item.idx = idx
+            doc.flags.ury_kitchen_accepted_removal = True
+            try:
+                doc.save(ignore_permissions=True)
+            except Exception:
+                frappe.throw(
+                    _(
+                        "Couldn't take those items off the bill, so the "
+                        "cancellation was not applied and nothing has "
+                        "changed. The underlying error was: {0}"
+                    ).format(str(frappe.get_traceback(with_context=False))[-300:]),
+                    title=_("Cancellation Not Applied"),
+                )
+    # A submitted invoice is settled -- there is nothing to pull off the
+    # bill, but the kitchen should still stop cooking, so fall through.
+
+    # ── ticket side ──
+    if kot_name:
+        for row in frappe.get_all(
+            "URY KOT Items",
+            filters={"parent": kot_name},
+            fields=["name", "item", "quantity"],
+        ):
+            if row["item"] not in wanted:
+                continue
+            # URY KOT Items.quantity is a Data field holding a string,
+            # not a Float - hence flt() rather than arithmetic on it.
+            left = flt(row["quantity"]) - wanted[row["item"]]
+            if left > 0:
+                frappe.db.set_value(
+                    "URY KOT Items", row["name"], "quantity", str(left), update_modified=False
+                )
+            else:
+                frappe.delete_doc(
+                    "URY KOT Items", row["name"], force=1, ignore_permissions=True
+                )
+
+
+def _plan_item_removal(items, wanted):
+    """Work out which invoice lines survive, and by how much.
+
+    Pure: takes the current rows and a {item_code: qty_to_pull} map,
+    returns (rows_to_keep, unfulfilled_budget). Splitting this out keeps
+    the arithmetic -- partial pulls, quantities spread across duplicate
+    rows, over-asking -- testable without standing up an invoice.
+
+    Mutates the qty on a partially-pulled row, which is what the caller
+    wants, but decides nothing about saving.
+    """
+    from frappe.utils import flt
+
+    keep, budget = [], dict(wanted)
+    for item in items:
+        take = budget.get(item.item_code, 0)
+        if take <= 0:
+            keep.append(item)
+            continue
+        if take >= flt(item.qty):
+            # Whole line goes; carry any excess to the next row with the
+            # same item code (an order can list the same item twice).
+            budget[item.item_code] = take - flt(item.qty)
+            continue
+        item.qty = flt(item.qty) - take
+        budget[item.item_code] = 0
+        keep.append(item)
+    return keep, budget
+
+
+@frappe.whitelist()
+def request_item_cancellation(invoice, items, reason=None):
+    """Captain pulls specific lines off a live order.
+
+    Inside the grace window the lines simply go. Past it the affected
+    tickets are parked as "Awaiting Kitchen" with the reason, and the
+    lines only come off once the kitchen accepts.
+    """
+    _require_captain()
+
+    removals = json.loads(items) if isinstance(items, str) else (items or [])
+    if not removals:
+        frappe.throw(_("Pick at least one item to cancel."), title=_("Nothing Selected"))
+
+    codes = {e.get("item_code") or e.get("item") for e in removals}
+    codes.discard(None)
+    carried = _kots_carrying_items(invoice, codes)
+    affected = sorted({name for names in carried.values() for name in names})
+
+    if not affected:
+        # Never reached a kitchen (no KOT carries it), so there is
+        # nothing to ask and nobody to tell.
+        _apply_item_removal(invoice, removals)
+        frappe.db.commit()
+        return {"invoice": invoice, "mode": "delete", "kots": []}
+
+    live = {k["name"]: k for k in _live_kots_for_invoice(invoice)}
+    now = frappe.utils.now_datetime()
+    past_grace = [n for n in affected if _kot_needs_kitchen_ack(live[n], now=now)]
+
+    if not past_grace:
+        for name in affected:
+            _apply_item_removal(invoice, removals, kot_name=name)
+            _publish_cancel_to_kds(live[name], "kot_cancel_requested")
+        frappe.db.commit()
+        return {"invoice": invoice, "mode": "delete", "kots": affected}
+
+    if not (reason or "").strip():
+        frappe.throw(
+            _("Give a reason - the kitchen is being asked to bin food that may already be cooking."),
+            title=_("Reason Required"),
+        )
+
+    payload = json.dumps(
+        [
+            {
+                "item_code": e.get("item_code") or e.get("item"),
+                "item_name": e.get("item_name"),
+                "quantity": e.get("quantity") or e.get("qty"),
+            }
+            for e in removals
+        ]
+    )
+    for name in past_grace:
+        frappe.db.set_value(
+            "URY KOT",
+            name,
+            {
+                "cancel_status": "Awaiting Kitchen",
+                "cancel_scope": "Items",
+                "cancel_reason": reason.strip(),
+                "cancel_items": payload,
+                "cancel_requested_by": frappe.session.user,
+                "cancel_requested_at": frappe.utils.now(),
+                "cancel_accepted_by": None,
+                "cancel_accepted_at": None,
+            },
+            update_modified=False,
+        )
+        _publish_cancel_to_kds(live[name], "kot_cancel_requested")
+
+    frappe.db.set_value(
+        "POS Invoice", invoice, "custom_cancel_pending", 1, update_modified=False
+    )
+    frappe.db.commit()
+    return {"invoice": invoice, "mode": "request", "kots": past_grace}

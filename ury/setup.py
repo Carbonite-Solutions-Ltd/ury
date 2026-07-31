@@ -108,6 +108,25 @@ def get_custom_fields():
 					"translatable": 0,
 				},
 				{
+					# Set while a captain's cancellation is waiting for the
+					# kitchen to Accept. The order is LOCKED in this state:
+					# sync_order and make_invoice both refuse, so the POS and
+					# the kitchen can never disagree about what was served.
+					# read_only because only the backend flips it.
+					"fieldname": "custom_cancel_pending",
+					"fieldtype": "Check",
+					"label": "Cancellation Pending Kitchen",
+					"insert_after": "cancel_reason",
+					"default": "0",
+					"allow_on_submit": 1,
+					"no_copy": 1,
+					"read_only": 1,
+					"print_hide": 1,
+					"in_standard_filter": 1,
+					"description": "1 while a captain's cancellation is waiting for the kitchen to Accept it. The order is LOCKED in this state - it cannot be paid or edited. Cleared when the kitchen accepts (the order is then cancelled) or when the request is withdrawn.",
+					"translatable": 0,
+				},
+				{
 					"fieldname": "waiter",
 					"fieldtype": "Data",
 					"label": "Waiter",
@@ -919,6 +938,20 @@ def get_custom_fields():
 				"default": "Menu Course",
 				"depends_on": "eval:doc.custom_print_mode != 'Disabled'",
 				"description": "Controls how URYMosaic groups KOTs into screens. Menu Course (default): one KOT per order, split by item course department; KDS URL is /URYMosaic/Food|Drinks|Other|All. ExPOS Production Unit: legacy multi-KOT-per-order flow split by Production Unit; KDS URL is /URYMosaic/<production-name>.",
+			},
+			{
+				# The FALLBACK grace window. An ExPOS Production Unit with its
+				# own Cancel Grace Window overrides this per unit. This value
+				# is what applies in Menu Course mode -- where a KOT has no
+				# production unit at all, so a unit-only setting could never
+				# fire -- and for any unit left at 0.
+				"fieldname": "custom_cancel_grace_minutes",
+				"fieldtype": "Int",
+				"insert_after": "custom_kds_routing_mode",
+				"label": "Cancel Grace Window (Minutes)",
+				"default": "2",
+				"non_negative": 1,
+				"description": "Default grace period, in minutes, during which cancelling an order simply DELETES it from the kitchen display - no cook is interrupted and no acknowledgement is needed. Once it expires the food may already be on, so a captain can only REQUEST cancellation with a reason and the kitchen must Accept before the order is removed. An ExPOS Production Unit with its own Cancel Grace Window overrides this; this value applies in Menu Course KDS mode, where tickets have no production unit, and for any unit that leaves its own setting at 0.",
 			},
 			{
 				"fieldname": "custom_service_policy_time",

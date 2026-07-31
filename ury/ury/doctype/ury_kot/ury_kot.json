@@ -50,7 +50,15 @@
   "change_resolved_by",
   "change_resolved_at",
   "change_response",
-  "served_at"
+  "served_at",
+  "cancel_status",
+  "cancel_scope",
+  "cancel_reason",
+  "cancel_items",
+  "cancel_requested_by",
+  "cancel_requested_at",
+  "cancel_accepted_by",
+  "cancel_accepted_at"
  ],
  "fields": [
   {
@@ -340,12 +348,67 @@
    "fieldtype": "Datetime",
    "label": "Served At",
    "description": "When the kitchen marked this KOT served (2026-07-16). Sortable, unlike the legacy `start_time_serv` which stores a locale time STRING. Drives the 'last served on top' ordering of the KDS served list + reinstate."
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "cancel_status",
+   "fieldtype": "Select",
+   "label": "Cancellation Status",
+   "options": "\nAwaiting Kitchen\nAccepted",
+   "in_standard_filter": 1,
+   "description": "POS → kitchen cancellation handshake (2026-07-31). Set to 'Awaiting Kitchen' when a captain cancels AFTER the grace window has closed, so the kitchen may already be cooking. The card stays on the board carrying the reason until the kitchen Accepts. DISTINCT from `change_status`, which is the opposite direction (kitchen asks the waiter) — the two can legitimately be in flight on the same KOT at once, which is why they are separate field sets."
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "cancel_scope",
+   "fieldtype": "Select",
+   "label": "Cancellation Scope",
+   "options": "\nOrder\nItems",
+   "description": "'Order' cancels the whole ticket — on Accept the card leaves the board. 'Items' pulls only the lines listed in `cancel_items` — on Accept the card stays with those lines removed."
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "cancel_reason",
+   "fieldtype": "Small Text",
+   "label": "Cancellation Reason",
+   "description": "Why the captain cancelled, typed in the POS. Shown on the KDS card — the cook is being told to bin food that may already be on the pass, so the reason is not optional."
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "cancel_items",
+   "fieldtype": "Small Text",
+   "label": "Cancelled Items (JSON)",
+   "description": "Scope='Items' only. JSON list of {item_code, item_name, quantity} being pulled. Stored as JSON rather than a child table because it is a short-lived request payload, not a record — once the kitchen Accepts, the lines are removed from `items` and this is cleared."
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "cancel_requested_by",
+   "fieldtype": "Data",
+   "label": "Cancellation Requested By"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "cancel_requested_at",
+   "fieldtype": "Datetime",
+   "label": "Cancellation Requested At"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "cancel_accepted_by",
+   "fieldtype": "Data",
+   "label": "Cancellation Accepted By"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "cancel_accepted_at",
+   "fieldtype": "Datetime",
+   "label": "Cancellation Accepted At"
   }
  ],
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-07-16 10:00:00.000000",
+ "modified": "2026-07-31 10:00:00.000000",
  "modified_by": "obed.odai@gmail.com",
  "module": "URY",
  "name": "URY KOT",

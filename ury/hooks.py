@@ -400,6 +400,8 @@ fixtures = [
                     "POS Closing Entry-custom_closed_by_non_captain",
                     "POS Invoice-custom_order_contact_name",
                     "POS Invoice-custom_order_contact_mobile",
+                    "POS Invoice-custom_cancel_pending",
+                    "POS Profile-custom_cancel_grace_minutes",
                     "POS Profile-custom_edit_order_type",
                     "Printer Settings-kot_print_format_",
                     "Printer Settings-kot",
