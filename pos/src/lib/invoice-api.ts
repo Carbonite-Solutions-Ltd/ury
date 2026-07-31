@@ -56,6 +56,9 @@ export interface POSInvoice {
    * come from iHotel's own checkout flow when the guest settles.
    */
   custom_charge_to_room?: number;
+  /** 1 while a captain's cancellation is with the kitchen. The order is
+   *  locked: it cannot be paid or edited until they accept. */
+  custom_cancel_pending?: number;
   /** iHotel Room the draft is tagged against (persists from Customer picker). */
   custom_hotel_room?: string | null;
   /** Take-away / delivery contact (optional, editable after the fact). */

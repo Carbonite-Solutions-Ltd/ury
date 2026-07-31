@@ -253,6 +253,66 @@
           </button>
         </div>
 
+        <!-- Captain -> kitchen cancellation (2026-07-31). Takes priority
+             over every other action: the order is LOCKED in the POS until
+             this is accepted, so nobody can pay that table until a cook
+             taps here. Shown as its own branch rather than another button
+             in the list so it cannot be missed on a busy board. -->
+        <div
+          v-else-if="actionKot && actionKot.cancel_status === 'Awaiting Kitchen'"
+          class="mt-5"
+        >
+          <div class="rounded border-2 border-[#DC2626] bg-[#FEF2F2] px-3 py-3">
+            <div class="font-bold text-[#991B1B] text-lg">
+              {{
+                actionKot.cancel_scope === "Items"
+                  ? "ITEMS CANCELLED"
+                  : "ORDER CANCELLED"
+              }}
+            </div>
+            <div
+              v-if="actionKot.cancel_scope === 'Items'"
+              class="mt-2 text-[#991B1B]"
+            >
+              <div
+                v-for="(it, i) in cancelledItems(actionKot)"
+                :key="i"
+                class="font-semibold"
+              >
+                • {{ it.quantity }}x {{ it.item_name || it.item_code }}
+              </div>
+            </div>
+            <div class="mt-2 text-[#991B1B]">
+              <span class="font-semibold">Reason:</span>
+              {{ actionKot.cancel_reason }}
+            </div>
+            <div class="mt-1 text-xs text-[#991B1B] italic">
+              Requested by {{ actionKot.cancel_requested_by }}
+            </div>
+          </div>
+          <button
+            type="button"
+            :disabled="acceptingCancel === actionKot.name"
+            @click="acceptCancellation(actionKot)"
+            class="mt-3 w-full py-3 rounded-md bg-[#DC2626] text-white font-semibold hover:bg-[#B91C1C] disabled:opacity-50"
+          >
+            {{
+              acceptingCancel === actionKot.name
+                ? "Accepting…"
+                : actionKot.cancel_scope === "Items"
+                ? "Accept & remove items"
+                : "Accept & remove order"
+            }}
+          </button>
+          <button
+            type="button"
+            @click="closeActions"
+            class="mt-2 w-full py-2 text-gray-600 hover:text-gray-800"
+          >
+            Close
+          </button>
+        </div>
+
         <div v-else class="mt-5 space-y-2">
           <button
             type="button"
@@ -535,9 +595,40 @@
                 </div>
               </div>
 
+              <!-- Captain -> kitchen cancellation (2026-07-31). Red and
+                   first, above the change-request panel: this is the cook
+                   being told to STOP, and the table cannot be paid until
+                   somebody accepts it. -->
+              <div
+                v-if="kot.cancel_status === 'Awaiting Kitchen'"
+                class="mt-3 rounded border-2 border-[#DC2626] bg-[#FEF2F2] px-2 py-2"
+              >
+                <div class="font-bold text-[#991B1B]">
+                  {{
+                    kot.cancel_scope === "Items"
+                      ? "ITEMS CANCELLED"
+                      : "ORDER CANCELLED"
+                  }}
+                </div>
+                <div
+                  v-if="kot.cancel_scope === 'Items'"
+                  class="text-[#991B1B] text-sm mt-1 font-semibold"
+                >
+                  <div v-for="(it, i) in cancelledItems(kot)" :key="i">
+                    • {{ it.quantity }}x {{ it.item_name || it.item_code }}
+                  </div>
+                </div>
+                <div class="text-[#991B1B] text-sm mt-1">
+                  Reason: {{ kot.cancel_reason }}
+                </div>
+                <div class="text-[#991B1B] text-xs mt-1 italic">
+                  Tap the card to accept.
+                </div>
+              </div>
+
               <!-- Kitchen -> waiter change request state (2026-07-16) -->
               <div
-                v-if="kot.change_status === 'Awaiting Confirmation'"
+                v-else-if="kot.change_status === 'Awaiting Confirmation'"
                 class="mt-3 rounded border-2 border-[#F59E0B] bg-[#FFFBEB] px-2 py-2"
               >
                 <div class="font-bold text-[#92400E]">
@@ -719,6 +810,7 @@ export default {
       draggingKot: null,
       dragOverKot: null,
       acceptingKot: null,
+      acceptingCancel: null,
       production: "",
       branch: "",
       kds_routing_mode: "Menu Course",
@@ -726,6 +818,7 @@ export default {
       // Realtime channel for a waiter's reply to a kitchen change request
       // (2026-07-23) — so the card updates without a manual reload.
       change_channel: "",
+      cancel_channel: "",
       clickedItems: new Set(),
       struckThroughItems: {},
       loggeduser: "",
@@ -817,6 +910,7 @@ export default {
               this.kds_routing_mode = msg.kds_routing_mode || "Menu Course";
               this.kot_channel = `kot_update_${this.branch}_${this.production}`;
               this.change_channel = `kot_change_resolved_${this.branch}_${this.production}`;
+              this.cancel_channel = `kot_cancel_requested_${this.branch}_${this.production}`;
               // Stamp the moment we received each KOT so the timer can tick
               // forward from the server-computed elapsed_seconds base.
               const fetchedAt = Date.now();
@@ -967,6 +1061,56 @@ export default {
         console.error(error);
       } finally {
         this.acceptingKot = null;
+      }
+    },
+
+    // --- Captain -> kitchen cancellation (2026-07-31) -----------------
+    // `cancel_items` is a JSON STRING on the KOT, not a child table, so it
+    // has to be parsed for display. Defensive: a malformed payload must
+    // never blank the whole card -- the reason and the Accept button
+    // matter far more than the itemised list.
+    cancelledItems(kot) {
+      if (!kot || !kot.cancel_items) return [];
+      try {
+        const parsed = JSON.parse(kot.cancel_items);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (error) {
+        console.error("bad cancel_items payload", error);
+        return [];
+      }
+    },
+
+    async acceptCancellation(kot) {
+      this.acceptingCancel = kot.name;
+      try {
+        const res = await this.call.post(
+          "ury.ury.api.ury_kot_display.kitchen_accept_cancellation",
+          { kot: kot.name }
+        );
+        const wholeOrder = (kot.cancel_scope || "Order") !== "Items";
+        this.closeActions();
+        if (wholeOrder) {
+          // Reuse the serve collapse animation so the card visibly
+          // leaves rather than blinking out.
+          kot.served = true;
+          setTimeout(() => {
+            kot.showDiv = true;
+            this.masonryLoading();
+          }, 620);
+        } else {
+          // Item scope: the ticket carries on with fewer lines, so
+          // re-fetch rather than patching the list by hand.
+          kot.cancel_status = "";
+          kot.cancel_reason = null;
+          kot.cancel_items = null;
+          await this.fetchKOT();
+          this.masonryLoading();
+        }
+        return res;
+      } catch (error) {
+        console.error(error);
+      } finally {
+        this.acceptingCancel = null;
       }
     },
 
@@ -1520,6 +1664,17 @@ export default {
           // cancel) → refresh so the card shows the response + the Accept
           // button without a manual reload. 2026-07-23.
           socket.on(this.change_channel, () => {
+            this.fetchKOT().then(() => {
+              this.masonryLoading();
+            });
+          });
+          // Captain -> kitchen cancellation (2026-07-31). Same targeted
+          // per-screen channel shape as the change loop: an untargeted
+          // publish gets scoped to the CALLING user's room, i.e. the
+          // captain's browser, which is exactly not the kitchen. Without
+          // this the cook only sees the cancellation on the next 30s
+          // poll -- and the table's bill is locked until they accept.
+          socket.on(this.cancel_channel, () => {
             this.fetchKOT().then(() => {
               this.masonryLoading();
             });

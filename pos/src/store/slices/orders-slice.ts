@@ -55,6 +55,9 @@ export interface POSInvoice {
   active_return_count?: number;
   /** iHotel: 1 when this draft has been charged to a hotel room. */
   custom_charge_to_room?: number;
+  /** 1 while a captain's cancellation is with the kitchen. The order is
+   *  locked: it cannot be paid or edited until they accept. */
+  custom_cancel_pending?: number;
   custom_hotel_room?: string | null;
   /** Take-away / delivery contact (optional, editable after the fact). */
   custom_order_contact_name?: string | null;

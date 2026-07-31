@@ -356,6 +356,8 @@ def sync_order(
         if existing:
             return frappe.get_doc("POS Invoice", existing).as_dict()
 
+    _assert_not_pending_cancellation(invoice)
+
     user_role = frappe.get_roles()
     posprofile = frappe.get_doc("POS Profile", pos_profile)
 
@@ -791,6 +793,42 @@ def cancel_order(invoice_id, reason):
             title=_("Not Permitted"),
         )
 
+    from ury.ury.api.ury_kot_display import (
+        _live_kots_for_invoice,
+        _kot_needs_kitchen_ack,
+        request_order_cancellation,
+    )
+
+    if frappe.db.get_value("POS Invoice", invoice_id, "custom_cancel_pending"):
+        frappe.throw(
+            _(
+                "A cancellation for this order is already with the kitchen. "
+                "It clears once they accept it."
+            ),
+            title=_("Already Pending"),
+        )
+
+    # ── grace window decides who is in charge (2026-07-31) ──
+    # Inside it the food has not started, so the ticket is simply
+    # deleted. Past it the kitchen may already be cooking, so they get
+    # asked and the order stays live until they accept. The two are
+    # evaluated PER TICKET: an order whose bar chit is 30s old and whose
+    # kitchen chit is 10min old deletes the former and asks about the
+    # latter, rather than making the bar acknowledge a drink it never
+    # started pouring.
+    kots = _live_kots_for_invoice(invoice_id)
+    now = frappe.utils.now_datetime()
+    needs_ack = [k for k in kots if _kot_needs_kitchen_ack(k, now=now)]
+    within_grace = [k for k in kots if k not in needs_ack]
+
+    _delete_kots_within_grace(within_grace)
+
+    if needs_ack:
+        # Order is NOT cancelled here. It is locked until the kitchen
+        # signs off, at which point kitchen_accept_cancellation finishes
+        # the job. Returning early is the whole point of the handshake.
+        return request_order_cancellation(invoice_id, reason, kots=needs_ack)
+
     pos_invoice = frappe.get_doc("POS Invoice", invoice_id)
 
     # Update table status
@@ -799,13 +837,6 @@ def cancel_order(invoice_id, reason):
         pos_invoice.restaurant_table,
         {"occupied": 0, "latest_invoice_time": None},
     )
-
-    try:
-        cancel_kot(invoice_id)
-
-    except Exception as e:
-        # If an exception occurs (e.g., "kot" app not found), it will be caught here without effecting execution
-        pass
 
     # Update invoice status
     frappe.db.sql("""
@@ -817,10 +848,86 @@ def cancel_order(invoice_id, reason):
     frappe.db.set_value("POS Invoice", invoice_id, "docstatus", 2)
     frappe.db.set_value("POS Invoice", invoice_id, "status", "Cancelled")
     frappe.db.set_value("POS Invoice", invoice_id, "cancel_reason", reason)
+    return {"invoice": invoice_id, "mode": "delete", "order_cancelled": 1}
+
+
+def _assert_not_pending_cancellation(invoice):
+    """Refuse to touch an order whose cancellation is with the kitchen.
+
+    Deliberately hard-gated with NO override (confirmed 2026-07-31). The
+    point is that the POS and the kitchen can never disagree about what
+    was served, and an override is exactly the hole through which they
+    would. The trade-off is real and worth knowing: if the KDS is
+    offline or unattended, this bill cannot be settled from the POS at
+    all. The escape hatch is the desk - clear `cancel_status` on the
+    URY KOT - which is why the message says so.
+    """
+    if not invoice:
+        return
+    if not frappe.db.has_column("POS Invoice", "custom_cancel_pending"):
+        return
+    if not frappe.db.get_value("POS Invoice", invoice, "custom_cancel_pending"):
+        return
+    frappe.throw(
+        _(
+            "This order is waiting for the kitchen to accept a cancellation, "
+            "so it can't be changed or paid right now. Ask the kitchen to "
+            "accept it on their screen. If the screen is down, clear "
+            "'Cancellation Status' on the order's {0} in the desk."
+        ).format(_("URY KOT")),
+        title=_("Cancellation Pending"),
+    )
+
+
+def _delete_kots_within_grace(kots):
+    """Take still-fresh tickets straight off the board.
+
+    No "CNCL-" chit is raised for these: nothing was started, so there
+    is nothing to tell anyone to stop doing, and the old behaviour of
+    always raising one is exactly what left a cancelled order sitting on
+    the kitchen display. The chit is still raised for tickets that were
+    physically PRINTED, because a cook holding paper needs paper to
+    cancel it - a card vanishing off a screen they cannot see does not
+    reach them.
+    """
+    for kot in kots or []:
+        printed = frappe.db.get_value("URY KOT", kot["name"], "kot_printed")
+        frappe.db.set_value(
+            "URY KOT",
+            kot["name"],
+            {"order_status": "Cancelled by Captain"},
+            update_modified=False,
+        )
+        if printed:
+            try:
+                _raise_cancel_chit(kot["name"])
+            except Exception:
+                # A failed courtesy chit must never block the
+                # cancellation itself. Logged rather than swallowed -
+                # the bare `except: pass` this replaces is what made the
+                # original bug invisible for so long.
+                frappe.log_error(
+                    frappe.get_traceback(), "URY: cancel chit failed"
+                )
+
+
+def _raise_cancel_chit(kot_name):
+    """Print-mode courtesy: a paper 'this is cancelled' ticket."""
+    kot = frappe.get_doc("URY KOT", kot_name)
+    chit = frappe.copy_doc(kot)
+    chit.type = "Cancelled"
+    chit.order_status = "Ready For Prepare"
+    chit.kot_printed = 0
+    chit.cancel_status = ""
+    chit.original_kot = kot_name
+    chit.insert(ignore_permissions=True)
+    chit.submit()
+
 
 # Method for URY POS
 @frappe.whitelist()
 def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDiscount=None, table=None, invoice=None, transaction_id=None):
+    _assert_not_pending_cancellation(invoice)
     order_type = invoice_name = frappe.get_value("POS Invoice", invoice, "order_type")
     invoice = get_order_invoice(table, invoice, order_type, "Payments")
 
