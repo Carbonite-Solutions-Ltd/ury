@@ -182,6 +182,29 @@ jobs:
     # version-16 (i.e. a merge) or the manual Run workflow button.
     if: github.event_name != 'pull_request'
 
+    # ── WHERE THE SECRETS LIVE ─────────────────────────────────
+    # SERVER_HOST / SERVER_USER / SSH_PRIVATE_KEY are ENVIRONMENT
+    # secrets, not repository secrets (Settings → Secrets and variables
+    # → Actions shows them under "Environment secrets"; the
+    # "Repository secrets" section is empty).
+    #
+    # Environment secrets are ONLY injected into a job that names that
+    # environment. Without this key every `secrets.*` below silently
+    # resolves to an EMPTY STRING — no warning, no error, just blank.
+    # That is exactly what happened on runs #10 and #12: the pre-flight
+    # printed `H:` `U:` `K:` all empty and the deploy never started.
+    #
+    # ⚠ The name must match the environment EXACTLY (case- and
+    # space-sensitive). Naming an environment that doesn't exist creates
+    # an empty one, which fails the same silent way.
+    #
+    # ⚠ Whatever protection rules the environment carries now apply to
+    # this job: "required reviewers" makes the deploy WAIT for approval,
+    # and a "deployment branches" restriction that excludes version-16
+    # fails it outright. Both are legitimate — just know that's where a
+    # pending/refused deploy would be coming from.
+    environment: "Deploy to all"
+
     # ── THE MATRIX = your bench registry ───────────────────────
     # One job runs PER row below. It's a single bench today, but the
     # matrix shape means adding the next one is just one more
@@ -243,8 +266,13 @@ jobs:
           [ -n "$U" ] || missing="$missing SERVER_USER"
           [ -n "$K" ] || missing="$missing SSH_PRIVATE_KEY"
           if [ -n "$missing" ]; then
-            echo "✖ Missing repo secret(s):$missing"
-            echo "  Add them under Settings → Secrets and variables → Actions."
+            echo "✖ Deploy secret(s) resolved EMPTY:$missing"
+            echo
+            echo "  Check Settings → Secrets and variables → Actions."
+            echo "  If they are listed under 'Environment secrets' rather than"
+            echo "  'Repository secrets', the job's 'environment:' key must name"
+            echo "  that environment EXACTLY — otherwise they resolve to empty"
+            echo "  with no warning. This job declares: Deploy to all"
             exit 1
           fi
           echo "✔ all three deploy secrets are set"
