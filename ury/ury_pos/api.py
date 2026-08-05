@@ -515,6 +515,45 @@ def _user_is_captain(user=None):
     return user == "Administrator" or bool(roles & captain_roles)
 
 
+def _user_can_close_shift(user=None):
+    """Who may close the day: **URY Manager only**, plus Administrator /
+    System Manager as a break-glass (2026-08-05).
+
+    Deliberately NARROWER than `_user_is_captain` - a URY Captain can no
+    longer close. This REVERSES the soft gate agreed on 2026-07-29,
+    which warned and recorded but never blocked. That reasoning was
+    built around a lone captain being unavailable; URY Manager is in
+    practice the widest of the three URY roles, so a hard gate here does
+    not strand a shift the way a captain-only rule would have.
+
+    ⚠ The risk that remains is POS Profile's `custom_daily_pos_close`.
+    With that ON, an unclosed previous day blocks the POS outright, so
+    "no manager last night" becomes "nobody can trade this morning".
+    Administrator and System Manager are retained precisely so that
+    state is recoverable from the desk. Do not remove them without
+    providing another way out.
+    """
+    user = user or frappe.session.user
+    if user == "Administrator":
+        return True
+    return bool(set(frappe.get_roles(user)) & {"System Manager", "URY Manager"})
+
+
+def _require_shift_closer():
+    """Hard gate on closing. The POS hides End Shift and the closing
+    dialog refuses, but this is the half that actually enforces it -
+    the endpoint is whitelisted and reachable directly."""
+    if not _user_can_close_shift():
+        frappe.throw(
+            _(
+                "Only an {0} can close the day. Closing counts the drawer "
+                "and consolidates this shift's sales into the accounts. "
+                "Ask a manager to close this shift."
+            ).format(_("URY Manager")),
+            title=_("Not Permitted"),
+        )
+
+
 def _excluded_from_blocking(transfer_rows, current_user):
     """Pure decision: given transfer rows [{invoice, status, to_user}],
     return the set of invoices that should NOT block `current_user`'s
@@ -2185,6 +2224,8 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
     See CLAUDE.md "Fixes log" 2026-04-10.
     """
     import json
+
+    _require_shift_closer()
 
     if isinstance(closing_amounts, str):
         try:

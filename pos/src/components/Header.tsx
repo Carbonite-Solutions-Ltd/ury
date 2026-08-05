@@ -24,6 +24,7 @@ import { clearSavedTerminal } from '../lib/terminal-api';
 import {
   canAccessDeskAndTerminalSwitch,
   canAccessSettings,
+  canCloseShift,
   isWaiterOnly,
 } from '../lib/role-utils';
 import { getCurrentPosOpenEntry } from '../lib/pos-opening-api';
@@ -333,13 +334,14 @@ const Header = () => {
                       Settings
                     </Button>
                   )}
-                  {/* End Shift is visible to every billing user — cashiers
-                      need it to close their own day. Hidden for waiter-only
-                      users: the cashier opens/closes the shift, not the
-                      waiter (2026-07-14). Opens the in-POS closing dialog for
-                      the user's current open entry. See CLAUDE.md "Fixes log"
-                      2026-04-09 for the in-POS closing flow. */}
-                  {!waiterMode && (
+                  {/* End Shift is ExPOS Manager only as of 2026-08-05
+                      (previously every billing user, with a soft warning
+                      for non-captains). Hidden rather than shown-and-
+                      refused: offering a control that always fails just
+                      teaches people to ignore errors. The dialog itself
+                      also refuses, which covers the other four routes into
+                      it. See CLAUDE.md "Fixes log" 2026-08-05. */}
+                  {!waiterMode && canCloseShift(user) && (
                     <Button
                       variant="ghost"
                       className="flex justify-start items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
