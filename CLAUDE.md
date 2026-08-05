@@ -284,6 +284,23 @@ Running record of bugs fixed and non-obvious traps discovered. Add new entries a
 - **Verified:** `tsc` **0 errors**; `eslint` **86 problems vs 87 on the committed baseline** — one FEWER (the `disabled` bug was also an eslint error), zero introduced; `yarn build` clean; and the POS re-checked in a real browser (Playwright) — Orders renders, the print dialog opens and the receipt still previews fully styled.
 - **`Spotlight.tsx` and `ui/example.tsx` are imported nowhere.** Left in place rather than deleted — removing someone's unwired work is a separate call.
 
+### 2026-08-05 — Logo missing from printed bills: relative image URLs have no base outside the browser
+- **Symptom (user):** after the stylesheet fix the receipt printed correctly but **the logo never appeared**. Suspected QZ "can't print images".
+- **It isn't an image-support problem — the image is never given a resolvable address.** The rendered format contains exactly one image:
+  ```html
+  <img class="r-logo" src="/files/logo.bmp"
+       onerror="this.parentNode.style.display='none'">
+  ```
+  `/files/logo.bmp` is **relative**. In the browser it resolves against the Frappe origin; in the standalone document handed to QZ there is no base at all, so it resolves to nothing. **And the format's own `onerror` hides the parent**, so the logo does not fail visibly — it silently vanishes, which is why this looked like "images don't print" rather than "one URL didn't resolve".
+- **Fix, in two parts, and the second is the one that matters for printing:**
+  1. `composePrintDocument` now emits `<base href="${window.location.origin}/">`, which fixes ADDRESSING.
+  2. New `inlinePrintImages()` rewrites every same-origin `<img src>` to a `data:` URI before the document is composed. A base href alone still leaves the renderer to fetch the file over HTTP and finish before the page is printed — a print that races an image fetch drops the logo **intermittently**, which is worse than dropping it every time because it reads as a printer fault. Inlining removes the fetch entirely.
+- **Wired at the single fetch point** (`getInvoicePrintParts`), so the QZ path, the split-receipt loop and the admin preview all get self-contained documents and a future caller cannot forget — the same mistake that hid the missing stylesheet for so long.
+- **Best-effort by design:** an image that can't be fetched keeps its original `src`, so behaviour is never worse than before. Uses `credentials: 'same-origin'` so `/files/*` behind Frappe's session check is readable, and literal split/join rather than a RegExp because a file path can contain regex metacharacters.
+- **Verified in a real browser:** the preview document grew 17,906 → **68,405 chars** (the embedded base64) and the logo renders above the header bar.
+- **Config note for the client:** the logo is a **`.bmp`**, which is why the inlined payload is ~50 KB of base64 on every print. A PNG would be substantially smaller for identical output.
+- **Frontend-only → redeploy the `pos/` build. No migrate, no restart.**
+
 ### 2026-08-05 — THE print bug: the format was always right, its CSS was being thrown away
 - **Symptom (user):** the POS bill "does not give that format which is supposed to give when printing in the desk". Same invoice, same format name, completely different output.
 - **The diagnostic dialog built the day before is what found it.** It showed the format resolving CORRECTLY (`POS Landing Receipt Print Format`, from POS Profile `Airport`) while rendering the receipt as **unstyled plain text** — next to a desk printview of the same invoice that was fully styled. That pair of screenshots isolated it instantly: not a resolution problem, a rendering one.
