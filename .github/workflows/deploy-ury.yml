@@ -158,6 +158,27 @@ jobs:
           yarn install
           yarn build
 
+      # GATING, and it is the step that would have caught the 2026-08-05
+      # white screen before it ever reached a build.
+      #
+      # `yarn build` is `vite build`, which strips types without checking
+      # them, so a genuine type error still produces a green build and a
+      # broken page. On that day a single wrong identifier
+      # (`storePosProfile`, which does not exist in Orders.tsx) shipped and
+      # blanked /pos/orders, because React 19 unmounts the whole tree on an
+      # uncaught render error.
+      #
+      # ⚠ USE `-p tsconfig.app.json`. A bare `tsc --noEmit` checks NOTHING
+      # here: the root tsconfig is solution-style (`"files": []` +
+      # `references`), so without -p or -b it compiles zero files and exits
+      # 0. That false negative is exactly what let the bug through.
+      #
+      # Runs AFTER the build step because that is what installs node_modules.
+      # Safe to gate: the suite was brought to 0 errors on 2026-08-05.
+      - name: TypeScript
+        working-directory: pos
+        run: npx tsc -p tsconfig.app.json --noEmit
+
       # Non-blocking on purpose: there are pre-existing lint errors in the
       # POS, so gating would paint this red from day one and train everyone
       # to ignore it. Still surfaces NEW problems as annotations. Flip to a
