@@ -14,7 +14,7 @@
  * driver is actually sending).
  */
 
-import React, { useMemo } from 'react';
+import { useMemo } from 'react';
 import { Trash2, ChevronDown, ChevronUp, Radio, AlertCircle, ArrowRight, ArrowLeft } from 'lucide-react';
 import type { DebugMessage, BiometricConnectionState, BiometricDeviceInfo } from '../lib/biometric-client';
 import { Button } from './ui/button';

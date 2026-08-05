@@ -30,7 +30,13 @@ export interface POSInvoice {
   total_taxes_and_charges: number;
   customer: string;
   customer_name?: string;
-  status: 'Draft' | 'Unbilled' | 'Recently Paid' | 'Paid' | 'Consolidated' | 'Return';
+  // Kept in step with POSInvoice['status'] in lib/invoice-api.ts.
+  // NOTE: that interface is DUPLICATED here and the two have drifted
+  // apart; 'Cancelled' was missing from both until 2026-08-05 even
+  // though the backend sets it on docstatus=2. De-duplicating them is
+  // worth doing but is a change of its own - the two field sets differ
+  // in both directions, so a blind merge would silently drop fields.
+  status: 'Draft' | 'Unbilled' | 'Recently Paid' | 'Paid' | 'Consolidated' | 'Return' | 'Cancelled';
   mobile_number: string;
   posting_date: string;
   rounded_total: number;

@@ -15,7 +15,7 @@ const Spotlight = () => {
 
   const filteredItems = menuItems.filter(item =>
     item.name.toLowerCase().includes(query.toLowerCase()) ||
-    item.category.toLowerCase().includes(query.toLowerCase())
+    item.course.toLowerCase().includes(query.toLowerCase())
   ).slice(0, 10);
 
   useEffect(() => {
@@ -96,13 +96,13 @@ const Spotlight = () => {
                 )}
               >
                 <img
-                  src={item.image}
+                  src={item.image ?? undefined}
                   alt={item.name}
                   className="w-12 h-12 object-cover rounded mr-4"
                 />
                 <div className="flex-1 text-left">
                   <div className="font-medium">{item.name}</div>
-                  <div className="text-sm text-gray-500">{item.category}</div>
+                  <div className="text-sm text-gray-500">{item.course}</div>
                 </div>
                 <div className="text-right">
                   <div className="font-medium">₹{item.price}</div>

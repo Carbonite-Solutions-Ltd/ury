@@ -535,7 +535,7 @@ function PinDigitInput({ value, onChange, label, autoFocus }: PinDigitInputProps
       refs.current[idx - 1]?.focus();
     }
   };
-  const handlePaste = (idx: number, e: React.ClipboardEvent<HTMLInputElement>) => {
+  const handlePaste = (_idx: number, e: React.ClipboardEvent<HTMLInputElement>) => {
     const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
     if (pasted.length > 1) {
       e.preventDefault();

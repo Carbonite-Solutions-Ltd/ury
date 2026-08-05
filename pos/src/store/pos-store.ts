@@ -148,7 +148,7 @@ interface POSState {
   ihotelProfile: string | null;
 }
 
-interface POSStore extends POSState {
+export interface POSStore extends POSState {
   fetchMenuItems: () => Promise<void>;
   fetchAggregatorMenu: (aggregator: string) => Promise<void>;
   fetchCategories: () => Promise<void>;

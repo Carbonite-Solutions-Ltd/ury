@@ -1,5 +1,5 @@
 import { call } from './frappe-sdk';
-import { OrderType } from '../data/order-types';
+import { OrderType, OrderStatusType } from '../data/order-types';
 
 export interface POSInvoice {
   name: string;
@@ -13,7 +13,13 @@ export interface POSInvoice {
   total_taxes_and_charges: number;
   customer: string;
   customer_name?: string;
-  status: 'Draft' | 'Unbilled' | 'Recently Paid' | 'Paid' | 'Consolidated' | 'Return';
+  // The invoice's OWN status as returned by the backend. Distinct from
+  // OrderStatusType, which is the sidebar FILTER and additionally carries
+  // pseudo-statuses ('Pending KOTs', 'Room Charges', 'Incoming Transfers')
+  // that no invoice ever literally has. 'Cancelled' was missing here even
+  // though the backend sets it on docstatus=2, so Orders.tsx's check for
+  // it was flagged as a comparison that could never match.
+  status: 'Draft' | 'Unbilled' | 'Recently Paid' | 'Paid' | 'Consolidated' | 'Return' | 'Cancelled';
   mobile_number: string;
   posting_date: string;
   rounded_total: number;
@@ -171,7 +177,8 @@ interface GetPOSInvoicesResponse {
 }
 
 interface GetPOSInvoicesParams {
-  status: POSInvoice['status'];
+  /** Sidebar filter, not an invoice status - see the note on POSInvoice.status. */
+  status: OrderStatusType;
   limit?: number;
   limit_start?: number;
   paid_limit?: number;
