@@ -23,9 +23,24 @@
     "noUncheckedSideEffectImports": true
   },
   "include": ["src"],
-  // The service worker is a WebWorker context (its own globals: self as
-  // ServiceWorkerGlobalScope, __WB_MANIFEST, etc.) that conflicts with the
-  // app's DOM lib. It's compiled separately by vite-plugin-pwa's
-  // injectManifest build, not by the app tsc, so exclude it here.
-  "exclude": ["src/sw.ts"]
+  "exclude": [
+    // The service worker is a WebWorker context (its own globals: self as
+    // ServiceWorkerGlobalScope, __WB_MANIFEST, etc.) that conflicts with the
+    // app's DOM lib. It's compiled separately by vite-plugin-pwa's
+    // injectManifest build, not by the app tsc, so exclude it here.
+    "src/sw.ts",
+
+    // The QZ Tray signing-key placeholder is deliberately NOT valid
+    // TypeScript (the real key is injected per deployment and never
+    // committed). Leaving it in the program was actively harmful, not
+    // merely noisy: its SYNTAX errors abort the compiler before semantic
+    // analysis, so NO type error anywhere in src was ever reported.
+    // `tsc` looked green while checking nothing.
+    //
+    // That is how `storePosProfile is not defined` reached a build and
+    // white-screened /pos/orders on 2026-08-05 - ESLint does not flag
+    // undefined identifiers in TS either, so both gates silently passed.
+    // ESLint already ignores this file; the typechecker must too.
+    "src/privateKey.ts"
+  ]
 }

@@ -11,6 +11,9 @@ export interface PosProfileLimited {
   warehouse: string;
   cashier: string;
   print_format: string | null;
+  /** False when print_format is blank OR names a format that no longer
+   *  exists - Frappe silently renders the Standard layout for both. */
+  print_format_exists?: boolean;
   qz_print: number;
   qz_host: string | null;
   printer: string | null;
@@ -158,6 +161,11 @@ export interface PosProfileFull {
   applicable_for_users?: PosProfileUser[];
   payments?: PosProfilePayment[];
   custom_enable_multiple_cashier?: 0 | 1;
+  // Custom fields present on the full POS Profile doc. Declared here
+  // because getCombinedPosProfile reads them off `fullProfile` as the
+  // fallback when the limited response omits them.
+  custom_shift_hours?: number;
+  custom_block_orders_after_shift_end?: number;
 }
 
 // Combined POS Profile with both limited and full fields
@@ -166,6 +174,9 @@ export interface PosProfileCombined extends PosProfileFull {
   waiter: string;
   cashier: string;
   print_format: string | null;
+  /** False when print_format is blank OR names a format that no longer
+   *  exists - Frappe silently renders the Standard layout for both. */
+  print_format_exists?: boolean;
   qz_print: number;
   qz_host: string | null;
   printer: string | null;
@@ -180,6 +191,10 @@ export interface PosProfileCombined extends PosProfileFull {
   custom_daily_pos_close?: number;
   custom_shift_hours?: number;
   custom_block_orders_after_shift_end?: number;
+  /** Waiter picker on order submit + the Waiters nav entry. */
+  custom_use_waiter?: number;
+  /** Total prints a cashier gets per bill; captains are unlimited. */
+  custom_max_bill_prints?: number;
   custom_restrict_merge_to_captain?: number;
   custom_restrict_returns_to_captain?: number;
   custom_enable_returns?: number;
@@ -271,6 +286,7 @@ export async function getCombinedPosProfile(
     waiter: limitedProfile.waiter,
     cashier: limitedProfile.cashier,
     print_format: limitedProfile.print_format,
+    print_format_exists: limitedProfile.print_format_exists,
     qz_print: limitedProfile.qz_print,
     qz_host: limitedProfile.qz_host,
     printer: limitedProfile.printer,

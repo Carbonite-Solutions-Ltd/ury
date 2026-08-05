@@ -10,8 +10,8 @@ import {
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { showToast } from './ui/toast';
-import { usePOSStore } from '../store/pos-store';
-import { useRootStore } from '../store/root-store';
+import { usePOSStore, type POSStore } from '../store/pos-store';
+import { useRootStore, type RootState } from '../store/root-store';
 import { logout } from '../lib/auth-api';
 import {
   createAndSubmitPOSOpening,
@@ -170,8 +170,8 @@ const POSOpeningDialog = ({ type, onOpened, unclosedEntry }: POSOpeningDialogPro
  * in its own component so the early-return for `closing` stays clean.
  */
 interface OpeningBranchProps {
-  posProfile: ReturnType<typeof usePOSStore>['posProfile'];
-  user: ReturnType<typeof useRootStore>['user'];
+  posProfile: POSStore['posProfile'];
+  user: RootState['user'];
   terminalName: string | null;
   onOpened: () => void;
 }

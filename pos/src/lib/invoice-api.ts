@@ -1,5 +1,5 @@
 import { call } from './frappe-sdk';
-import { OrderType } from '../data/order-types';
+import { OrderType, OrderStatusType } from '../data/order-types';
 
 export interface POSInvoice {
   name: string;
@@ -13,7 +13,13 @@ export interface POSInvoice {
   total_taxes_and_charges: number;
   customer: string;
   customer_name?: string;
-  status: 'Draft' | 'Unbilled' | 'Recently Paid' | 'Paid' | 'Consolidated' | 'Return';
+  // The invoice's OWN status as returned by the backend. Distinct from
+  // OrderStatusType, which is the sidebar FILTER and additionally carries
+  // pseudo-statuses ('Pending KOTs', 'Room Charges', 'Incoming Transfers')
+  // that no invoice ever literally has. 'Cancelled' was missing here even
+  // though the backend sets it on docstatus=2, so Orders.tsx's check for
+  // it was flagged as a comparison that could never match.
+  status: 'Draft' | 'Unbilled' | 'Recently Paid' | 'Paid' | 'Consolidated' | 'Return' | 'Cancelled';
   mobile_number: string;
   posting_date: string;
   rounded_total: number;
@@ -171,7 +177,8 @@ interface GetPOSInvoicesResponse {
 }
 
 interface GetPOSInvoicesParams {
-  status: POSInvoice['status'];
+  /** Sidebar filter, not an invoice status - see the note on POSInvoice.status. */
+  status: OrderStatusType;
   limit?: number;
   limit_start?: number;
   paid_limit?: number;
@@ -441,9 +448,32 @@ export async function searchPosInvoice(
   }
 }
 
-export async function getInvoicePrintHtml(invoiceId: string, printFormat: string) {
+export interface InvoicePrintParts {
+  html: string;
+  style: string;
+}
+
+/**
+ * The raw two halves of a rendered print format.
+ *
+ * `frappe.www.printview.get_html_and_style` returns BOTH `html` and
+ * `style`, and the style is where essentially all of the receipt's
+ * appearance lives — on a real POS format it is roughly three times the
+ * size of the markup (12,998 vs 4,770 chars measured on
+ * "POS Landing Receipt Print Format").
+ *
+ * This used to return `message.html` alone and silently drop the style,
+ * which is why a bill printed from the POS came out as unstyled plain
+ * text while the same invoice printed from the desk looked correct: the
+ * FORMAT was resolving fine all along, its CSS just never left the
+ * server. See CLAUDE.md "Fixes log" 2026-08-05.
+ */
+export async function getInvoicePrintParts(
+  invoiceId: string,
+  printFormat: string
+): Promise<InvoicePrintParts> {
   try {
-    const response = await call.get<{ message: { html: string } }>(
+    const response = await call.get<{ message: InvoicePrintParts }>(
       'frappe.www.printview.get_html_and_style',
       {
         doc: 'POS Invoice',
@@ -455,12 +485,42 @@ export async function getInvoicePrintHtml(invoiceId: string, printFormat: string
         settings:{}
       }
     );
-    return response.message.html;
+    return {
+      html: response.message?.html ?? '',
+      style: response.message?.style ?? '',
+    };
   } catch (error) {
     console.error('Error fetching invoice print HTML:', error);
     throw new Error('Failed to fetch invoice print HTML');
   }
-} 
+}
+
+/**
+ * Assemble a self-contained document QZ (or an iframe) can render.
+ *
+ * `prefixHtml` is injected INSIDE <body>, above the receipt — the split
+ * banner needs to be part of the document, not concatenated in front of
+ * its doctype.
+ */
+export function composePrintDocument(
+  parts: InvoicePrintParts,
+  prefixHtml = ''
+): string {
+  return [
+    '<!DOCTYPE html>',
+    '<html><head><meta charset="utf-8">',
+    `<style>${parts.style}</style>`,
+    '</head><body>',
+    prefixHtml,
+    parts.html,
+    '</body></html>',
+  ].join('');
+}
+
+/** Convenience: fetch and compose in one step. */
+export async function getInvoicePrintHtml(invoiceId: string, printFormat: string) {
+  return composePrintDocument(await getInvoicePrintParts(invoiceId, printFormat));
+}
 
 export async function networkPrint(orderId: string, printer: string, printFormat: string) {
   await call.post('ury.ury.api.ury_print.network_printing', {

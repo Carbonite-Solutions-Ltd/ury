@@ -407,6 +407,7 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
         <div className="flex rounded-lg border border-gray-200 p-0.5 bg-gray-50 text-xs font-medium">
           <button
             type="button"
+            disabled={disabled}
             onClick={() => {
               setMode('walkin');
               // Clear any pending hotel state when switching back.
@@ -425,6 +426,7 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
           </button>
           <button
             type="button"
+            disabled={disabled}
             onClick={() => setMode('hotel')}
             className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md transition-colors ${
               mode === 'hotel'
@@ -449,8 +451,8 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
             </p>
           </div>
           <Button
+            disabled={disabled || isUpdatingOrder}
             onClick={resetCustomerAndRoom}
-            disabled={isUpdatingOrder}
             variant="ghost"
             size="sm"
             className="text-amber-700 hover:text-amber-800"
@@ -470,7 +472,8 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
               </p>
             </div>
             <Button
-              onClick={resetCustomerAndRoom}
+              disabled={disabled}
+            onClick={resetCustomerAndRoom}
               variant="ghost"
               size="sm"
               className="text-amber-700 hover:text-amber-800"
@@ -500,6 +503,7 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
                 <button
                   key={room.profile}
                   type="button"
+                  disabled={disabled}
                   onClick={() => commitRoomSelection(room)}
                   className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-amber-50 transition-colors border-b border-gray-100 last:border-b-0"
                 >
@@ -525,8 +529,8 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
             <p className="text-sm text-blue-700">{selectedCustomer.phone}</p>
           </div>
           <Button
+            disabled={disabled || isUpdatingOrder}
             onClick={resetCustomerAndRoom}
-            disabled={isUpdatingOrder}
             variant="ghost"
             size="sm"
             className="text-blue-700 hover:text-blue-800"
@@ -538,6 +542,7 @@ export function CustomerSelect({ disabled }: CustomerSelectProps) {
         <div className="relative">
           <div className="flex items-center relative">
             <input
+              disabled={disabled}
               ref={inputRef}
               type="text"
               value={searchTerm}

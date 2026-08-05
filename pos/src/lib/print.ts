@@ -1,6 +1,8 @@
 import { printWithQz } from './print-qz';
 import {
+  composePrintDocument,
   getInvoicePrintHtml,
+  getInvoicePrintParts,
   networkPrint,
   selectNetworkPrinter,
   updatePrintStatus
@@ -163,12 +165,16 @@ export async function printSplitReceipts({
 
   if (newQz || (!newDisabled && qz_print === 1)) {
     const qzHost = qz_host || 'localhost';
-    const html = await getInvoicePrintHtml(orderId, print_format as string);
+    // Fetch the parts ONCE and recompose per receipt. The banner has to
+    // go inside <body> now that the document carries the format's own
+    // <style> — concatenating it in front of the doctype would put it
+    // outside the document entirely.
+    const parts = await getInvoicePrintParts(orderId, print_format as string);
     const billPrinter = (custom_bill_printer || printer || null) as string | null;
     for (const receipt of receipts) {
       const banner = buildSplitBanner(receipt, receipts.length);
       // eslint-disable-next-line no-await-in-loop -- jobs must not interleave
-      await printWithQz(qzHost, banner + html, billPrinter);
+      await printWithQz(qzHost, composePrintDocument(parts, banner), billPrinter);
     }
     await markPrintedSafe(orderId);
     return 'qz';

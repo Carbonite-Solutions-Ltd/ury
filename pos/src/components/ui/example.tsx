@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Button, Input, Select, Badge, Card, CardHeader, CardTitle, CardDescription, CardContent, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './index';
+import { useState } from 'react';
+import { Button, Input, Select, SelectItem, Badge, Card, CardHeader, CardTitle, CardDescription, CardContent, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './index';
 
 export const UIExample = () => {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -92,20 +92,18 @@ export const UIExample = () => {
               <label className="block text-sm font-medium mb-2">Default Select</label>
               <Select 
                 value={selectValue}
-                onChange={(e) => setSelectValue(e.target.value)}
+                onValueChange={setSelectValue}
               >
-                <option value="">Select an option</option>
-                <option value="option1">Option 1</option>
-                <option value="option2">Option 2</option>
-                <option value="option3">Option 3</option>
+                                <SelectItem value="option1">Option 1</SelectItem>
+                <SelectItem value="option2">Option 2</SelectItem>
+                <SelectItem value="option3">Option 3</SelectItem>
               </Select>
             </div>
             <div>
               <label className="block text-sm font-medium mb-2">Error Select</label>
               <Select variant="error">
-                <option value="">Select an option</option>
-                <option value="option1">Option 1</option>
-                <option value="option2">Option 2</option>
+                                <SelectItem value="option1">Option 1</SelectItem>
+                <SelectItem value="option2">Option 2</SelectItem>
               </Select>
             </div>
           </div>

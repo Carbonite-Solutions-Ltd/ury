@@ -80,7 +80,7 @@ function PinDigits({
   const onCellKey = (idx: number, e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Backspace' && !digits[idx] && idx > 0) refs.current[idx - 1]?.focus();
   };
-  const onPaste = (idx: number, e: React.ClipboardEvent<HTMLInputElement>) => {
+  const onPaste = (_idx: number, e: React.ClipboardEvent<HTMLInputElement>) => {
     const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
     if (pasted.length > 1) {
       e.preventDefault();
