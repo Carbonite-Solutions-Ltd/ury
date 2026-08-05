@@ -284,3 +284,34 @@ export const canSkipPhysicalPrint = (user: User | null): boolean => {
   if (!user.roles) return false;
   return user.roles.includes('System Manager');
 };
+
+/**
+ * Who may close the day (2026-08-05).
+ *
+ * DELIBERATELY NARROWER than `isCaptainOrAbove`: **ExPOS Manager only**,
+ * plus Administrator / System Manager as a break-glass. Captains and
+ * cashiers can no longer close.
+ *
+ * This REVERSES the soft gate agreed on 2026-07-29, which warned and
+ * recorded but never blocked. That warning was written around a single
+ * captain being unavailable; in practice URY Manager is the widest of
+ * the three URY roles, so a hard gate does not strand a shift the way
+ * a captain-only rule would have.
+ *
+ * ⚠ THE ONE THING THAT MAKES THIS DANGEROUS is POS Profile's
+ * `custom_daily_pos_close`. With that on, an unclosed previous day
+ * blocks the POS entirely - so "no manager was around last night"
+ * becomes "nobody can trade this morning". Administrator and System
+ * Manager are kept here precisely so that state is recoverable. Do not
+ * remove them without providing another way out.
+ *
+ * Backend `submit_pos_closing_entry` enforces the same list; this is
+ * the UI half.
+ */
+export const canCloseShift = (user: User | null): boolean => {
+  if (!user) return false;
+  if (user.name === 'Administrator') return true;
+  return user.roles.some((r) =>
+    ['System Manager', 'URY Manager'].includes(r)
+  );
+};
