@@ -72,7 +72,20 @@ function parseLoopTimerToMs(val: unknown): number {
   return DEFAULT_DWELL_MS;
 }
 
+// Whether the settings lookup has already been answered this session.
+//
+// `POS Dual Screen Settings` is a customer-specific doctype that is NOT
+// part of this app, so on most sites it does not exist and every field
+// lookup 404s. Without this latch that cost SEVEN failed requests every
+// time initPosDisplay ran - and it ran repeatedly, because `initialized`
+// below is only set when shouldRun() is true, so a site without the
+// doctype never latched and re-probed on every App effect pass. The
+// result was a console full of DoesNotExistError that buried real
+// errors and made a blank screen much harder to diagnose (2026-08-05).
+let settingsResolved = false;
+
 async function fetchSettings(): Promise<boolean> {
+  if (settingsResolved) return enabled;
   try {
     const getSingle = (field: string) =>
       fetch("/api/method/frappe.client.get_single_value?" + new URLSearchParams({
@@ -88,8 +101,23 @@ async function fetchSettings(): Promise<boolean> {
       getSingle("total"), getSingle("price"), getSingle("change"), getSingle("collect"),
     ]);
 
+    // A missing doctype comes back as a 404 body, NOT a thrown error -
+    // fetch() only rejects on network failure, so the catch below never
+    // sees this. Detect it explicitly and stand down quietly: a site
+    // without the customer-display doctype simply has no customer
+    // display, which is not a fault worth shouting about.
+    if (enabledData?.exc_type === "DoesNotExistError") {
+      settingsResolved = true;
+      enabled = false;
+      console.info(
+        "[ury_display] POS Dual Screen Settings is not installed on this site — customer display disabled."
+      );
+      return false;
+    }
+
     const isOn = (m: unknown) => m === 1 || m === "1";
 
+    settingsResolved = true;
     enabled = isOn(enabledData.message);
     posType = (posTypeData.message || "").toLowerCase().trim();
     dwellMs = parseLoopTimerToMs(loopTimerData.message);
@@ -260,7 +288,15 @@ export async function initPosDisplay(): Promise<void> {
 
   await fetchSettings();
 
-  if (!shouldRun()) return;
+  if (!shouldRun()) {
+    // Latch even when the display is off. This used to return without
+    // setting `initialized`, so a site with no customer display re-ran
+    // the whole settings probe on every effect pass - seven 404s each
+    // time. There is nothing to retry: the answer cannot change without
+    // a reload.
+    initialized = true;
+    return;
+  }
 
   startCartWatch();
   initialized = true;

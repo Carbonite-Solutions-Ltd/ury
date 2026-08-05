@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import AppErrorBoundary from './components/AppErrorBoundary'
 import './lib/qz-init';
 import { registerServiceWorker } from './lib/register-sw';
 import { initConnectivityWatch } from './lib/connectivity';
@@ -18,6 +19,14 @@ initOutbox();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    {/*
+      Outside <App /> on purpose: a crash in App's own boot path (terminal
+      resolve, geofence gate, POS-opening provider) is exactly the case
+      that produced a blank screen, so the boundary has to sit above all
+      of it. Anything inside App could go down with it.
+    */}
+    <AppErrorBoundary>
+      <App />
+    </AppErrorBoundary>
   </StrictMode>,
 )
