@@ -486,7 +486,12 @@ export async function getInvoicePrintParts(
       }
     );
     return {
-      html: response.message?.html ?? '',
+      // Inline the images here so EVERY consumer - the QZ print path,
+      // the split-receipt loop and the admin preview - gets a
+      // self-contained document. Doing it at the single fetch point
+      // means a new caller cannot forget to, which is how the
+      // stylesheet went missing for so long.
+      html: await inlinePrintImages(response.message?.html ?? ''),
       style: response.message?.style ?? '',
     };
   } catch (error) {
@@ -509,12 +514,76 @@ export function composePrintDocument(
   return [
     '<!DOCTYPE html>',
     '<html><head><meta charset="utf-8">',
+    // Print formats reference site files with RELATIVE urls, e.g. the
+    // logo is <img src="/files/logo.bmp">. In the browser that resolves
+    // against the Frappe origin; in a standalone document handed to QZ
+    // there is no base at all, so it resolves to nothing and the image
+    // never loads. Worse, the format carries
+    // onerror="this.parentNode.style.display='none'", so the logo does
+    // not even fail visibly - it silently disappears from the receipt.
+    // See CLAUDE.md "Fixes log" 2026-08-05.
+    `<base href="${window.location.origin}/">`,
     `<style>${parts.style}</style>`,
     '</head><body>',
     prefixHtml,
     parts.html,
     '</body></html>',
   ].join('');
+}
+
+/**
+ * Rewrite same-origin <img src> to self-contained data: URIs.
+ *
+ * A <base href> alone is not enough for printing. It fixes ADDRESSING,
+ * but the renderer still has to fetch the file over HTTP and finish
+ * doing so before the page is sent to the printer - and a print that
+ * races an image fetch drops the logo intermittently, which is worse
+ * than dropping it every time because it looks like a printer fault.
+ * Inlining removes the fetch entirely, so the document QZ receives is
+ * complete the moment it arrives.
+ *
+ * Best-effort by design: an image that cannot be fetched is left with
+ * its original src, so behaviour is never worse than before the fix.
+ */
+export async function inlinePrintImages(html: string): Promise<string> {
+  const srcs = Array.from(
+    html.matchAll(/<img[^>]+src\s*=\s*["']([^"']+)["']/gi),
+    (m) => m[1]
+  ).filter((src) => src && !src.startsWith('data:'));
+
+  const unique = Array.from(new Set(srcs));
+  if (!unique.length) return html;
+
+  const toDataUri = async (src: string): Promise<[string, string] | null> => {
+    try {
+      // credentials: same-origin so /files/* behind Frappe's session
+      // check is actually readable.
+      const res = await fetch(src, { credentials: 'same-origin' });
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      const uri = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(String(reader.result));
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      return [src, uri];
+    } catch {
+      return null;
+    }
+  };
+
+  const resolved = (await Promise.all(unique.map(toDataUri))).filter(
+    (r): r is [string, string] => r !== null
+  );
+
+  let out = html;
+  for (const [src, uri] of resolved) {
+    // Split/join rather than a RegExp: a file path can contain regex
+    // metacharacters and we want a literal replacement.
+    out = out.split(`"${src}"`).join(`"${uri}"`).split(`'${src}'`).join(`'${uri}'`);
+  }
+  return out;
 }
 
 /** Convenience: fetch and compose in one step. */

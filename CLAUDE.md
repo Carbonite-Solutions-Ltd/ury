@@ -136,6 +136,8 @@ bench --site <site> run-tests --app ury --module ury.ury.doctype.ury_kot.test_ur
 * **`checks`** — fast and **bench-free**. Runs on **pull requests AND before every deploy**. Python syntax (`compileall`), JSON validity across all fixtures + doctype files, a guard against duplicate doctype keys in `setup.py`, and a **frontend build**; ESLint is advisory (non-blocking — there are pre-existing `catch (err: any)` errors; flip it to a gate once cleared).
 * **`deploy`** — `needs: checks` and `if: github.event_name != 'pull_request'`. SSHes into each bench in the matrix and runs pull → `yarn install && yarn build` → `bench build --app ury` → `migrate` → `restart`. Needs repo secrets `SERVER_HOST`, `SERVER_USER`, `SSH_PRIVATE_KEY`.
 
+**`checks` now GATES on TypeScript** (`npx tsc -p tsconfig.app.json --noEmit` in `pos/`), added 2026-08-05. `yarn build` is `vite build`, which strips types without checking them, so a real type error still yields a green build and a broken page — that is how a single undefined identifier white-screened `/pos/orders`. **Use `-p tsconfig.app.json`**: a bare `tsc --noEmit` checks NOTHING because the root tsconfig is solution-style, and that false negative is what let the bug through. Safe to gate since the suite was taken to 0 errors.
+
 **CI does NOT run the test suite.** It used to stand up a whole bench per run — install frappe, clone erpnext, start MariaDB + Redis, create a site, install ury — ~4 minutes before a single assertion, because a GitHub runner is a fresh bare VM with nothing cached. **Decision 2026-07-30: the real suite runs on the LOCAL bench** (`bench --site <site> execute ury.<module>.run_<name>_tests`); a prebuilt public container with frappe + erpnext baked in is the planned way to bring it back to CI.
 
 **Why the two jobs are wired this way** (each bit is load-bearing):
@@ -281,6 +283,23 @@ Running record of bugs fixed and non-obvious traps discovered. Add new entries a
 - **Other fixes:** `custom_use_waiter` / `custom_max_bill_prints` added to `PosProfileCombined` and `custom_shift_hours` / `custom_block_orders_after_shift_end` to `PosProfileFull` (all four were already returned by `getPosProfile` and used at call sites — the types simply never caught up); `POSOpeningDialog`'s `ReturnType<typeof usePOSStore>` resolved to `unknown` because zustand's hook is overloaded and TS picks the selector form, so it now references `POSStore` / `RootState` directly (`POSStore` had to be exported); `Spotlight` used `item.category`, which never existed on the store's `MenuItem` (the field is `course`); `ui/example.tsx` demoed a NATIVE `<select>` API against what is now a Radix wrapper, so the gallery never compiled against the component it documents — updated to `onValueChange` + `SelectItem`. Unused `React` default imports dropped (the JSX transform does not need them) and unused PIN-paste `idx` params renamed `_idx` (they must stay for the call signature).
 - **Verified:** `tsc` **0 errors**; `eslint` **86 problems vs 87 on the committed baseline** — one FEWER (the `disabled` bug was also an eslint error), zero introduced; `yarn build` clean; and the POS re-checked in a real browser (Playwright) — Orders renders, the print dialog opens and the receipt still previews fully styled.
 - **`Spotlight.tsx` and `ui/example.tsx` are imported nowhere.** Left in place rather than deleted — removing someone's unwired work is a separate call.
+
+### 2026-08-05 — Logo missing from printed bills: relative image URLs have no base outside the browser
+- **Symptom (user):** after the stylesheet fix the receipt printed correctly but **the logo never appeared**. Suspected QZ "can't print images".
+- **It isn't an image-support problem — the image is never given a resolvable address.** The rendered format contains exactly one image:
+  ```html
+  <img class="r-logo" src="/files/logo.bmp"
+       onerror="this.parentNode.style.display='none'">
+  ```
+  `/files/logo.bmp` is **relative**. In the browser it resolves against the Frappe origin; in the standalone document handed to QZ there is no base at all, so it resolves to nothing. **And the format's own `onerror` hides the parent**, so the logo does not fail visibly — it silently vanishes, which is why this looked like "images don't print" rather than "one URL didn't resolve".
+- **Fix, in two parts, and the second is the one that matters for printing:**
+  1. `composePrintDocument` now emits `<base href="${window.location.origin}/">`, which fixes ADDRESSING.
+  2. New `inlinePrintImages()` rewrites every same-origin `<img src>` to a `data:` URI before the document is composed. A base href alone still leaves the renderer to fetch the file over HTTP and finish before the page is printed — a print that races an image fetch drops the logo **intermittently**, which is worse than dropping it every time because it reads as a printer fault. Inlining removes the fetch entirely.
+- **Wired at the single fetch point** (`getInvoicePrintParts`), so the QZ path, the split-receipt loop and the admin preview all get self-contained documents and a future caller cannot forget — the same mistake that hid the missing stylesheet for so long.
+- **Best-effort by design:** an image that can't be fetched keeps its original `src`, so behaviour is never worse than before. Uses `credentials: 'same-origin'` so `/files/*` behind Frappe's session check is readable, and literal split/join rather than a RegExp because a file path can contain regex metacharacters.
+- **Verified in a real browser:** the preview document grew 17,906 → **68,405 chars** (the embedded base64) and the logo renders above the header bar.
+- **Config note for the client:** the logo is a **`.bmp`**, which is why the inlined payload is ~50 KB of base64 on every print. A PNG would be substantially smaller for identical output.
+- **Frontend-only → redeploy the `pos/` build. No migrate, no restart.**
 
 ### 2026-08-05 — THE print bug: the format was always right, its CSS was being thrown away
 - **Symptom (user):** the POS bill "does not give that format which is supposed to give when printing in the desk". Same invoice, same format name, completely different output.
