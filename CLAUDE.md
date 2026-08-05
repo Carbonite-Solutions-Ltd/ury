@@ -271,6 +271,26 @@ Running record of bugs fixed and non-obvious traps discovered. Add new entries a
 - **Deploy: `bench migrate` (6 new fields, 2 doctypes re-synced) + `bench restart` (new whitelisted methods + changed `cancel_order`/`sync_order`/`make_invoice`) + redeploy BOTH the `pos/` and `URYMosaic/` builds.**
 - **NOT done:** the POS has no UI yet for *initiating* a per-item cancellation — `request_item_cancellation` is built, tested and whitelisted, but the captain currently reaches it only via the desk/API; the cart's existing captain-only item-removal path still edits the order directly. Wiring a picker into the Orders panel is the follow-up.
 
+### 2026-07-31 — Print audit: a wrong/blank print format falls back to Standard SILENTLY (admin dialog now proves which format ran)
+- **Symptom (user):** "when printing from the frontend the cashier printing from the orders and click on the print invoice or the print icon beside the payment it does not use the print format thats in the pos profile."
+- **The frontend plumbing is NOT the fault — it is uniform and correct.** All seven bill-print call sites (`Orders.tsx`, `Table.tsx`, `PaymentDialog.tsx` ×2, `ItemSplitFlow.tsx`, and both `print.ts` re-entries) funnel through `printOrder`/`printSplitReceipts`, which read `print_format` off the POS Profile the till booted with and hand it to `frappe.www.printview.get_html_and_style`. `getPosProfile` returns the field, and both frontend profile types carry it. Verified live: the endpoint returned `'POS Receipt Print Format'`.
+- **ROOT CAUSE IS THE DATA, and the failure mode is invisible.** Proven by rendering the same invoice three ways:
+  | `print_format` passed | Rendered |
+  |---|---|
+  | `POS Receipt Print Format` | **5,285 chars** — the compact receipt |
+  | blank / `None` | **13,415 chars** — Frappe's Standard layout |
+  | `"Nonexistent Format Name"` | **13,415 chars — byte-identical to blank, and NO exception** |
+  So a format that is blank, renamed, or deleted all produce the same generic invoice, nothing raises, nothing is logged, and the paper still looks like a receipt. On the dev site `Sitout` has `print_format = None` while `Airport` has one — exactly this shape. Two similarly-named formats exist (`POS Receipt Print Format` / `POS Landing Receipt Print Format`), so pointing a profile at the wrong one is easy and equally silent.
+- **New `print_format_exists` on `getPosProfile`** — `bool(print_format and frappe.db.exists("Print Format", print_format))`. This is the ONLY way to tell "no format configured" from "configured, but pointing at nothing"; the rendered output cannot distinguish them. Threaded through both frontend profile types. **No schema change** — it is a computed response field, so deploy is `bench restart`, not `migrate`.
+- **[PrintChoiceDialog.tsx](pos/src/components/PrintChoiceDialog.tsx) is now a diagnostic**, not just a two-button prompt. Before the admin confirms EITHER action it states the format name, which POS Profile it came from, the print mode and the target printer, and renders a **live preview of the actual HTML that would be sent**. One dialog serves both Print and Mark-as-Printed, so the same evidence backs both.
+  - **The preview is an `<iframe srcDoc>`, NOT `dangerouslySetInnerHTML`.** Print formats ship their own CSS; inlined, it would leak into the POS *and* Tailwind's preflight would restyle the receipt — making the preview lie about what prints. `sandbox=""` on top.
+  - **It passes the format through exactly as `printOrder` does, blank included.** Substituting a default here would hide the very misconfiguration the dialog exists to expose.
+  - Re-fetches on every open (the dialog stays mounted — the same stale-state trap already fixed in CommentDialog and OrderContactDialog).
+  - `printFormatExists === false` is checked explicitly, never `!printFormatExists`: `undefined` means an older backend without the flag, and treating that as "missing" would cry wolf on every print.
+- **Verified:** `py_compile` clean; `tsc` clean; `eslint` shows the **same 5 pre-existing `no-explicit-any` before and after** (confirmed by stashing and re-running — an earlier count of "6" was my `grep -c` catching the summary line); `yarn build` clean. `print_format_exists` returns True for a real format and False for both blank and a bogus name.
+- **Deploy: `bench restart` + redeploy the `pos/` build.** No migrate.
+- **Config fix this points at for the client:** set **Print Format** on every POS Profile, and check it names a format that still exists. The dialog now names it outright.
+
 ### 2026-07-31 — Deploy job failed because the secrets are ENVIRONMENT secrets, not repository secrets
 - **Symptom:** every push to `version-16` ran `checks` green then failed `deploy` immediately. The SSH step never ran.
 - **What made it findable:** a pre-flight step added the run before, which prints secret **lengths only, never values**. It output `H:` `U:` `K:` all empty and `✖ Missing repo secret(s): SERVER_HOST SERVER_USER SSH_PRIVATE_KEY`. Without it this surfaces as an opaque `appleboy/ssh-action` error (`missing server host`) that reads like a *server* problem — we'd have gone looking at sshd, the deploy key and the firewall. **Keep the pre-flight.**

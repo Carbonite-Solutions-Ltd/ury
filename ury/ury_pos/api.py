@@ -1683,6 +1683,16 @@ def getPosProfile(terminal=None):
         "warehouse": warehouse,
         "cashier": cashier,
         "print_format": print_format,
+        # Whether that format actually EXISTS (2026-07-31). Frappe's
+        # printview silently falls back to the Standard layout both when
+        # the name is blank AND when it names a format that has been
+        # renamed or deleted -- the two produce byte-identical output and
+        # neither raises. Without this flag the POS cannot tell "no
+        # format configured" from "configured, but pointing at nothing",
+        # which is exactly the shape of "it isn't using my print format".
+        "print_format_exists": bool(
+            print_format and frappe.db.exists("Print Format", print_format)
+        ),
         "qz_print": qz_print,
         "qz_host": qz_host,
         "printer": printer,

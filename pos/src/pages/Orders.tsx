@@ -1654,6 +1654,19 @@ export default function Orders() {
         busy={isPrinting}
         onClose={() => setShowPrintChoice(false)}
         onChoose={(choice: PrintChoice) => runPrintFlow(choice)}
+        // Straight off the same POS Profile object printOrder reads, so
+        // the dialog cannot report one format while the printer gets
+        // another.
+        printFormat={storePosProfile?.print_format ?? null}
+        printFormatExists={storePosProfile?.print_format_exists}
+        printMode={storePosProfile?.custom_print_mode ?? null}
+        billPrinter={
+          storePosProfile?.custom_bill_printer ||
+          storePosProfile?.printer ||
+          null
+        }
+        qzHost={storePosProfile?.qz_host ?? null}
+        posProfileName={storePosProfile?.name ?? null}
       />
       {showRejectDialog && selectedOrder && (
         <Dialog open={true} onOpenChange={() => setShowRejectDialog(false)}>

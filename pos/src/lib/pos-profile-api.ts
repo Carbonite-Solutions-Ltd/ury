@@ -11,6 +11,9 @@ export interface PosProfileLimited {
   warehouse: string;
   cashier: string;
   print_format: string | null;
+  /** False when print_format is blank OR names a format that no longer
+   *  exists - Frappe silently renders the Standard layout for both. */
+  print_format_exists?: boolean;
   qz_print: number;
   qz_host: string | null;
   printer: string | null;
@@ -166,6 +169,9 @@ export interface PosProfileCombined extends PosProfileFull {
   waiter: string;
   cashier: string;
   print_format: string | null;
+  /** False when print_format is blank OR names a format that no longer
+   *  exists - Frappe silently renders the Standard layout for both. */
+  print_format_exists?: boolean;
   qz_print: number;
   qz_host: string | null;
   printer: string | null;
@@ -271,6 +277,7 @@ export async function getCombinedPosProfile(
     waiter: limitedProfile.waiter,
     cashier: limitedProfile.cashier,
     print_format: limitedProfile.print_format,
+    print_format_exists: limitedProfile.print_format_exists,
     qz_print: limitedProfile.qz_print,
     qz_host: limitedProfile.qz_host,
     printer: limitedProfile.printer,
