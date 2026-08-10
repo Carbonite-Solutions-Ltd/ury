@@ -297,6 +297,15 @@ Running record of bugs fixed and non-obvious traps discovered. Add new entries a
 - **`POS Closing Entry.custom_closed_by_non_captain` is now near-vestigial** — only managers can close, so it will read 0 on essentially every new row. Left in place (harmless, and historic rows still mean something) rather than removed.
 - **Frontend + backend → `bench restart` + redeploy the `pos/` build. No migrate.**
 
+### 2026-08-05 — An optional POS field took out EVERY Item save on the site
+- **Symptom (user, on a different bench):** creating any Item threw `AttributeError: 'Item' object has no attribute 'custom_pos_add_on_items'` from [ury_item.py](ury/ury/hooks/ury_item.py) `update_variants_add_on`. The item in the traceback was a plain BEER DRINKS stock item with nothing to do with add-ons.
+- **Root cause:** the hook read `doc.custom_pos_add_on_items` by **attribute access**. Both that field and `custom_pos_item_variants` are shipped as *customizations* — [ury/ury/custom/item.json](ury/ury/custom/item.json) with `sync_on_migrate: 1` — so they exist only once a site has migrated since they were added. On a site that hadn't, the attribute is genuinely absent and Python raises.
+- **Why it was so damaging:** this runs in **`validate`**, so the failure blocked **every Item save on the whole site**, not just items using the feature. An optional POS add-on must never be able to stop core item creation.
+- **Not the dual-source trap, though it looks like one.** The fields are correctly shipped — just via the third mechanism (`custom/<doctype>.json` customizations), not `custom_field.json` + `setup.py`. Worth knowing URY has **three** ways to ship a field, and this is the one that only lands on migrate. Both child doctypes (`Item Add On`, `POS Item Variants`) do exist in the repo, so a `bench migrate` on the affected site restores the fields.
+- **Fix:** read with `doc.get(fieldname) or []`. A missing field now degrades to "no add-ons configured" and the Item saves; once the site migrates, the tables appear and validation resumes. Also collapsed the two near-identical blocks into one loop, skipped blank rows, and gave the throw a title plus `_("URY Menu")` so it renders as "ExPOS Menu" per the brand rule.
+- **Verified on dev against all three shapes:** field absent entirely (the reported failure) → saves cleanly, no AttributeError; field present but empty → saves; field present with an item that is on no menu → still correctly rejected, message reads "…is not on any ExPOS Menu."
+- **Deploy: `bench migrate` on the affected site** (restores the customization) **+ `bench restart`** (hook change). The code fix means the site works even before the migrate.
+
 ### 2026-08-05 — Logo missing from printed bills: relative image URLs have no base outside the browser
 - **Symptom (user):** after the stylesheet fix the receipt printed correctly but **the logo never appeared**. Suspected QZ "can't print images".
 - **It isn't an image-support problem — the image is never given a resolvable address.** The rendered format contains exactly one image:
