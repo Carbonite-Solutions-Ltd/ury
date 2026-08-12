@@ -34,6 +34,16 @@ const TABS: { key: SettingsTab; label: string; hint: string }[] = [
  * restructuring anything. Today it holds one section: the KOT routing
  * coverage check.
  */
+// NOTE ON THE SCROLL CONTAINER (2026-08-06). The root below is
+// `h-full`, NOT `flex-1`. App renders routes inside
+// `<div className="flex-1 overflow-hidden">`, which is display:BLOCK with
+// a definite height. `flex-1` on a child of a block parent does nothing,
+// so this element grew to its full content height (14,608px measured)
+// and its own overflow-y-auto had nothing to scroll, while the
+// overflow-hidden parent silently clipped it -- the page could not be
+// scrolled at all. `h-full` adopts the parent's real height so
+// overflow-y-auto works. Latent while Settings held one short section;
+// 267 menu rows made it obvious.
 const Settings = () => {
   const navigate = useNavigate();
   // Tabbed rather than one long scroll. The page was a single stack of
@@ -43,7 +53,7 @@ const Settings = () => {
   const [tab, setTab] = useState<SettingsTab>('menu');
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto bg-gray-50">
+    <div className="h-full overflow-y-auto bg-gray-50">
       <div className="max-w-5xl mx-auto px-4 py-6">
         <div className="flex items-center gap-3 mb-5">
           <Button
