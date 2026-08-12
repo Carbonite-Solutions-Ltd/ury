@@ -1,6 +1,7 @@
 import frappe
 import json
 from frappe import _
+from frappe.utils import flt
 from datetime import date, datetime, timedelta
 
 
@@ -8607,3 +8608,259 @@ def get_kot_coverage_audit(terminal=None):
         "total_item_groups": len(groups),
         "total_items": len(item_codes),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Settings › Menu & Prices  (2026-08-06)
+# ══════════════════════════════════════════════════════════════════════
+#
+# Manage a menu's items and their prices from the POS instead of the
+# desk. Admin / manager only — every endpoint below re-checks
+# `_user_can_manage_settings`, which deliberately excludes URY Captain.
+#
+# ⚠ THE COST THAT SHAPES THIS API. `URY Menu.on_update` calls
+# `make_price_list()`, which DELETES every Item Price for the menu's
+# price list and re-inserts one per row. On a 440-line menu that is 440
+# deletes and 440 inserts — per save. So the write endpoints are
+# deliberately BULK: the UI collects edits and commits them in one call,
+# rather than saving per row and rebuilding the price list on every
+# keystroke.
+#
+# ⚠ AND THE ONE THAT SURPRISES PEOPLE. `URY Menu.validate()` copies
+# `Item.standard_rate` into any row whose rate is blank, on every save.
+# So "clear this price" does not stick for an item that has a standard
+# rate — it comes back. `blocked_by_standard_rate` is returned so the UI
+# can say so instead of silently appearing to lose the edit.
+
+
+def _settings_menu_or_throw(menu):
+    if not _user_can_manage_settings():
+        frappe.throw(
+            _("Only an administrator or {0} can manage menus.").format(
+                _("URY Manager")
+            ),
+            title=_("Not Permitted"),
+        )
+    if not menu or not frappe.db.exists("URY Menu", menu):
+        frappe.throw(
+            _("{0} '{1}' not found.").format(_("URY Menu"), menu or ""),
+            title=_("Not Found"),
+        )
+    return frappe.get_doc("URY Menu", menu)
+
+
+@frappe.whitelist()
+def get_menus_for_settings():
+    """Every menu, with how many items it holds and how many are unpriced."""
+    if not _user_can_manage_settings():
+        frappe.throw(_("Not permitted."), title=_("Not Permitted"))
+
+    menus = frappe.get_all(
+        "URY Menu", fields=["name", "branch", "enabled", "price_list"], order_by="name"
+    )
+    counts = frappe.db.sql(
+        """SELECT parent,
+                  COUNT(*) AS total,
+                  SUM(CASE WHEN IFNULL(rate, 0) = 0 THEN 1 ELSE 0 END) AS unpriced
+           FROM `tabURY Menu Item`
+           WHERE parenttype = 'URY Menu'
+           GROUP BY parent""",
+        as_dict=True,
+    )
+    by_menu = {r.parent: r for r in counts}
+    for m in menus:
+        row = by_menu.get(m.name)
+        m["item_count"] = int(row.total) if row else 0
+        m["unpriced_count"] = int(row.unpriced or 0) if row else 0
+    return menus
+
+
+@frappe.whitelist()
+def get_menu_items_for_settings(menu):
+    """Rows on a menu, plus each item's standard_rate.
+
+    `standard_rate` is returned because it is what `validate()` will
+    write into a blank rate — the UI needs it to warn honestly.
+    """
+    doc = _settings_menu_or_throw(menu)
+    codes = [r.item for r in doc.items if r.item]
+    std = {}
+    if codes:
+        std = {
+            r.name: r.standard_rate
+            for r in frappe.get_all(
+                "Item",
+                filters={"name": ["in", codes]},
+                fields=["name", "standard_rate"],
+            )
+        }
+
+    return {
+        "menu": doc.name,
+        "branch": doc.branch,
+        "price_list": doc.price_list,
+        "items": [
+            {
+                "row": r.name,
+                "item": r.item,
+                "item_name": r.item_name,
+                "course": r.course,
+                "rate": flt(r.rate),
+                "disabled": int(r.disabled or 0),
+                "special_dish": int(r.special_dish or 0),
+                "standard_rate": flt(std.get(r.item) or 0),
+            }
+            for r in doc.items
+        ],
+        "courses": frappe.get_all("URY Menu Course", pluck="name", order_by="name"),
+    }
+
+
+@frappe.whitelist()
+def save_menu_item_rates(menu, updates):
+    """Apply a batch of {item: rate} edits in ONE save.
+
+    Bulk on purpose — see the note at the top of this section: each save
+    rebuilds the whole price list, so per-row saving would be brutal on
+    a large menu.
+    """
+    doc = _settings_menu_or_throw(menu)
+    updates = json.loads(updates) if isinstance(updates, str) else (updates or {})
+    if not updates:
+        return {"menu": doc.name, "updated": 0}
+
+    changed, blocked = 0, []
+    for row in doc.items:
+        if row.item not in updates:
+            continue
+        new_rate = flt(updates[row.item])
+        if flt(row.rate) == new_rate:
+            continue
+        row.rate = new_rate
+        changed += 1
+        # Clearing a price does not stick when the Item carries a
+        # standard_rate: validate() puts it straight back.
+        if not new_rate:
+            std = flt(frappe.db.get_value("Item", row.item, "standard_rate"))
+            if std:
+                blocked.append({"item": row.item, "standard_rate": std})
+
+    if changed:
+        doc.save()
+        frappe.db.commit()
+
+    return {
+        "menu": doc.name,
+        "updated": changed,
+        "blocked_by_standard_rate": blocked,
+    }
+
+
+@frappe.whitelist()
+def remove_menu_items(menu, items):
+    """Drop rows from a menu. One save for the whole batch."""
+    doc = _settings_menu_or_throw(menu)
+    items = json.loads(items) if isinstance(items, str) else (items or [])
+    wanted = set(items)
+    if not wanted:
+        return {"menu": doc.name, "removed": 0}
+
+    keep = [r for r in doc.items if r.item not in wanted]
+    removed = len(doc.items) - len(keep)
+    if not removed:
+        return {"menu": doc.name, "removed": 0}
+
+    doc.items = keep
+    for idx, row in enumerate(doc.items, start=1):
+        row.idx = idx
+    doc.save()
+    frappe.db.commit()
+    return {"menu": doc.name, "removed": removed, "remaining": len(doc.items)}
+
+
+@frappe.whitelist()
+def add_menu_items(menu, items, course=None):
+    """Add items to a menu. Already-present items are skipped, not
+    duplicated — a menu with the same item twice prices unpredictably."""
+    doc = _settings_menu_or_throw(menu)
+    items = json.loads(items) if isinstance(items, str) else (items or [])
+    if not items:
+        return {"menu": doc.name, "added": 0}
+
+    if course and not frappe.db.exists("URY Menu Course", course):
+        frappe.throw(
+            _("{0} '{1}' not found.").format(_("URY Menu Course"), course),
+            title=_("Not Found"),
+        )
+
+    present = {r.item for r in doc.items if r.item}
+    added, skipped = 0, 0
+    for code in items:
+        if code in present:
+            skipped += 1
+            continue
+        if not frappe.db.exists("Item", code):
+            skipped += 1
+            continue
+        doc.append(
+            "items",
+            {
+                "item": code,
+                "item_name": frappe.db.get_value("Item", code, "item_name"),
+                "course": course or None,
+            },
+        )
+        present.add(code)
+        added += 1
+
+    if added:
+        doc.save()
+        frappe.db.commit()
+    return {
+        "menu": doc.name,
+        "added": added,
+        "skipped": skipped,
+        "total": len(doc.items),
+    }
+
+
+@frappe.whitelist()
+def search_items_for_menu(menu, query=None, item_group=None, limit=50):
+    """Items NOT already on this menu, for the add-item picker."""
+    doc = _settings_menu_or_throw(menu)
+    on_menu = [r.item for r in doc.items if r.item]
+
+    filters = {"disabled": 0}
+    if item_group:
+        filters["item_group"] = item_group
+    if on_menu:
+        filters["name"] = ["not in", on_menu]
+
+    or_filters = None
+    if query:
+        or_filters = [
+            ["name", "like", f"%{query}%"],
+            ["item_name", "like", f"%{query}%"],
+        ]
+
+    return frappe.get_all(
+        "Item",
+        filters=filters,
+        or_filters=or_filters,
+        fields=["name", "item_name", "item_group", "standard_rate"],
+        order_by="item_name",
+        limit_page_length=int(limit or 50),
+    )
+
+
+@frappe.whitelist()
+def get_item_groups_for_menu():
+    """Item groups that actually contain sellable items, for the picker
+    filter. Leaf groups only — a parent group holds nothing itself."""
+    if not _user_can_manage_settings():
+        frappe.throw(_("Not permitted."), title=_("Not Permitted"))
+    return frappe.db.sql_list(
+        """SELECT DISTINCT item_group FROM `tabItem`
+           WHERE disabled = 0 AND IFNULL(item_group, '') != ''
+           ORDER BY item_group"""
+    )

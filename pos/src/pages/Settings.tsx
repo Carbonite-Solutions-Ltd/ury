@@ -16,6 +16,14 @@ import {
   getKotCoverageAudit,
   type KotCoverageAudit,
 } from '../lib/settings-api';
+import MenuPricesSection from '../components/settings/MenuPricesSection';
+
+type SettingsTab = 'menu' | 'routing';
+
+const TABS: { key: SettingsTab; label: string; hint: string }[] = [
+  { key: 'menu', label: 'Menu & Prices', hint: 'Price, add and remove menu items' },
+  { key: 'routing', label: 'Kitchen Routing', hint: 'Check every item group reaches a screen' },
+];
 
 /**
  * POS Settings — admin / manager only (see `canAccessSettings`, enforced
@@ -28,11 +36,16 @@ import {
  */
 const Settings = () => {
   const navigate = useNavigate();
+  // Tabbed rather than one long scroll. The page was a single stack of
+  // sections, which was already crowded with one section and would only
+  // get worse. Tabs also mean the heavy Menu & Prices fetch only runs
+  // when that tab is actually open.
+  const [tab, setTab] = useState<SettingsTab>('menu');
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto bg-gray-50">
-      <div className="max-w-4xl mx-auto px-4 py-6">
-        <div className="flex items-center gap-3 mb-6">
+      <div className="max-w-5xl mx-auto px-4 py-6">
+        <div className="flex items-center gap-3 mb-5">
           <Button
             variant="outline"
             onClick={() => navigate(-1)}
@@ -47,14 +60,49 @@ const Settings = () => {
             </div>
             <div className="min-w-0">
               <h1 className="text-xl font-bold text-gray-900">Settings</h1>
-              <p className="text-xs text-gray-500">
-                Configuration checks and POS options.
+              <p className="text-xs text-gray-500 truncate">
+                {TABS.find((t) => t.key === tab)?.hint}
               </p>
             </div>
           </div>
         </div>
 
-        <KotCoverageSection />
+        {/*
+          Sidebar on lg+, horizontally scrollable tab strip below it.
+          A vertical nav on a phone would eat the whole first screen, and
+          the POS runs as an installed PWA on tablets where that matters.
+        */}
+        <div className="lg:flex lg:gap-6">
+          <nav className="lg:w-56 lg:shrink-0 mb-4 lg:mb-0">
+            <div className="flex lg:flex-col gap-1.5 overflow-x-auto lg:overflow-visible -mx-4 px-4 lg:mx-0 lg:px-0 pb-1 lg:pb-0">
+              {TABS.map((t) => (
+                <button
+                  key={t.key}
+                  onClick={() => setTab(t.key)}
+                  className={`shrink-0 lg:w-full text-left px-3.5 py-2.5 rounded-lg text-sm font-medium transition ${
+                    tab === t.key
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'bg-white text-gray-700 border border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  <span className="block">{t.label}</span>
+                  <span
+                    className={`hidden lg:block text-xs font-normal mt-0.5 ${
+                      tab === t.key ? 'text-blue-100' : 'text-gray-500'
+                    }`}
+                  >
+                    {t.hint}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </nav>
+
+          <div className="flex-1 min-w-0">
+            {tab === 'menu' && <MenuPricesSection />}
+            {tab === 'routing' && <KotCoverageSection />}
+          </div>
+        </div>
       </div>
     </div>
   );
