@@ -365,20 +365,26 @@ def _resolve_orders_scope(terminal, cashier, self_waiter=None):
     if not cashier or cashier == "mine":
         return mine_clause
 
-    if not is_captain:
-        # Cashier requested a wider scope they aren't allowed to see.
-        return mine_clause
-
     # Filter by a specific WAITER. The dropdown sends "waiter:<record>" so
     # we can tell it apart from a cashier user id. A waiter's orders are
     # keyed by custom_waiter (set on BOTH her self-placed orders and orders
-    # a cashier rang for her), so this shows everything she served. Captain-
-    # only (we're past the is_captain gate). 2026-07-15.
+    # a cashier rang for her), so this shows everything she served.
+    #
+    # Deliberately ABOVE the is_captain gate as of 2026-08-06: a plain
+    # cashier may now pick a waiter and see what that waiter is running,
+    # which is what the floor actually needs to settle tables. They still
+    # cannot pick another CASHIER -- that stays captain-only below, and
+    # the dropdown only ever offers them themselves.
     if isinstance(cashier, str) and cashier.startswith("waiter:"):
         waiter_name = cashier.split(":", 1)[1]
         if not waiter_name:
             return mine_clause
         return ("pi.custom_waiter = %s", [waiter_name])
+
+    if not is_captain:
+        # Cashier requested a wider CASHIER scope they aren't allowed to
+        # see (another user, or "all"). Downgrade to their own orders.
+        return mine_clause
 
     if cashier == "all":
         if not terminal:
@@ -471,9 +477,23 @@ def get_cashier_users_for_terminal(terminal):
     if not terminal_branch:
         return []
 
+    # A plain cashier gets the picker too as of 2026-08-06, but the
+    # CASHIER half is trimmed to just themselves — they may look at what a
+    # waiter is running, never at another cashier's till. Captains and
+    # above still see everyone. The scope resolver enforces the same rule
+    # server-side; this only keeps the dropdown honest about it.
+    me = frappe.session.user
+    roles = set(frappe.get_roles(me))
+    is_captain = me == "Administrator" or bool(
+        roles & {"System Manager", "URY Manager", "URY Captain"}
+    )
+    branch_cashiers = _get_cashier_users_on_branch(terminal_branch)
+    if not is_captain:
+        branch_cashiers = [c for c in branch_cashiers if c["user"] == me]
+
     rows = [
         {"user": c["user"], "full_name": c["full_name"], "kind": "cashier"}
-        for c in _get_cashier_users_on_branch(terminal_branch)
+        for c in branch_cashiers
     ]
 
     # URY Waiter has no branch link, so list every active waiter — the
@@ -4366,7 +4386,7 @@ def _reports_date_range(from_date, to_date):
 
 
 @frappe.whitelist()
-def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="cashier"):
+def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="cashier", payment_mode=None):
     """Per-staff sales breakdown over a date range.
 
     `group_by` picks WHICH member of staff, and they are genuinely
@@ -4392,11 +4412,10 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
     Admin / captain / manager only. Branch-scoped; optional terminal
     filter so a captain can audit a single till.
     """
-    if not _user_can_see_admin_reports():
-        frappe.throw(
-            _("You don't have permission to see cross-cashier reports."),
-            frappe.PermissionError,
-        )
+    # Open to CASHIERS as of 2026-08-06, but scoped: a cashier sees only
+    # their own trading. Everyone can answer "how did I do today"; only a
+    # captain/manager sees across the floor.
+    is_admin = _user_can_see_admin_reports()
 
     from_date, to_date = _reports_date_range(from_date, to_date)
     branch = getBranch()
@@ -4413,6 +4432,26 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
             "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
         )
         params.append(terminal)
+
+    if not is_admin:
+        # Their own trading, whichever way it is grouped. Matches the
+        # scope get_daily_sales uses: bills they rang (owner) plus bills
+        # they billed for someone else (cashier). Grouping by waiter then
+        # shows which waiters fed THEIR till, not the whole floor.
+        me = frappe.session.user
+        where_parts.append("(pi.owner = %s OR pi.cashier = %s)")
+        params.extend([me, me])
+
+    # Optional mode-of-payment filter. Restricts to invoices that took at
+    # least one payment in that mode; the per-row breakdown below still
+    # shows every mode on those invoices, so the numbers stay explicable.
+    if payment_mode:
+        where_parts.append(
+            "EXISTS (SELECT 1 FROM `tabSales Invoice Payment` sip"
+            " WHERE sip.parent = pi.name AND sip.parenttype = 'POS Invoice'"
+            " AND sip.mode_of_payment = %s)"
+        )
+        params.append(payment_mode)
 
     # Group on the fields the INVOICE itself carries, not on who happens
     # to own the document. `owner` is whoever created the draft, which on
@@ -4461,12 +4500,45 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
     total_grand = sum(float(r.get("grand_total") or 0) for r in rows)
     total_invoices = sum(int(r.get("invoice_count") or 0) for r in rows)
 
+    # ── amount taken per mode of payment, per staff member ──────────
+    # Payments live on `Sales Invoice Payment` rows hanging off the POS
+    # Invoice. Queried separately rather than joined into the main
+    # aggregate: a bill split across two modes has two payment rows, and
+    # joining them would multiply every invoice-level SUM above.
+    pay_sql = f"""
+        SELECT {key_expr} AS user,
+               sip.mode_of_payment AS mode,
+               SUM(COALESCE(sip.amount, 0)) AS amount
+        FROM `tabPOS Invoice` AS pi
+        {join}
+        INNER JOIN `tabSales Invoice Payment` AS sip
+                ON sip.parent = pi.name AND sip.parenttype = 'POS Invoice'
+        WHERE {" AND ".join(where_parts)}
+        GROUP BY {key_expr}, sip.mode_of_payment
+    """
+    pay_rows = frappe.db.sql(pay_sql, tuple(params), as_dict=True)
+
+    by_user = {}
+    mode_totals = {}
+    for r in pay_rows:
+        amt = float(r["amount"] or 0)
+        by_user.setdefault(r["user"], {})[r["mode"]] = amt
+        mode_totals[r["mode"]] = mode_totals.get(r["mode"], 0.0) + amt
+    for row in rows:
+        row["payments"] = by_user.get(row["user"], {})
+
     return {
         "from_date": from_date,
         "to_date": to_date,
         "branch": branch,
         "terminal": terminal or None,
         "group_by": "waiter" if by_waiter else "cashier",
+        "is_admin": 1 if is_admin else 0,
+        "payment_mode": payment_mode or None,
+        # Every mode seen in the window, so the filter lists exactly what
+        # is actually there rather than every mode configured on the site.
+        "payment_modes": sorted(mode_totals),
+        "payment_totals": mode_totals,
         "rows": rows,
         "totals": {
             "grand_total": total_grand,
