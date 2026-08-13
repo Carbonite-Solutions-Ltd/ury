@@ -297,6 +297,20 @@ Running record of bugs fixed and non-obvious traps discovered. Add new entries a
 - **`POS Closing Entry.custom_closed_by_non_captain` is now near-vestigial** — only managers can close, so it will read 0 on essentially every new row. Left in place (harmless, and historic rows still mean something) rather than removed.
 - **Frontend + backend → `bench restart` + redeploy the `pos/` build. No migrate.**
 
+### 2026-08-06 — Default customer never applied to DINE-IN orders (only take-away got it)
+- **Symptom (user):** "in the table order the default customer that we set in the pos profile is not selected by default. it only works in the pos tab when its a takeout".
+- **Cause:** `loadTableOrder` in [pos-store.ts](pos/src/store/pos-store.ts) set `selectedCustomer: null` in **four** branches, while `resetOrderState` — the path take-away goes through — correctly used `defaultCustomer(get().posProfile)`. That asymmetry is the whole bug: take-away got the default, dine-in got a blank picker.
+  | Branch | Was |
+  |---|---|
+  | table has an order but no customer on it | `null` |
+  | **table has NO order — i.e. tapping a free table** | **`null`** ← the reported case |
+  | load failed | `null` |
+  | `clearTableOrder` | `null` |
+- **Fix:** all four now fall back to `defaultCustomer(get().posProfile)`, matching `resetOrderState`. The helper is null-safe (falls back to `"Cash Customer"` when the profile has none), so a profile without a default behaves exactly as before.
+- **Where the value actually comes from — worth knowing.** `getPosProfile` does **NOT** return `customer` (verified: it returns `None` even though the profile holds `Cash Customer - Airport`). It arrives via the FULL profile fetch, and `getCombinedPosProfile` spreads `...fullProfile` first, so `customer` survives the merge. Don't "fix" this by adding `customer` to `getPosProfile` — it is already correct, just not where you'd first look.
+- **Verified in a real browser:** tapped a free table (BG-Tab 51) → lands on Dine In with **"Cash Customer - Airport"** preselected — the profile's real default, not the generic `Cash Customer` fallback, which confirms the value is flowing from the full profile rather than the hardcoded default.
+- **Frontend-only → redeploy the `pos/` build. No migrate, no restart.**
+
 ### 2026-08-06 — Settings page: tabs + a Menu & Prices manager
 - **Ask (user):** the Settings page "looks so crowded" — split it with a sidebar/tabs, make it work on the PWA, and add a menu manager where a manager can pick a menu, see items and prices, set prices, filter to the unpriced ones, and add or remove items. Manager and administrator only.
 - **Role gate needed no change.** `canAccessSettings` / `_user_can_manage_settings` were already Administrator + System Manager + URY Manager (URY Captain deliberately excluded, 2026-07-30) — exactly what was asked for. Every new endpoint re-checks the server-side helper.
