@@ -297,6 +297,28 @@ Running record of bugs fixed and non-obvious traps discovered. Add new entries a
 - **`POS Closing Entry.custom_closed_by_non_captain` is now near-vestigial** — only managers can close, so it will read 0 on essentially every new row. Left in place (harmless, and historic rows still mean something) rather than removed.
 - **Frontend + backend → `bench restart` + redeploy the `pos/` build. No migrate.**
 
+### 2026-08-06 — Cashiers got NOTHING from the staff reports: getBranch() hard-throws for an unlinked user
+- **Symptom (user):** "the cashier cant see the data in the sales by staff... for me the administrator i can see the cashier and waiters and select but the cashier is not able to see".
+- **Cause:** opening the report to cashiers (earlier the same day) scoped their rows correctly but left `branch = getBranch()` in place. **`getBranch()` HARD-THROWS** — `ValidationError: Your user is not linked to any Branch` — for any user with no `URY User` row on a Branch. On this site **3 of 7 plain cashiers are unlinked**, so the whole report failed before the query ran; it did not merely come back empty.
+- **The branch filter is redundant for a cashier anyway.** Their rows are already restricted to `(pi.owner = me OR pi.cashier = me)`, so branch adds nothing to the scope — it was only ever a hard dependency by accident. Exactly the trap fixed for the waiter Orders list on 2026-07-15, in a different endpoint.
+- **Fix — new `_report_branch(is_admin)`:** an ADMIN still gets `getBranch()` and still throws, because for them the branch **is** the scope and a missing one is a real misconfiguration. A cashier gets a best-effort lookup, and the `pi.branch` clause is omitted entirely when it resolves to nothing. Applied to all three cashier-reachable report paths: `get_sales_by_cashier`, `get_staff_invoices` and `_payment_report_scope`.
+- **Deliberately NOT changed:** the admin-only reports (`get_sales_by_category`, `get_top_bottom_items`, `get_course_sales`, merges / transfers / splits) keep the hard `getBranch()` — a branchless admin there is a genuine config error worth surfacing.
+- **Known, untouched:** `get_dashboard_stats` also calls `getBranch()` directly and is reachable by cashiers, so an unlinked cashier will hit the same throw on the Dashboard. Out of scope for this report but the same one-line fix when it comes up.
+- **Verified across every plain cashier on the site** (roles = `URY Cashier` only), branch-linked and not: all three reports now load with `is_admin=0` and no exception, where 3 of them previously threw. Administrator unchanged — `is_admin=1`, still branch-scoped.
+- **Backend-only → `bench restart`. No migrate, no frontend rebuild.**
+
+### 2026-08-06 — Sales by Payment Method report (with invoice → item drill-down)
+- **Ask:** a Sales by Payment Method report, drilling down to the invoice and then the items on it.
+- **⚠ THE THING THAT MAKES THIS REPORT DIFFERENT FROM THE OTHERS — a bill can belong to MORE THAN ONE row.** Split payments write one `Sales Invoice Payment` row per tender, so a GHS 100 bill settled as 60 cash + 40 card contributes to BOTH modes. Three consequences, all handled explicitly rather than left to surprise someone:
+  - `amount` sums the PAYMENT rows, not invoice totals, so the modes still add up to the day's takings.
+  - `bill_count` is per-mode and therefore does **NOT** sum to the number of bills. `total_bills` is returned separately as the honest figure, and the UI says so on screen and in the printout instead of letting the arithmetic look broken.
+  - The drill-down shows **`paid_in_mode`**, the amount settled in THAT tender — not `grand_total`. Showing the full bill under every tender it touched would make the column disagree with the mode's own total. Where they differ the row shows "X of Y".
+- **Shared scope helper `_payment_report_scope`** feeds both the summary and the drill-down, so the two cannot drift: branch, submitted-only, date window, merged sources excluded, optional terminal, and the same cashiers-see-own-trading rule as Sales by Staff.
+- **Item level reuses `get_invoice_items_for_report`** and the frontend reuses `InvoiceRow`, so all three drill-downs (staff, covers, payment) behave identically. Expand/collapse-all and Print/PDF match the other reports.
+- **Verified:** the join and grouping proven against real rows (22 `Sales Invoice Payment` rows aggregate to one mode, amounts 0.00 because drafts are unpaid); tab renders in a browser with 0 page errors; `tsc` 0 errors; `eslint` back to the same 1 pre-existing error; build clean.
+- **⚠ Split payments are UNTESTED with data** — this site has **0 invoices settled with more than one tender**, so the multi-tender path is correct by construction but has never been exercised. Worth checking first on live, since it is the whole reason the report is shaped this way.
+- **Deploy: `bench restart` (2 new whitelisted methods) + redeploy the `pos/` build. No migrate.**
+
 ### 2026-08-06 — Print / PDF for the Sales by Staff and Covers reports
 - **Ask:** a PDF print of the report.
 - **Same mechanism the other printable reports here already use** — `window.open` → write a self-contained styled document → the browser's own print dialog, which is where **Save as PDF** lives. No server-side PDF renderer and no new dependency. Matched the existing `window.onload → print → onafterprint → close` pattern rather than inventing a second one.

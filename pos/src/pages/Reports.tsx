@@ -29,6 +29,8 @@ import { useRootStore } from '../store/root-store';
 import { canSeeAdminReports } from '../lib/role-utils';
 import {
   getCourseSales,
+  getPaymentModeInvoices,
+  getSalesByPaymentMethod,
   getInvoiceItemsForReport,
   getStaffInvoices,
   getSalesByCashier,
@@ -41,6 +43,7 @@ import {
   getTransferReport,
   getPaymentSplitsReport,
   type CourseSalesResponse,
+  type PaymentMethodResponse,
   type ReportDateRange,
   type ReportInvoiceItem,
   type SalesByCashierRow,
@@ -98,6 +101,7 @@ type ReportTab =
   | 'my-shift'
   | 'by-cashier'
   | 'covers'
+  | 'payment-methods'
   | 'by-category'
   | 'top-bottom'
   | 'merges'
@@ -153,6 +157,8 @@ export default function Reports() {
   const [staffGrouping, setStaffGrouping] = useState<StaffGrouping>('cashier');
   const [paymentMode, setPaymentMode] = useState<string>('');
   const [courseSales, setCourseSales] = useState<CourseSalesResponse | null>(null);
+  const [paymentMethods, setPaymentMethods] =
+    useState<PaymentMethodResponse | null>(null);
   const [salesByCashier, setSalesByCashier] =
     useState<SalesByCashierResponse | null>(null);
   const [salesByCategory, setSalesByCategory] =
@@ -174,6 +180,7 @@ export default function Reports() {
   const isRangeTab =
     activeTab === 'by-cashier' ||
     activeTab === 'covers' ||
+    activeTab === 'payment-methods' ||
     activeTab === 'by-category' ||
     activeTab === 'top-bottom' ||
     activeTab === 'merges' ||
@@ -192,6 +199,8 @@ export default function Reports() {
       if (shiftView === 'current') fetchShiftSummary();
       else if (shiftView === 'all') fetchShiftHistory();
       else fetchShiftSchedule();
+    } else if (activeTab === 'payment-methods') {
+      fetchPaymentMethods();
     } else if (activeTab === 'covers') {
       fetchCourseSales();
     } else if (activeTab === 'by-cashier') {
@@ -288,6 +297,24 @@ export default function Reports() {
       setShiftSchedule(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch shift schedule');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchPaymentMethods = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setPaymentMethods(
+        await getSalesByPaymentMethod({
+          from_date: fromDate,
+          to_date: toDate,
+          terminal: terminalName,
+        })
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch payment methods');
     } finally {
       setLoading(false);
     }
@@ -429,6 +456,7 @@ export default function Reports() {
       else if (shiftView === 'all') fetchShiftHistory();
       else fetchShiftSchedule();
     }
+    else if (activeTab === 'payment-methods') fetchPaymentMethods();
     else if (activeTab === 'covers') fetchCourseSales();
     else if (activeTab === 'by-cashier') fetchSalesByCashier();
     else if (activeTab === 'by-category') fetchSalesByCategory();
@@ -861,6 +889,12 @@ export default function Reports() {
             {isAdmin && (
               <>
                 <TabButton
+                  active={activeTab === 'payment-methods'}
+                  onClick={() => setActiveTab('payment-methods')}
+                  icon={<CreditCard className="w-5 h-5" />}
+                  label="Payment Methods"
+                />
+                <TabButton
                   active={activeTab === 'covers'}
                   onClick={() => setActiveTab('covers')}
                   icon={<Utensils className="w-5 h-5" />}
@@ -921,6 +955,11 @@ export default function Reports() {
             schedule={shiftSchedule}
             scheduleWeekStart={scheduleWeekStart}
             onWeekChange={setScheduleWeekStart}
+          />
+        ) : activeTab === 'payment-methods' ? (
+          <PaymentMethodView
+            report={paymentMethods}
+            range={{ from_date: fromDate, to_date: toDate, terminal: terminalName }}
           />
         ) : activeTab === 'covers' ? (
           <CoversView report={courseSales} />
@@ -1963,8 +2002,19 @@ function InvoiceRow({
             {invoice.restaurant_table ? ` · ${invoice.restaurant_table}` : ''}
           </span>
         </span>
-        <span className="text-sm font-semibold text-gray-900 shrink-0">
-          {formatCurrency(invoice.grand_total)}
+        <span className="text-right shrink-0">
+          <span className="block text-sm font-semibold text-gray-900">
+            {formatCurrency(invoice.paid_in_mode ?? invoice.grand_total)}
+          </span>
+          {/* On a split bill the amount taken in THIS tender differs from
+              the bill total, so show both rather than imply the whole
+              bill was settled by one method. */}
+          {invoice.paid_in_mode !== undefined &&
+            invoice.paid_in_mode !== invoice.grand_total && (
+              <span className="block text-xs text-gray-500">
+                of {formatCurrency(invoice.grand_total)}
+              </span>
+            )}
         </span>
       </button>
 
@@ -3735,5 +3785,223 @@ function printCoversReport(
      <tfoot><tr><td>Total</td><td class="r"></td>
        <td class="r">${report.totals.qty}</td>
        <td class="r">${currency(report.totals.amount)}</td></tr></tfoot></table>`
+  );
+}
+
+/**
+ * Sales by Payment Method — how much each tender took, drilling into
+ * the bills and then their items.
+ *
+ * The per-bill figure shown is the amount settled IN THAT MODE, not the
+ * invoice's grand total: a bill split across two tenders belongs to
+ * both, and showing its full value under each would make the column
+ * disagree with the mode's own total.
+ */
+function PaymentMethodView({
+  report,
+  range,
+}: {
+  report: PaymentMethodResponse | null;
+  range: ReportDateRange;
+}) {
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  if (!report) return <EmptyState message="Loading…" />;
+  if (!report.modes.length) {
+    return (
+      <EmptyState
+        message={`No payments between ${report.from_date} and ${report.to_date}`}
+      />
+    );
+  }
+  const allOpen = open.size === report.modes.length;
+
+  return (
+    <div className="max-w-7xl mx-auto space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <StatTile
+          label="Methods"
+          value={String(report.totals.mode_count)}
+          tone="blue"
+        />
+        <StatTile
+          label="Bills"
+          value={String(report.totals.total_bills)}
+          tone="purple"
+        />
+        <StatTile
+          label="Total taken"
+          value={formatCurrency(report.totals.amount)}
+          tone="green"
+        />
+      </div>
+
+      <Card>
+        <CardContent className="p-6">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">
+                Sales by Payment Method
+              </h3>
+              <p className="text-sm text-gray-500">
+                {report.from_date} to {report.to_date} · tap a method to see its
+                bills
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() =>
+                  setOpen(allOpen ? new Set() : new Set(report.modes.map((m) => m.mode)))
+                }
+                className="text-xs font-medium text-blue-600 hover:text-blue-700 whitespace-nowrap"
+              >
+                {allOpen ? 'Collapse all' : 'Expand all'}
+              </button>
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() => printPaymentMethodReport(report, formatCurrency)}
+              >
+                <Printer className="w-4 h-4 mr-2" />
+                Print / PDF
+              </Button>
+            </div>
+          </div>
+
+          {/* A split bill counts under every tender it used, so these
+              counts deliberately do not sum to the Bills tile above. */}
+          <p className="mb-3 text-xs text-gray-500">
+            A bill split across tenders is counted under each one, so the
+            per-method bill counts add up to more than {report.totals.total_bills}.
+          </p>
+
+          <div className="space-y-2">
+            {report.modes.map((m) => (
+              <PaymentModeBlock
+                key={m.mode}
+                mode={m}
+                expanded={open.has(m.mode)}
+                range={range}
+                onToggle={() =>
+                  setOpen((cur) => {
+                    const next = new Set(cur);
+                    if (next.has(m.mode)) next.delete(m.mode);
+                    else next.add(m.mode);
+                    return next;
+                  })
+                }
+              />
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function PaymentModeBlock({
+  mode,
+  expanded,
+  range,
+  onToggle,
+}: {
+  mode: { mode: string; bill_count: number; amount: number; percentage: number };
+  expanded: boolean;
+  range: ReportDateRange;
+  onToggle: () => void;
+}) {
+  const [invoices, setInvoices] = useState<StaffInvoiceRow[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [openInvoice, setOpenInvoice] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!expanded || invoices !== null) return;
+    setLoading(true);
+    getPaymentModeInvoices(mode.mode, range)
+      .then(setInvoices)
+      .catch(() => setInvoices([]))
+      .finally(() => setLoading(false));
+  }, [expanded, invoices, mode.mode, range]);
+
+  return (
+    <div className="border border-gray-200 rounded-lg overflow-hidden">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left"
+      >
+        <span className="text-gray-400 shrink-0">{expanded ? '▾' : '▸'}</span>
+        <span className="flex-1 min-w-0">
+          <span className="block font-medium text-gray-900 truncate">
+            {mode.mode}
+          </span>
+          <span className="block text-xs text-gray-500">
+            {mode.bill_count} bill{mode.bill_count === 1 ? '' : 's'}
+          </span>
+        </span>
+        <span className="text-right shrink-0">
+          <span className="block font-semibold text-gray-900">
+            {formatCurrency(mode.amount)}
+          </span>
+          <span className="block text-xs text-gray-500">{mode.percentage}%</span>
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-gray-100 bg-gray-50 px-3 py-2">
+          {loading && <p className="text-sm text-gray-500">Loading bills…</p>}
+          {!loading && invoices?.length === 0 && (
+            <p className="text-sm text-gray-500">No bills for this method.</p>
+          )}
+          {!loading && !!invoices?.length && (
+            <div className="space-y-1.5">
+              {invoices.map((inv) => (
+                <InvoiceRow
+                  key={inv.name}
+                  invoice={inv}
+                  expanded={openInvoice.has(inv.name)}
+                  onToggle={() =>
+                    setOpenInvoice((cur) => {
+                      const next = new Set(cur);
+                      if (next.has(inv.name)) next.delete(inv.name);
+                      else next.add(inv.name);
+                      return next;
+                    })
+                  }
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function printPaymentMethodReport(
+  report: PaymentMethodResponse,
+  currency: (n: number) => string
+) {
+  const rows = report.modes
+    .map(
+      (m) =>
+        `<tr><td>${escHtml(m.mode)}</td><td class="r">${m.bill_count}</td>` +
+        `<td class="r">${m.percentage}%</td>` +
+        `<td class="r">${currency(m.amount)}</td></tr>`
+    )
+    .join('');
+  openPrintDocument(
+    'Sales by Payment Method',
+    `<h1>Sales by Payment Method</h1>
+     <div class="sub">${escHtml(report.from_date)} to ${escHtml(report.to_date)}
+       · ${escHtml(report.branch)}
+       ${report.terminal ? '· ' + escHtml(report.terminal) : ''}</div>
+     <table><thead><tr><th>Method</th><th class="r">Bills</th>
+       <th class="r">Share</th><th class="r">Amount</th></tr></thead>
+     <tbody>${rows}</tbody>
+     <tfoot><tr><td>Total</td><td class="r">${report.totals.total_bills}</td>
+       <td class="r"></td>
+       <td class="r">${currency(report.totals.amount)}</td></tr></tfoot></table>
+     <div class="sub">A bill split across tenders is counted under each method,
+       so the per-method bill counts exceed the ${report.totals.total_bills}
+       distinct bills.</div>`
   );
 }
