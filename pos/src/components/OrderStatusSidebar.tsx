@@ -77,7 +77,18 @@ const OrderStatusSidebar = ({
     }
   }, [statusTypes, selectedStatus, setSelectedStatus]);
 
+  // Shown to CASHIERS too as of 2026-08-06, not just captains. A cashier
+  // needs to pick a waiter and see what that waiter is running in order
+  // to settle their tables. What they may pick is trimmed server-side:
+  // get_cashier_users_for_terminal returns every waiter but only the
+  // cashier themselves, and _resolve_orders_scope enforces the same rule
+  // so a hand-crafted request cannot widen it. Waiters are excluded --
+  // they already only ever see their own orders.
   const showCashierFilter = useMemo(
+    () => canSeeAllTerminalOrders(user) || !isWaiterOnly(user),
+    [user]
+  );
+  const canPickOtherCashiers = useMemo(
     () => canSeeAllTerminalOrders(user),
     [user]
   );
@@ -266,11 +277,11 @@ const OrderStatusSidebar = ({
           </Button>
         </div>
 
-        {/* ───── Cashier filter (captain/manager/admin only) ───── */}
+        {/* ───── Staff filter ───── */}
         {showCashierFilter && (
           <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
             <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3 px-1">
-              Cashier
+              {canPickOtherCashiers ? 'Cashier' : 'Staff'}
             </h2>
 
             <div className="relative">
@@ -282,8 +293,13 @@ const OrderStatusSidebar = ({
                 className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 appearance-none cursor-pointer"
               >
                 <option value="mine">My Orders</option>
-                <option value="all">All Staff</option>
-                {cashierUsers.some((u) => u.kind !== 'waiter') && (
+                {/* "All Staff" and the cashier list are captain-only. The
+                    backend would downgrade them to "mine" for a cashier
+                    anyway, and an option that silently does something
+                    else is worse than one that isn't offered. */}
+                {canPickOtherCashiers && <option value="all">All Staff</option>}
+                {canPickOtherCashiers &&
+                  cashierUsers.some((u) => u.kind !== 'waiter') && (
                   <optgroup label="Pick a Cashier">
                     {cashierUsers
                       .filter((u) => u.kind !== 'waiter')

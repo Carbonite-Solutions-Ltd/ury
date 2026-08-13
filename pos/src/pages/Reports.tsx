@@ -145,6 +145,7 @@ export default function Reports() {
     mondayOf(new Date())
   );
   const [staffGrouping, setStaffGrouping] = useState<StaffGrouping>('cashier');
+  const [paymentMode, setPaymentMode] = useState<string>('');
   const [courseSales, setCourseSales] = useState<CourseSalesResponse | null>(null);
   const [salesByCashier, setSalesByCashier] =
     useState<SalesByCashierResponse | null>(null);
@@ -309,7 +310,7 @@ export default function Reports() {
   useEffect(() => {
     if (activeTab === 'by-cashier') fetchSalesByCashier();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [staffGrouping]);
+  }, [staffGrouping, paymentMode]);
 
   const fetchSalesByCashier = async () => {
     setLoading(true);
@@ -317,7 +318,8 @@ export default function Reports() {
     try {
       const res = await getSalesByCashier(
         { from_date: fromDate, to_date: toDate, terminal: terminalName },
-        staffGrouping
+        staffGrouping,
+        paymentMode || null
       );
       setSalesByCashier(res);
     } catch (err) {
@@ -807,6 +809,16 @@ export default function Reports() {
               icon={<ClipboardList className="w-5 h-5" />}
               label="My Shift"
             />
+            {/* Visible to cashiers too as of 2026-08-06 — the backend
+                scopes a plain cashier to their own trading, so "Sales by
+                Staff" answers "how did I do" for everyone and "how did
+                the floor do" for a captain. */}
+            <TabButton
+              active={activeTab === 'by-cashier'}
+              onClick={() => setActiveTab('by-cashier')}
+              icon={<UserCircle className="w-5 h-5" />}
+              label="Sales by Staff"
+            />
             {isAdmin && (
               <>
                 <TabButton
@@ -814,12 +826,6 @@ export default function Reports() {
                   onClick={() => setActiveTab('covers')}
                   icon={<Utensils className="w-5 h-5" />}
                   label="Covers"
-                />
-                <TabButton
-                  active={activeTab === 'by-cashier'}
-                  onClick={() => setActiveTab('by-cashier')}
-                  icon={<UserCircle className="w-5 h-5" />}
-                  label="Sales by Cashier"
                 />
                 <TabButton
                   active={activeTab === 'by-category'}
@@ -884,6 +890,8 @@ export default function Reports() {
             report={salesByCashier}
             grouping={staffGrouping}
             onGroupingChange={setStaffGrouping}
+            paymentMode={paymentMode}
+            onPaymentModeChange={setPaymentMode}
           />
         ) : activeTab === 'by-category' ? (
           <SalesByCategoryView report={salesByCategory} />
@@ -1618,14 +1626,34 @@ function SalesByCashierView({
   report,
   grouping,
   onGroupingChange,
+  paymentMode,
+  onPaymentModeChange,
 }: {
   report: SalesByCashierResponse | null;
   grouping: StaffGrouping;
   onGroupingChange: (v: StaffGrouping) => void;
+  paymentMode: string;
+  onPaymentModeChange: (v: string) => void;
 }) {
-  // The toggle renders even while loading / empty, otherwise a grouping
-  // with no data would strand the user with no way to switch back.
-  const toggle = <StaffToggle value={grouping} onChange={onGroupingChange} />;
+  // Controls render even while loading / empty, otherwise a grouping or
+  // payment filter with no data would strand the user with no way back.
+  const toggle = (
+    <div className="flex flex-wrap items-center gap-2">
+      <select
+        value={paymentMode}
+        onChange={(e) => onPaymentModeChange(e.target.value)}
+        className="border border-gray-300 rounded-lg px-2.5 py-1.5 text-xs"
+      >
+        <option value="">All payment methods</option>
+        {(report?.payment_modes ?? []).map((m) => (
+          <option key={m} value={m}>
+            {m}
+          </option>
+        ))}
+      </select>
+      <StaffToggle value={grouping} onChange={onGroupingChange} />
+    </div>
+  );
   if (!report)
     return (
       <div className="max-w-7xl mx-auto space-y-4">
@@ -1643,6 +1671,7 @@ function SalesByCashierView({
       </div>
     );
   }
+  const modes = report.payment_modes ?? [];
   const grand = report.totals.grand_total || 0;
   return (
     <div className="max-w-7xl mx-auto space-y-4">
@@ -1672,7 +1701,7 @@ function SalesByCashierView({
               <thead className="bg-gray-50 border-y border-gray-200">
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                    Cashier
+                    {report.group_by === 'waiter' ? 'Waiter' : 'Cashier'}
                   </th>
                   <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
                     Invoices
@@ -1683,9 +1712,16 @@ function SalesByCashierView({
                   <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
                     Discount
                   </th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
-                    AOV
-                  </th>
+                  {/* One column per mode actually used in this window, so
+                      a site with three tenders doesn't get ten columns. */}
+                  {modes.map((m) => (
+                    <th
+                      key={m}
+                      className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase whitespace-nowrap"
+                    >
+                      {m}
+                    </th>
+                  ))}
                   <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
                     Net
                   </th>
@@ -1719,9 +1755,16 @@ function SalesByCashierView({
                         ? formatCurrency(row.discount_amount)
                         : '—'}
                     </td>
-                    <td className="px-4 py-3 text-right text-gray-600">
-                      {formatCurrency(row.average_order_value)}
-                    </td>
+                    {modes.map((m) => (
+                      <td
+                        key={m}
+                        className="px-4 py-3 text-right text-gray-700 whitespace-nowrap"
+                      >
+                        {row.payments?.[m]
+                          ? formatCurrency(row.payments[m])
+                          : '—'}
+                      </td>
+                    ))}
                     <td className="px-4 py-3 text-right text-gray-600">
                       {formatCurrency(row.net_total)}
                     </td>

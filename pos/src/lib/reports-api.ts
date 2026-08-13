@@ -15,6 +15,8 @@ export interface ReportTotals {
 }
 
 export interface SalesByCashierRow {
+  /** Amount taken by this person per mode of payment. */
+  payments?: Record<string, number>;
   user: string;
   full_name: string;
   invoice_count: number;
@@ -36,6 +38,14 @@ export interface SalesByCashierResponse {
   terminal: string | null;
   /** Which member of staff the rows are grouped on. */
   group_by: StaffGrouping;
+  /** 0 when the caller is a plain cashier — rows are their own only. */
+  is_admin: 0 | 1;
+  /** Active mode-of-payment filter, if any. */
+  payment_mode: string | null;
+  /** Modes actually seen in this window (not every mode configured). */
+  payment_modes: string[];
+  /** Total taken per mode across the whole window. */
+  payment_totals: Record<string, number>;
   rows: SalesByCashierRow[];
   totals: ReportTotals;
 }
@@ -154,9 +164,11 @@ export interface ReportDateRange {
 
 export async function getSalesByCashier(
   range: ReportDateRange = {},
-  groupBy: StaffGrouping = 'cashier'
+  groupBy: StaffGrouping = 'cashier',
+  paymentMode?: string | null
 ): Promise<SalesByCashierResponse> {
   const params: Record<string, unknown> = { group_by: groupBy };
+  if (paymentMode) params.payment_mode = paymentMode;
   if (range.from_date) params.from_date = range.from_date;
   if (range.to_date) params.to_date = range.to_date;
   if (range.terminal) params.terminal = range.terminal;
