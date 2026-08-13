@@ -636,3 +636,48 @@ export async function updateOrderContact(args: {
   );
   return res.message;
 }
+
+// ── Correcting the tender on a settled bill (2026-08-06) ────────────
+
+export interface InvoicePaymentRow {
+  row: string;
+  mode_of_payment: string;
+  amount: number;
+  account: string | null;
+}
+
+export interface InvoicePaymentsResponse {
+  invoice: string;
+  grand_total: number;
+  /** 0 when it cannot be changed; `reason` says why. */
+  can_change: 0 | 1;
+  reason: string | null;
+  rows: InvoicePaymentRow[];
+  /** Only the modes this till is configured for. */
+  available_modes: string[];
+}
+
+export async function getInvoicePaymentRows(
+  invoice: string
+): Promise<InvoicePaymentsResponse> {
+  const res = await call.get<{ message: InvoicePaymentsResponse }>(
+    'ury.ury_pos.api.get_invoice_payment_rows',
+    { invoice }
+  );
+  return res.message;
+}
+
+export async function changeInvoicePaymentMode(
+  invoice: string,
+  row: string,
+  newMode: string
+): Promise<{ changed: number; from?: string; to?: string }> {
+  const res = await call.post<{
+    message: { changed: number; from?: string; to?: string };
+  }>('ury.ury_pos.api.change_invoice_payment_mode', {
+    invoice,
+    row,
+    new_mode: newMode,
+  });
+  return res.message;
+}

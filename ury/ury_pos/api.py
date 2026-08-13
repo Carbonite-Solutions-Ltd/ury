@@ -9370,3 +9370,181 @@ def get_payment_mode_invoices(mode, from_date=None, to_date=None, terminal=None)
         tuple(params),
         as_dict=True,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Correcting the mode of payment on a settled bill  (2026-08-06)
+# ══════════════════════════════════════════════════════════════════════
+#
+# A cashier who takes cash but taps "Card" has, until now, had no way to
+# put it right — the bill is submitted and the POS offers no edit. The
+# till then reconciles short on one tender and long on another.
+#
+# ⚠ WHY THERE IS A HARD WINDOW ON THIS. A POS Invoice posts NO GL
+# entries of its own (verified: zero GL Entry rows with
+# voucher_type='POS Invoice'). The accounting is created later, from the
+# CONSOLIDATED Sales Invoice built at shift close. So:
+#
+#   before consolidation → nothing has reached the ledger yet. Changing
+#                          the tender is a clean correction and the GL
+#                          is then created correctly from it.
+#   after consolidation  → the money is already posted against the old
+#                          mode's account. Editing the POS Invoice alone
+#                          would leave the POS and the ledger disagreeing
+#                          with no trace, which is worse than the
+#                          original mistake. REFUSED.
+#
+# The `account` on the payment row is updated alongside the mode. It is
+# what the consolidation actually posts to, so changing the label and
+# leaving the account would produce a bill that READS as cash and BOOKS
+# as card — the silent-wrong-answer version of this feature.
+
+
+def _assert_can_amend_payment(inv):
+    """Who may correct a tender, and when."""
+    if inv.docstatus != 1:
+        frappe.throw(
+            _("Only a settled bill's payment method can be changed."),
+            title=_("Not Settled"),
+        )
+    if inv.get("consolidated_invoice"):
+        frappe.throw(
+            _(
+                "This bill has already been consolidated into the accounts at "
+                "shift close, so its payment method can no longer be changed "
+                "here. Ask your accountant to correct it in the desk."
+            ),
+            title=_("Already In The Accounts"),
+        )
+
+    me = frappe.session.user
+    roles = set(frappe.get_roles(me))
+    if me == "Administrator" or (roles & {"System Manager", "URY Manager", "URY Captain"}):
+        return
+    # A cashier may correct their OWN mistake, not someone else's.
+    if inv.owner == me or inv.get("cashier") == me:
+        return
+    frappe.throw(
+        _("You can only change the payment method on a bill you took."),
+        title=_("Not Permitted"),
+    )
+
+
+@frappe.whitelist()
+def get_invoice_payment_rows(invoice):
+    """The tenders on a bill, plus what it may be changed to.
+
+    `can_change` tells the UI whether to offer the action at all, and
+    `reason` says why not — better than a button that fails on click.
+    """
+    inv = frappe.get_doc("POS Invoice", invoice)
+    can_change, reason = True, None
+    try:
+        _assert_can_amend_payment(inv)
+    except frappe.ValidationError as e:
+        can_change, reason = False, str(e)
+
+    profile_modes = []
+    if inv.pos_profile:
+        profile_modes = frappe.get_all(
+            "POS Payment Method",
+            filters={"parent": inv.pos_profile, "parenttype": "POS Profile"},
+            pluck="mode_of_payment",
+        )
+
+    return {
+        "invoice": inv.name,
+        "grand_total": flt(inv.grand_total),
+        "can_change": 1 if can_change else 0,
+        "reason": reason,
+        "rows": [
+            {
+                "row": p.name,
+                "mode_of_payment": p.mode_of_payment,
+                "amount": flt(p.amount),
+                "account": p.account,
+            }
+            for p in inv.payments
+        ],
+        # Only modes the till is actually configured for — offering every
+        # Mode of Payment on the site would invite booking a restaurant
+        # sale to a tender it never accepts.
+        "available_modes": profile_modes,
+    }
+
+
+@frappe.whitelist()
+def change_invoice_payment_mode(invoice, row, new_mode):
+    """Repoint one payment row at a different mode of payment."""
+    inv = frappe.get_doc("POS Invoice", invoice)
+    _assert_can_amend_payment(inv)
+
+    target = None
+    for p in inv.payments:
+        if p.name == row:
+            target = p
+            break
+    if not target:
+        frappe.throw(_("That payment line is no longer on this bill."), title=_("Not Found"))
+
+    if not frappe.db.exists("Mode of Payment", new_mode):
+        frappe.throw(_("Unknown mode of payment."), title=_("Not Found"))
+    if inv.pos_profile:
+        allowed = frappe.get_all(
+            "POS Payment Method",
+            filters={"parent": inv.pos_profile, "parenttype": "POS Profile"},
+            pluck="mode_of_payment",
+        )
+        if allowed and new_mode not in allowed:
+            frappe.throw(
+                _("'{0}' is not one of the payment methods on this till.").format(new_mode),
+                title=_("Not Available Here"),
+            )
+
+    old_mode = target.mode_of_payment
+    if old_mode == new_mode:
+        return {"invoice": inv.name, "changed": 0}
+
+    # The ACCOUNT is what consolidation posts to. Changing the label
+    # without it would give a bill that reads as one tender and books as
+    # another.
+    account = frappe.db.get_value(
+        "Mode of Payment Account",
+        {"parent": new_mode, "company": inv.company},
+        "default_account",
+    )
+    if not account:
+        frappe.throw(
+            _(
+                "'{0}' has no account configured for {1}, so the sale could not "
+                "be booked against it. Set one on the Mode of Payment first."
+            ).format(new_mode, inv.company),
+            title=_("Account Not Set"),
+        )
+
+    frappe.db.set_value(
+        "Sales Invoice Payment",
+        row,
+        {"mode_of_payment": new_mode, "account": account},
+        update_modified=False,
+    )
+    # Leave a trace on the bill — this changes what the takings look like
+    # per tender, so it must not be an invisible edit.
+    try:
+        inv.add_comment(
+            "Comment",
+            _("Payment method changed from {0} to {1} by {2}").format(
+                old_mode, new_mode, frappe.session.user
+            ),
+        )
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "URY: payment-mode change comment failed")
+    frappe.db.commit()
+
+    return {
+        "invoice": inv.name,
+        "changed": 1,
+        "from": old_mode,
+        "to": new_mode,
+        "account": account,
+    }
