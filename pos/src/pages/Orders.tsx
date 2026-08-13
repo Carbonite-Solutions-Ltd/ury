@@ -19,6 +19,7 @@ import {
   Phone,
   Edit,
   AlertTriangle,
+  Wallet,
 } from 'lucide-react';
 import { Badge, Button, Card, CardContent } from '../components/ui';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../components/ui/dialog';
@@ -32,6 +33,7 @@ import { usePOSStore } from '../store/pos-store';
 import { useNavigate } from 'react-router-dom';
 import PaymentDialog from '../components/PaymentDialog';
 import ReturnDialog from '../components/ReturnDialog';
+import ChangePaymentModeDialog from '../components/ChangePaymentModeDialog';
 import { printOrder } from '../lib/print';
 import { firePendingKotsForInvoice } from '../lib/kot-listener';
 import { call } from '../lib/frappe-sdk';
@@ -158,6 +160,7 @@ export default function Orders() {
   const [pendingKotRefreshVersion, setPendingKotRefreshVersion] =
     React.useState(0);
   const [showReturnDialog, setShowReturnDialog] = React.useState(false);
+  const [showPaymentModeDialog, setShowPaymentModeDialog] = React.useState(false);
   const [reverseLoading, setReverseLoading] = React.useState(false);
   // Incoming-transfer approval state (2026-06-05).
   const [transferLoading, setTransferLoading] = React.useState(false);
@@ -1576,6 +1579,24 @@ export default function Orders() {
                     Undo Return
                   </Button>
                 )}
+                {/* Change the tender on a settled bill. Shown for paid
+                    invoices only — a draft has no payment yet, and a
+                    return's refund mode belongs to the return flow. The
+                    backend decides whether it's actually still allowed
+                    (it isn't once the shift has been closed and the bill
+                    consolidated into the accounts); the dialog shows the
+                    reason rather than this button guessing. */}
+                {selectedOrder.status === 'Paid' &&
+                  !isReturnDoc(selectedOrder) && (
+                    <Button
+                      variant="outline"
+                      className="flex-1 border-blue-300 text-blue-700 hover:bg-blue-50"
+                      onClick={() => setShowPaymentModeDialog(true)}
+                    >
+                      <Wallet className="w-4 h-4 mr-1.5" />
+                      Payment Method
+                    </Button>
+                  )}
                 {/* Total */}
                 <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
                   {formatCurrency(getOrderTotal(selectedOrder))}
@@ -1602,6 +1623,16 @@ export default function Orders() {
           clearSelectedOrder={clearSelectedOrder}
           hotelRoom={selectedOrder.custom_hotel_room || null}
           hotelRoomLabel={selectedOrder.customer_name || null}
+        />
+      )}
+      {showPaymentModeDialog && selectedOrder && (
+        <ChangePaymentModeDialog
+          invoice={selectedOrder.name}
+          onClose={() => setShowPaymentModeDialog(false)}
+          onChanged={() => {
+            setShowPaymentModeDialog(false);
+            fetchOrders();
+          }}
         />
       )}
       {showReturnDialog && selectedOrder && (
