@@ -564,3 +564,55 @@ export interface DashboardStatsExtended {
   payment_mode_breakdown?: DashboardPaymentModeRow[];
   active_cashiers?: DashboardActiveCashierRow[];
 }
+
+// ── Sales by Staff drill-down ───────────────────────────────────────
+
+export interface StaffInvoiceRow {
+  name: string;
+  posting_date: string;
+  posting_time: string;
+  customer_name: string | null;
+  restaurant_table: string | null;
+  grand_total: number;
+  net_total: number;
+  is_return: number;
+  status: string;
+}
+
+export interface ReportInvoiceItem {
+  item_code: string;
+  item_name: string;
+  qty: number;
+  rate: number;
+  amount: number;
+}
+
+/** Invoices behind one staff row. Same scope as the row it expands. */
+export async function getStaffInvoices(
+  staff: string,
+  range: ReportDateRange = {},
+  groupBy: StaffGrouping = 'cashier',
+  paymentMode?: string | null
+): Promise<StaffInvoiceRow[]> {
+  const params: Record<string, unknown> = { staff, group_by: groupBy };
+  if (range.from_date) params.from_date = range.from_date;
+  if (range.to_date) params.to_date = range.to_date;
+  if (range.terminal) params.terminal = range.terminal;
+  if (paymentMode) params.payment_mode = paymentMode;
+  const res = await call.get<{ message: StaffInvoiceRow[] }>(
+    'ury.ury_pos.api.get_staff_invoices',
+    params
+  );
+  return res.message || [];
+}
+
+/** Line items on one invoice — the second level of the drill-down. */
+export async function getInvoiceItemsForReport(
+  invoice: string
+): Promise<ReportInvoiceItem[]> {
+  const res = await call.get<{ message: ReportInvoiceItem[] }>(
+    'ury.ury_pos.api.get_invoice_items_for_report',
+    { invoice }
+  );
+  return res.message || [];
+}

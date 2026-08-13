@@ -925,6 +925,34 @@ def _raise_cancel_chit(kot_name):
 
 
 # Method for URY POS
+
+def _resolve_billing_cashier(requested):
+    """Who to stamp as the cashier on a bill being settled.
+
+    Normally the person taking the payment — the session user. An
+    ADMINISTRATOR / System Manager may override it, because an owner who
+    settles a bill at the back office should be able to attribute it to
+    the cashier who actually served it rather than to themselves, which
+    would quietly distort the Sales by Staff report.
+
+    The override is refused for anyone else, and for a target that is not
+    a real enabled user, so a hand-crafted request cannot attribute a
+    sale to an arbitrary string. 2026-08-06.
+    """
+    me = frappe.session.user
+    requested = (requested or "").strip()
+    if not requested or requested == me:
+        return me
+
+    roles = set(frappe.get_roles(me))
+    if me != "Administrator" and not (roles & {"System Manager"}):
+        return me
+
+    if not frappe.db.exists("User", {"name": requested, "enabled": 1}):
+        return me
+    return requested
+
+
 @frappe.whitelist()
 def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDiscount=None, table=None, invoice=None, transaction_id=None):
     _assert_not_pending_cancellation(invoice)
@@ -945,6 +973,12 @@ def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDisc
     # shipped is corrected at payment time rather than posting its
     # receivable and cash legs to the company default.
     _apply_pos_profile_cost_center(invoice, pos_profile)
+    # Stamp who is taking the money. This param existed but was never
+    # used, which is why `cashier` was only ever set later by
+    # qz_print_update — so a bill settled without a physical print had no
+    # cashier at all and fell into the report's "Unassigned" bucket.
+    invoice.cashier = _resolve_billing_cashier(cashier)
+
     invoice.additional_discount_percentage = additionalDiscount
     invoice.calculate_taxes_and_totals()
 

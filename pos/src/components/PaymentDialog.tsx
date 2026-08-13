@@ -36,6 +36,7 @@ import { DEFAULT_PAYMENT_MODE } from '../data/order-types';
 import { chargeInvoiceToRoom } from '../lib/ihotel-api';
 import { printSplitReceipts, printOrder } from '../lib/print';
 import { canSkipPhysicalPrint } from '../lib/role-utils';
+import { getCashierUsersForTerminal, type CashierUser } from '../lib/invoice-api';
 import { useRootStore } from '../store/root-store';
 import ItemSplitFlow from './ItemSplitFlow';
 
@@ -119,6 +120,7 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
     paymentModes,
     fetchPaymentModes,
     posProfile: storePosProfile,
+    terminalName,
   } = usePOSStore();
   // Used only to decide whether to skip the courtesy auto-print on
   // payment for administrators. See the print branch in handlePayment.
@@ -138,6 +140,11 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
   // Charge to Room when it's available (cashier explicitly chose a
   // hotel guest in the picker — that's a strong intent signal) and to
   // Single otherwise.
+  // Administrator-only: attribute this bill to the cashier who
+  // actually served it. An owner settling at the back office would
+  // otherwise be recorded as the cashier and distort Sales by Staff.
+  const [billingCashier, setBillingCashier] = useState<string>('');
+  const [cashierOptions, setCashierOptions] = useState<CashierUser[]>([]);
   const [paymentMode, setPaymentMode] = useState<PaymentMode>(
     canChargeToRoom ? 'room' : 'single'
   );
@@ -446,6 +453,16 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
     setError(null);
   };
 
+  const canPickCashier = canSkipPhysicalPrint(user);
+
+  // The dialog is mounted only while open, so no isOpen guard is needed.
+  useEffect(() => {
+    if (!canPickCashier || !terminalName) return;
+    getCashierUsersForTerminal(terminalName)
+      .then((rows) => setCashierOptions(rows.filter((r) => r.kind !== 'waiter')))
+      .catch(() => setCashierOptions([]));
+  }, [canPickCashier, terminalName]);
+
   const handlePayment = async () => {
     setIsProcessing(true);
     setError(null);
@@ -469,7 +486,7 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
       }
       await call.post('ury.ury.doctype.ury_order.ury_order.make_invoice', {
         additionalDiscount: discountValue ? parseInt(discountValue) : null,
-        cashier,
+        cashier: billingCashier || cashier,
         customer,
         invoice,
         owner,
@@ -720,6 +737,33 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
           )}
 
           {/* Discount Section (hidden when charging to room). */}
+          {/* Administrator-only: whose sale is this? An owner settling a
+              bill at the back office would otherwise be stamped as the
+              cashier and skew Sales by Staff. Hidden for everyone else —
+              the backend refuses the override for non-admins anyway. */}
+          {canPickCashier && cashierOptions.length > 0 && (
+            <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-3">
+              <label className="block text-xs font-semibold text-blue-900 mb-1.5">
+                Cashier taking this bill
+              </label>
+              <select
+                value={billingCashier}
+                onChange={(e) => setBillingCashier(e.target.value)}
+                className="w-full border border-blue-300 rounded-lg px-3 py-2 text-sm bg-white"
+              >
+                <option value="">Me ({cashier || 'current user'})</option>
+                {cashierOptions.map((c) => (
+                  <option key={c.user} value={c.user}>
+                    {c.full_name || c.user}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1.5 text-xs text-blue-800">
+                Recorded on the invoice and used by the Sales by Staff report.
+              </p>
+            </div>
+          )}
+
           {paymentMode !== 'room' && storePosProfile?.enable_discount === 1 && (
             <div className="space-y-4 mb-6">
               <h3 className="text-lg font-semibold flex items-center gap-2">
