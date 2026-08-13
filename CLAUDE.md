@@ -297,6 +297,15 @@ Running record of bugs fixed and non-obvious traps discovered. Add new entries a
 - **`POS Closing Entry.custom_closed_by_non_captain` is now near-vestigial** — only managers can close, so it will read 0 on essentially every new row. Left in place (harmless, and historic rows still mean something) rather than removed.
 - **Frontend + backend → `bench restart` + redeploy the `pos/` build. No migrate.**
 
+### 2026-08-06 — Print / PDF for the Sales by Staff and Covers reports
+- **Ask:** a PDF print of the report.
+- **Same mechanism the other printable reports here already use** — `window.open` → write a self-contained styled document → the browser's own print dialog, which is where **Save as PDF** lives. No server-side PDF renderer and no new dependency. Matched the existing `window.onload → print → onafterprint → close` pattern rather than inventing a second one.
+- **Sales by Staff** prints the grouping in its heading, one column per payment mode actually used, and a totals row carrying the per-mode totals — so the printed page reconciles with the screen. **Covers** prints courses with their items laid out inline beneath each, since a printed page has no expander.
+- **All interpolated values go through `escHtml`.** Report data is user-entered (customer names, item names, course names) and must never be written raw into a document.
+- **Two lint/type traps worth remembering:** `<\/script>` inside the template literal trips `no-useless-escape` (the bundle is served as a .js file, so the plain closing tag is fine — the existing print functions already do it that way); and `ReportTotals.grand_total` plus the per-mode amounts are optional, so they need narrowing or a default before being passed to `formatCurrency`. **`yarn build` passed while `tsc` still failed** — a reminder that vite strips types without checking them, and CI now gates on `tsc` precisely for this.
+- **Verified:** buttons render on both tabs with 0 page errors, and are correctly disabled when there is nothing to print. **The printed document itself has NOT been seen** — this site has no submitted invoices, so both reports are empty and the button stays disabled. `tsc` 0 errors; `eslint` back to the same 1 pre-existing error; build clean.
+- **Frontend-only → redeploy the `pos/` build. No migrate, no restart.**
+
 ### 2026-08-06 — Sales by Staff drill-down, and the cashier is now stamped at PAYMENT
 - **Asks:** drop Returns + Discount; click a staff row to see their invoices, click an invoice to see its items, with expand/collapse-all; investigate a cashier selecting a waiter and seeing nothing; and let an ADMIN pick which cashier a bill is attributed to before payment.
 - **The "waiter filter shows nothing" report was NOT a query bug.** Reproduced both as Administrator and as a branch-linked plain cashier: filtering `waiter:Georgina` returns her 2 draft invoices correctly in both cases. **The cause is the sidebar's Posting Date, which defaults to TODAY** — on this site today is 2026-08-13 and the newest waiter order is 2026-08-05, so an empty list is the correct answer to the question actually being asked. Widen the date range and the rows appear.

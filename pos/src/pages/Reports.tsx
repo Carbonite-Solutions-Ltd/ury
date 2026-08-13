@@ -789,6 +789,39 @@ export default function Reports() {
                 </Button>
               </>
             )}
+            {/* Same print-window approach as Daily Sales — the browser's
+                own dialog is where "Save as PDF" lives, so this yields a
+                PDF with no server-side renderer. */}
+            {activeTab === 'by-cashier' && (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() =>
+                  salesByCashier
+                    ? printStaffReport(salesByCashier, formatCurrency)
+                    : showToast.error('Nothing to print yet')
+                }
+                disabled={!salesByCashier?.rows.length}
+              >
+                <Printer className="w-4 h-4 mr-2" />
+                Print / PDF
+              </Button>
+            )}
+            {activeTab === 'covers' && (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() =>
+                  courseSales
+                    ? printCoversReport(courseSales, formatCurrency)
+                    : showToast.error('Nothing to print yet')
+                }
+                disabled={!courseSales?.courses.length}
+              >
+                <Printer className="w-4 h-4 mr-2" />
+                Print / PDF
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -3552,5 +3585,155 @@ function CoversView({ report }: { report: CourseSalesResponse | null }) {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------
+// PDF / print for the two staff-facing reports.
+//
+// Same approach the other printable reports here use: open a window,
+// write a self-contained styled document, and let the browser's own
+// dialog handle it — which is also where "Save as PDF" lives, so this
+// gives a PDF without a server-side renderer or a PDF dependency.
+// ---------------------------------------------------------------
+
+/** Escape text destined for the print document. Report data is
+ *  user-entered (customer names, item names), so it must never be
+ *  interpolated raw. */
+function escHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function openPrintDocument(title: string, bodyHtml: string) {
+  const win = window.open('', '_blank', 'width=1000,height=700');
+  if (!win) {
+    showToast.error('Please allow pop-ups to print');
+    return;
+  }
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>${escHtml(title)}</title>
+    <style>
+      *{box-sizing:border-box}
+      body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+           margin:24px;color:#111}
+      h1{font-size:19px;margin:0 0 2px}
+      .sub{color:#666;font-size:12px;margin-bottom:16px}
+      table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:18px}
+      th{text-align:left;border-bottom:2px solid #333;padding:6px 8px;
+         font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:#555}
+      td{border-bottom:1px solid #e5e5e5;padding:6px 8px}
+      .r{text-align:right}
+      tfoot td{border-top:2px solid #333;border-bottom:none;font-weight:700}
+      .grp{background:#f5f5f5;font-weight:600}
+      .sub-row td{padding-left:22px;color:#444;font-size:11px}
+      .foot{margin-top:20px;color:#888;font-size:10px;
+            border-top:1px solid #ddd;padding-top:8px}
+      @media print{body{margin:12mm} .no-print{display:none}}
+    </style></head><body>${bodyHtml}
+    <div class="foot">Generated ${escHtml(new Date().toLocaleString('en-US'))}</div>
+    <script>
+      window.onload = function() {
+        window.print();
+        window.onafterprint = function() { window.close(); };
+      };
+    </script>
+    </body></html>`);
+  win.document.close();
+}
+
+function printStaffReport(
+  report: SalesByCashierResponse,
+  currency: (n: number) => string
+) {
+  const modes = report.payment_modes ?? [];
+  const label = report.group_by === 'waiter' ? 'Waiter' : 'Cashier';
+  const head =
+    `<th>${label}</th><th class="r">Invoices</th>` +
+    modes.map((m) => `<th class="r">${escHtml(m)}</th>`).join('') +
+    `<th class="r">Net</th><th class="r">Grand Total</th>`;
+
+  const body = report.rows
+    .map(
+      (r) =>
+        `<tr><td>${escHtml(r.full_name)}</td><td class="r">${r.sale_count}</td>` +
+        modes
+          .map(
+            (m) =>
+              (() => {
+                const amt = r.payments?.[m];
+                return `<td class="r">${amt ? currency(amt) : '—'}</td>`;
+              })()
+          )
+          .join('') +
+        `<td class="r">${currency(r.net_total)}</td>` +
+        `<td class="r">${currency(r.grand_total)}</td></tr>`
+    )
+    .join('');
+
+  const totals = report.payment_totals ?? {};
+  const foot =
+    `<tr><td>Total</td><td class="r">${report.totals.invoice_count}</td>` +
+    modes
+      .map((m) => {
+        const amt = totals[m];
+        return `<td class="r">${amt ? currency(amt) : '—'}</td>`;
+      })
+      .join('') +
+    `<td class="r"></td><td class="r">${currency(
+      report.totals.grand_total ?? 0
+    )}</td></tr>`;
+
+  openPrintDocument(
+    `Sales by ${label}`,
+    `<h1>Sales by ${label}</h1>
+     <div class="sub">${escHtml(report.from_date)} to ${escHtml(report.to_date)}
+       · ${escHtml(report.branch)}
+       ${report.terminal ? '· ' + escHtml(report.terminal) : ''}
+       ${report.payment_mode ? '· ' + escHtml(report.payment_mode) + ' only' : ''}</div>
+     <table><thead><tr>${head}</tr></thead>
+     <tbody>${body}</tbody><tfoot>${foot}</tfoot></table>`
+  );
+}
+
+function printCoversReport(
+  report: CourseSalesResponse,
+  currency: (n: number) => string
+) {
+  // Courses and their items in one flat table — a printed page has no
+  // expander, so the drill-down is simply laid out inline.
+  const rows = report.courses
+    .map((c) => {
+      const head =
+        `<tr class="grp"><td>${escHtml(c.course)}</td>` +
+        `<td class="r">${c.bill_count}</td><td class="r">${c.qty}</td>` +
+        `<td class="r">${currency(c.amount)}</td></tr>`;
+      const items = c.items
+        .map(
+          (i) =>
+            `<tr class="sub-row"><td>${escHtml(i.item_name || i.item_code)}</td>` +
+            `<td class="r">${i.bill_count}</td><td class="r">${i.qty}</td>` +
+            `<td class="r">${currency(i.amount)}</td></tr>`
+        )
+        .join('');
+      return head + items;
+    })
+    .join('');
+
+  openPrintDocument(
+    'Covers by Course',
+    `<h1>Covers by Course</h1>
+     <div class="sub">${escHtml(report.from_date)} to ${escHtml(report.to_date)}
+       · ${escHtml(report.branch)}
+       ${report.terminal ? '· ' + escHtml(report.terminal) : ''}</div>
+     <table><thead><tr><th>Course / Item</th><th class="r">Times</th>
+       <th class="r">Qty</th><th class="r">Total</th></tr></thead>
+     <tbody>${rows}</tbody>
+     <tfoot><tr><td>Total</td><td class="r"></td>
+       <td class="r">${report.totals.qty}</td>
+       <td class="r">${currency(report.totals.amount)}</td></tr></tfoot></table>`
   );
 }
