@@ -4372,8 +4372,15 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
     `group_by` picks WHICH member of staff, and they are genuinely
     different questions on the same invoice:
 
-      "cashier"  → `owner`, the user who rang the order.
-      "waiter"   → `custom_waiter`, the URY Waiter who served the table.
+      "cashier"  → `cashier` ON THE INVOICE, stamped when the bill is
+                   printed/paid, i.e. who actually took the money.
+      "waiter"   → `custom_waiter` ON THE INVOICE, the URY Waiter who
+                   served the table.
+
+    Both come off the invoice itself. Do NOT group on `owner`: that is
+    whoever created the draft, which on a waiter-enabled site is the
+    waiter, so a "by cashier" report grouped on it just repeats the
+    waiter list.
 
     On a site that uses waiters these are routinely different people,
     so the report says which one it grouped on rather than leaving the
@@ -4407,15 +4414,24 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
         )
         params.append(terminal)
 
+    # Group on the fields the INVOICE itself carries, not on who happens
+    # to own the document. `owner` is whoever created the draft, which on
+    # a waiter-enabled site is the WAITER -- grouping "Sales by Cashier"
+    # on it made both tabs show the same people. `cashier` is stamped
+    # when the bill is actually printed/paid, which is the real
+    # who-took-the-money. See CLAUDE.md "Fixes log" 2026-08-06.
     by_waiter = (group_by or "cashier").lower() == "waiter"
     if by_waiter:
         key_expr = "COALESCE(NULLIF(pi.custom_waiter, ''), '__unassigned__')"
         name_expr = "COALESCE(NULLIF(w.full_name, ''), NULLIF(pi.custom_waiter, ''), 'Unassigned')"
         join = "LEFT JOIN `tabURY Waiter` AS w ON w.name = pi.custom_waiter"
     else:
-        key_expr = "pi.owner"
-        name_expr = "COALESCE(u.full_name, pi.owner)"
-        join = "LEFT JOIN `tabUser` AS u ON u.name = pi.owner"
+        key_expr = "COALESCE(NULLIF(pi.cashier, ''), '__unassigned__')"
+        # `cashier` is a Data field that normally holds a user id, so the
+        # join is only to prettify it. If it holds anything else the join
+        # misses and the raw value is shown -- never a blank row.
+        name_expr = "COALESCE(NULLIF(u.full_name, ''), NULLIF(pi.cashier, ''), 'Unassigned')"
+        join = "LEFT JOIN `tabUser` AS u ON u.name = pi.cashier"
 
     sql = f"""
         SELECT
