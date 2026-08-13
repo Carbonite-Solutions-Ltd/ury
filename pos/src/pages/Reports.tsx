@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   TrendingUp,
   DollarSign,
+  Utensils,
   ShoppingCart,
   Users,
   Printer,
@@ -27,6 +28,7 @@ import { usePOSStore } from '../store/pos-store';
 import { useRootStore } from '../store/root-store';
 import { canSeeAdminReports } from '../lib/role-utils';
 import {
+  getCourseSales,
   getSalesByCashier,
   getSalesByCategory,
   getTopBottomItems,
@@ -36,7 +38,9 @@ import {
   getMergeReport,
   getTransferReport,
   getPaymentSplitsReport,
+  type CourseSalesResponse,
   type SalesByCashierResponse,
+  type StaffGrouping,
   type SalesByCategoryResponse,
   type TopBottomItemsResponse,
   type ShiftSummaryResponse,
@@ -87,6 +91,7 @@ type ReportTab =
   | 'daily-sales'
   | 'my-shift'
   | 'by-cashier'
+  | 'covers'
   | 'by-category'
   | 'top-bottom'
   | 'merges'
@@ -139,6 +144,8 @@ export default function Reports() {
   const [scheduleWeekStart, setScheduleWeekStart] = useState<string>(
     mondayOf(new Date())
   );
+  const [staffGrouping, setStaffGrouping] = useState<StaffGrouping>('cashier');
+  const [courseSales, setCourseSales] = useState<CourseSalesResponse | null>(null);
   const [salesByCashier, setSalesByCashier] =
     useState<SalesByCashierResponse | null>(null);
   const [salesByCategory, setSalesByCategory] =
@@ -159,6 +166,7 @@ export default function Reports() {
 
   const isRangeTab =
     activeTab === 'by-cashier' ||
+    activeTab === 'covers' ||
     activeTab === 'by-category' ||
     activeTab === 'top-bottom' ||
     activeTab === 'merges' ||
@@ -177,6 +185,8 @@ export default function Reports() {
       if (shiftView === 'current') fetchShiftSummary();
       else if (shiftView === 'all') fetchShiftHistory();
       else fetchShiftSchedule();
+    } else if (activeTab === 'covers') {
+      fetchCourseSales();
     } else if (activeTab === 'by-cashier') {
       fetchSalesByCashier();
     } else if (activeTab === 'by-category') {
@@ -276,15 +286,39 @@ export default function Reports() {
     }
   };
 
+  const fetchCourseSales = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setCourseSales(
+        await getCourseSales({
+          from_date: fromDate,
+          to_date: toDate,
+          terminal: terminalName,
+        })
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch course sales');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Re-fetch when the cashier/waiter switch flips. Without this the
+  // toggle would move but keep showing the previous grouping's rows.
+  useEffect(() => {
+    if (activeTab === 'by-cashier') fetchSalesByCashier();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [staffGrouping]);
+
   const fetchSalesByCashier = async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await getSalesByCashier({
-        from_date: fromDate,
-        to_date: toDate,
-        terminal: terminalName,
-      });
+      const res = await getSalesByCashier(
+        { from_date: fromDate, to_date: toDate, terminal: terminalName },
+        staffGrouping
+      );
       setSalesByCashier(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch sales by cashier');
@@ -387,6 +421,7 @@ export default function Reports() {
       else if (shiftView === 'all') fetchShiftHistory();
       else fetchShiftSchedule();
     }
+    else if (activeTab === 'covers') fetchCourseSales();
     else if (activeTab === 'by-cashier') fetchSalesByCashier();
     else if (activeTab === 'by-category') fetchSalesByCategory();
     else if (activeTab === 'top-bottom') fetchTopBottom();
@@ -775,6 +810,12 @@ export default function Reports() {
             {isAdmin && (
               <>
                 <TabButton
+                  active={activeTab === 'covers'}
+                  onClick={() => setActiveTab('covers')}
+                  icon={<Utensils className="w-5 h-5" />}
+                  label="Covers"
+                />
+                <TabButton
                   active={activeTab === 'by-cashier'}
                   onClick={() => setActiveTab('by-cashier')}
                   icon={<UserCircle className="w-5 h-5" />}
@@ -836,8 +877,14 @@ export default function Reports() {
             scheduleWeekStart={scheduleWeekStart}
             onWeekChange={setScheduleWeekStart}
           />
+        ) : activeTab === 'covers' ? (
+          <CoversView report={courseSales} />
         ) : activeTab === 'by-cashier' ? (
-          <SalesByCashierView report={salesByCashier} />
+          <SalesByCashierView
+            report={salesByCashier}
+            grouping={staffGrouping}
+            onGroupingChange={setStaffGrouping}
+          />
         ) : activeTab === 'by-category' ? (
           <SalesByCategoryView report={salesByCategory} />
         ) : activeTab === 'top-bottom' ? (
@@ -1536,15 +1583,64 @@ function ShiftSummaryView({ summary }: { summary: ShiftSummaryResponse | null })
   );
 }
 
+function StaffToggle({
+  value,
+  onChange,
+}: {
+  value: StaffGrouping;
+  onChange: (v: StaffGrouping) => void;
+}) {
+  return (
+    <div className="flex rounded-lg border border-gray-300 overflow-hidden shrink-0">
+      {(
+        [
+          ['cashier', 'By Cashier'],
+          ['waiter', 'By Waiter'],
+        ] as [StaffGrouping, string][]
+      ).map(([key, label]) => (
+        <button
+          key={key}
+          onClick={() => onChange(key)}
+          className={`px-3 py-1.5 text-xs font-medium ${
+            value === key
+              ? 'bg-blue-600 text-white'
+              : 'bg-white text-gray-700 hover:bg-gray-50'
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function SalesByCashierView({
   report,
+  grouping,
+  onGroupingChange,
 }: {
   report: SalesByCashierResponse | null;
+  grouping: StaffGrouping;
+  onGroupingChange: (v: StaffGrouping) => void;
 }) {
-  if (!report) return <EmptyState message="Loading…" />;
+  // The toggle renders even while loading / empty, otherwise a grouping
+  // with no data would strand the user with no way to switch back.
+  const toggle = <StaffToggle value={grouping} onChange={onGroupingChange} />;
+  if (!report)
+    return (
+      <div className="max-w-7xl mx-auto space-y-4">
+        <div className="flex justify-end">{toggle}</div>
+        <EmptyState message="Loading…" />
+      </div>
+    );
   if (!report.rows.length) {
     return (
-      <EmptyState message={`No sales between ${report.from_date} and ${report.to_date}`} />
+      <div className="max-w-7xl mx-auto space-y-4">
+        <div className="flex justify-end">{toggle}</div>
+        <EmptyState
+          message={`No sales between ${report.from_date} and ${report.to_date}`}
+        />
+      </div>
     );
   }
   const grand = report.totals.grand_total || 0;
@@ -1555,8 +1651,9 @@ function SalesByCashierView({
           <div className="flex items-center justify-between mb-4">
             <div>
               <h3 className="text-lg font-semibold text-gray-900">
-                Sales by Cashier
+                Sales by {report.group_by === 'waiter' ? 'Waiter' : 'Cashier'}
               </h3>
+              <div className="mt-2">{toggle}</div>
               <p className="text-sm text-gray-500">
                 {report.from_date} → {report.to_date} · {report.rows.length}{' '}
                 cashier{report.rows.length === 1 ? '' : 's'}
@@ -3093,4 +3190,140 @@ function shortDateTime(iso: string | null | undefined): string {
     minute: '2-digit',
     hour12: true,
   });
+}
+
+/**
+ * Covers — how each menu course is selling, drilling into its items.
+ *
+ * A course row is collapsed by default; expanding it lists the items
+ * inside with how many bills each appeared on, units sold and revenue.
+ * `bill_count` is a DISTINCT count of invoices, not a row count, so two
+ * lines of the same course on one bill count once.
+ */
+function CoversView({ report }: { report: CourseSalesResponse | null }) {
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  if (!report) return <EmptyState message="Loading…" />;
+  if (!report.courses.length) {
+    return (
+      <EmptyState
+        message={`No sales between ${report.from_date} and ${report.to_date}`}
+      />
+    );
+  }
+  const toggle = (course: string) =>
+    setOpen((cur) => {
+      const next = new Set(cur);
+      if (next.has(course)) next.delete(course);
+      else next.add(course);
+      return next;
+    });
+
+  return (
+    <div className="max-w-7xl mx-auto space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <StatTile
+          label="Courses"
+          value={String(report.totals.course_count)}
+          tone="blue"
+        />
+        <StatTile label="Items sold" value={String(report.totals.qty)} tone="purple" />
+        <StatTile
+          label="Total"
+          value={formatCurrency(report.totals.amount)}
+          tone="green"
+        />
+      </div>
+
+      <Card>
+        <CardContent className="p-6">
+          <div className="mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">Covers by Course</h3>
+            <p className="text-sm text-gray-500">
+              {report.from_date} to {report.to_date} · tap a course to see its items
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            {report.courses.map((c) => {
+              const expanded = open.has(c.course);
+              return (
+                <div
+                  key={c.course}
+                  className="border border-gray-200 rounded-lg overflow-hidden"
+                >
+                  <button
+                    onClick={() => toggle(c.course)}
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left"
+                  >
+                    <span className="text-gray-400 shrink-0">
+                      {expanded ? '▾' : '▸'}
+                    </span>
+                    <span className="flex-1 min-w-0">
+                      <span className="block font-medium text-gray-900 truncate">
+                        {c.course}
+                      </span>
+                      <span className="block text-xs text-gray-500">
+                        {c.bill_count} bill{c.bill_count === 1 ? '' : 's'} ·{' '}
+                        {c.qty} sold · {c.item_count} item
+                        {c.item_count === 1 ? '' : 's'}
+                      </span>
+                    </span>
+                    <span className="text-right shrink-0">
+                      <span className="block font-semibold text-gray-900">
+                        {formatCurrency(c.amount)}
+                      </span>
+                      <span className="block text-xs text-gray-500">
+                        {c.percentage}%
+                      </span>
+                    </span>
+                  </button>
+
+                  {expanded && (
+                    <div className="border-t border-gray-100 bg-gray-50 overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-xs uppercase tracking-wide text-gray-500">
+                            <th className="py-2 px-4 font-medium">Item</th>
+                            <th className="py-2 px-3 font-medium text-right">Times</th>
+                            <th className="py-2 px-3 font-medium text-right">Qty</th>
+                            <th className="py-2 px-4 font-medium text-right">Total</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {c.items.map((i) => (
+                            <tr
+                              key={i.item_code}
+                              className="border-t border-gray-100"
+                            >
+                              <td className="py-2 px-4">
+                                <span className="block text-gray-900">
+                                  {i.item_name || i.item_code}
+                                </span>
+                                <span className="block text-xs text-gray-500">
+                                  {i.item_code}
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 text-right text-gray-700">
+                                {i.bill_count}
+                              </td>
+                              <td className="py-2 px-3 text-right text-gray-700">
+                                {i.qty}
+                              </td>
+                              <td className="py-2 px-4 text-right font-medium text-gray-900">
+                                {formatCurrency(i.amount)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
 }

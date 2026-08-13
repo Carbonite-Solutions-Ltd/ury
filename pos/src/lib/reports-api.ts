@@ -27,13 +27,62 @@ export interface SalesByCashierRow {
   average_order_value: number;
 }
 
+export type StaffGrouping = 'cashier' | 'waiter';
+
 export interface SalesByCashierResponse {
   from_date: string;
   to_date: string;
   branch: string;
   terminal: string | null;
+  /** Which member of staff the rows are grouped on. */
+  group_by: StaffGrouping;
   rows: SalesByCashierRow[];
   totals: ReportTotals;
+}
+
+// ── Covers: sales by menu course, with item drill-down ──────────────
+
+export interface CourseSalesItem {
+  item_code: string;
+  item_name: string;
+  /** How many separate bills this item appeared on. */
+  bill_count: number;
+  qty: number;
+  amount: number;
+}
+
+export interface CourseSalesRow {
+  course: string;
+  /** Bills containing at least one item of this course (DISTINCT). */
+  bill_count: number;
+  qty: number;
+  amount: number;
+  item_count: number;
+  percentage: number;
+  items: CourseSalesItem[];
+}
+
+export interface CourseSalesResponse {
+  from_date: string;
+  to_date: string;
+  branch: string;
+  terminal: string | null;
+  courses: CourseSalesRow[];
+  totals: { amount: number; qty: number; course_count: number };
+}
+
+export async function getCourseSales(
+  range: ReportDateRange = {}
+): Promise<CourseSalesResponse> {
+  const params: Record<string, unknown> = {};
+  if (range.from_date) params.from_date = range.from_date;
+  if (range.to_date) params.to_date = range.to_date;
+  if (range.terminal) params.terminal = range.terminal;
+  const res = await call.get<{ message: CourseSalesResponse }>(
+    'ury.ury_pos.api.get_course_sales',
+    params
+  );
+  return res.message;
 }
 
 export interface SalesByCategoryRow {
@@ -104,9 +153,10 @@ export interface ReportDateRange {
 }
 
 export async function getSalesByCashier(
-  range: ReportDateRange = {}
+  range: ReportDateRange = {},
+  groupBy: StaffGrouping = 'cashier'
 ): Promise<SalesByCashierResponse> {
-  const params: Record<string, unknown> = {};
+  const params: Record<string, unknown> = { group_by: groupBy };
   if (range.from_date) params.from_date = range.from_date;
   if (range.to_date) params.to_date = range.to_date;
   if (range.terminal) params.terminal = range.terminal;
