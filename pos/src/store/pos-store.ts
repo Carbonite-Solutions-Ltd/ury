@@ -864,11 +864,16 @@ export const usePOSStore = create<POSStore>((set, get) => ({
             },
             {} as Record<string, number>
           ),
-          selectedCustomer: order.customer ? {
-            id: order.customer,
-            name: order.customer_name,
-            phone: order.mobile_number,
-          } : null,
+          // Fall back to the POS Profile default rather than null: a
+          // draft with no customer would otherwise leave the picker
+          // empty and block submit.
+          selectedCustomer: order.customer
+            ? {
+                id: order.customer,
+                name: order.customer_name,
+                phone: order.mobile_number,
+              }
+            : defaultCustomer(get().posProfile),
           isUpdatingOrder: true,
           orderId: order.name,
           // Rehydrate the hotel room intent from the draft so the
@@ -882,7 +887,11 @@ export const usePOSStore = create<POSStore>((set, get) => ({
         set({
           tableOrder: null,
           activeOrders: [],
-          selectedCustomer: null,
+          // Tapping a FREE table starts a brand-new dine-in order, so it
+          // needs the POS Profile's default customer exactly like
+          // resetOrderState gives take-away. This branch used to null it,
+          // which is why the default only ever appeared on the POS tab.
+          selectedCustomer: defaultCustomer(get().posProfile),
           selectedWaiter: null,
           isUpdatingOrder: false,
           orderId: null,
@@ -895,7 +904,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
         error: 'Failed to load table order',
         tableOrder: null,
         activeOrders: [],
-        selectedCustomer: null,
+        selectedCustomer: defaultCustomer(get().posProfile),
         isUpdatingOrder: false,
         orderId: null,
         hotelRoom: null,
@@ -910,7 +919,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
     set({
       tableOrder: null,
       activeOrders: [],
-      selectedCustomer: null,
+      selectedCustomer: defaultCustomer(get().posProfile),
       selectedWaiter: null,
       isUpdatingOrder: false,
       orderId: null,
