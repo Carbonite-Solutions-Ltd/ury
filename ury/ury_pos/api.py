@@ -918,6 +918,14 @@ def getPosInvoice(
     session_waiter = _get_self_waiter_for_user()
     is_waiter = bool(session_waiter)
 
+    # Asking for ONE waiter's orders means exactly that, wherever they
+    # were rung. A waiter routinely serves tables billed on more than one
+    # till, so keeping the terminal filter here would silently hide their
+    # orders from a cashier standing at a different terminal — the same
+    # trap fixed for waiters viewing their own list on 2026-07-15.
+    # 2026-08-06.
+    filtering_by_waiter = isinstance(cashier, str) and cashier.startswith("waiter:")
+
     if is_waiter:
         try:
             branch = getBranch()
@@ -989,7 +997,7 @@ def getPosInvoice(
         "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')"
     )
 
-    if terminal and not is_waiter:
+    if terminal and not is_waiter and not filtering_by_waiter:
         # Defensive null fallback: orders that pre-date the
         # custom_terminal field (or that somehow slipped through
         # without a terminal stamp) still show up on every terminal of
@@ -1095,6 +1103,9 @@ def searchPosInvoice(
     # branch). Same rationale as getPosInvoice. 2026-07-15.
     session_waiter = _get_self_waiter_for_user()
     is_waiter = bool(session_waiter)
+    # Mirror getPosInvoice: an explicit waiter filter means that waiter's
+    # orders wherever they were rung, so the terminal filter is skipped.
+    filtering_by_waiter = isinstance(cashier, str) and cashier.startswith("waiter:")
 
     if is_waiter:
         try:
@@ -1156,7 +1167,7 @@ def searchPosInvoice(
             ")"
         )
 
-    if terminal and not is_waiter:
+    if terminal and not is_waiter and not filtering_by_waiter:
         # Same defensive null fallback as getPosInvoice — see
         # CLAUDE.md "Fixes log" 2026-04-09. Waiters exempt (2026-07-15).
         where_parts.append(
@@ -9114,3 +9125,91 @@ def get_course_sales(from_date=None, to_date=None, terminal=None):
             "course_count": len(ordered),
         },
     }
+
+
+@frappe.whitelist()
+def get_staff_invoices(
+    staff, from_date=None, to_date=None, terminal=None, group_by="cashier",
+    payment_mode=None
+):
+    """Invoices behind one row of the Sales by Staff report.
+
+    `staff` is whatever that row's `user` key was — a user id when
+    grouped by cashier, a URY Waiter name when grouped by waiter, or
+    the literal "__unassigned__" for the catch-all row.
+
+    Scope is IDENTICAL to get_sales_by_cashier so the drill-down always
+    reconciles with the row it came from: same date window, same branch,
+    same terminal and payment-mode filters, and the same "cashiers see
+    only their own" rule. A drill-down that showed more than the total
+    it expanded from would be worse than no drill-down at all.
+    """
+    is_admin = _user_can_see_admin_reports()
+    from_date, to_date = _reports_date_range(from_date, to_date)
+    branch = getBranch()
+
+    where_parts = [
+        "pi.branch = %s",
+        "pi.docstatus = 1",
+        "pi.posting_date BETWEEN %s AND %s",
+        "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
+    ]
+    params = [branch, from_date, to_date]
+    if terminal:
+        where_parts.append(
+            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
+        )
+        params.append(terminal)
+    if not is_admin:
+        me = frappe.session.user
+        where_parts.append("(pi.owner = %s OR pi.cashier = %s)")
+        params.extend([me, me])
+    if payment_mode:
+        where_parts.append(
+            "EXISTS (SELECT 1 FROM `tabSales Invoice Payment` sip"
+            " WHERE sip.parent = pi.name AND sip.parenttype = 'POS Invoice'"
+            " AND sip.mode_of_payment = %s)"
+        )
+        params.append(payment_mode)
+
+    field = "pi.custom_waiter" if (group_by or "").lower() == "waiter" else "pi.cashier"
+    if staff == "__unassigned__":
+        where_parts.append(f"IFNULL({field}, '') = ''")
+    else:
+        where_parts.append(f"{field} = %s")
+        params.append(staff)
+
+    return frappe.db.sql(
+        f"""
+        SELECT pi.name, pi.posting_date, pi.posting_time, pi.customer_name,
+               pi.restaurant_table, pi.grand_total, pi.net_total,
+               pi.is_return, pi.status
+        FROM `tabPOS Invoice` AS pi
+        WHERE {" AND ".join(where_parts)}
+        ORDER BY pi.posting_date DESC, pi.posting_time DESC
+        LIMIT 500
+        """,
+        tuple(params),
+        as_dict=True,
+    )
+
+
+@frappe.whitelist()
+def get_invoice_items_for_report(invoice):
+    """Line items on one invoice, for the second level of the drill-down.
+
+    Permission is checked against the invoice itself rather than the
+    report gate, so a cashier can only open a bill they are allowed to
+    read in the first place.
+    """
+    if not frappe.has_permission("POS Invoice", "read", doc=invoice):
+        frappe.throw(
+            _("You don't have permission to view this invoice."),
+            frappe.PermissionError,
+        )
+    return frappe.get_all(
+        "POS Invoice Item",
+        filters={"parent": invoice, "parenttype": "POS Invoice"},
+        fields=["item_code", "item_name", "qty", "rate", "amount"],
+        order_by="idx",
+    )

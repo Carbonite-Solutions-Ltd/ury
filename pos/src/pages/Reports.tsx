@@ -29,6 +29,8 @@ import { useRootStore } from '../store/root-store';
 import { canSeeAdminReports } from '../lib/role-utils';
 import {
   getCourseSales,
+  getInvoiceItemsForReport,
+  getStaffInvoices,
   getSalesByCashier,
   getSalesByCategory,
   getTopBottomItems,
@@ -39,6 +41,10 @@ import {
   getTransferReport,
   getPaymentSplitsReport,
   type CourseSalesResponse,
+  type ReportDateRange,
+  type ReportInvoiceItem,
+  type SalesByCashierRow,
+  type StaffInvoiceRow,
   type SalesByCashierResponse,
   type StaffGrouping,
   type SalesByCategoryResponse,
@@ -782,6 +788,39 @@ export default function Reports() {
                   Print Report
                 </Button>
               </>
+            )}
+            {/* Same print-window approach as Daily Sales — the browser's
+                own dialog is where "Save as PDF" lives, so this yields a
+                PDF with no server-side renderer. */}
+            {activeTab === 'by-cashier' && (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() =>
+                  salesByCashier
+                    ? printStaffReport(salesByCashier, formatCurrency)
+                    : showToast.error('Nothing to print yet')
+                }
+                disabled={!salesByCashier?.rows.length}
+              >
+                <Printer className="w-4 h-4 mr-2" />
+                Print / PDF
+              </Button>
+            )}
+            {activeTab === 'covers' && (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() =>
+                  courseSales
+                    ? printCoversReport(courseSales, formatCurrency)
+                    : showToast.error('Nothing to print yet')
+                }
+                disabled={!courseSales?.courses.length}
+              >
+                <Printer className="w-4 h-4 mr-2" />
+                Print / PDF
+              </Button>
             )}
           </div>
         </div>
@@ -1635,6 +1674,16 @@ function SalesByCashierView({
   paymentMode: string;
   onPaymentModeChange: (v: string) => void;
 }) {
+  // Expansion state lives here, not in the row, so the Expand/Collapse
+  // all button can drive every row at once.
+  const [openStaff, setOpenStaff] = useState<Set<string>>(new Set());
+  const onToggleStaff = (user: string) =>
+    setOpenStaff((cur) => {
+      const next = new Set(cur);
+      if (next.has(user)) next.delete(user);
+      else next.add(user);
+      return next;
+    });
   // Controls render even while loading / empty, otherwise a grouping or
   // payment filter with no data would strand the user with no way back.
   const toggle = (
@@ -1653,6 +1702,17 @@ function SalesByCashierView({
       </select>
       <StaffToggle value={grouping} onChange={onGroupingChange} />
     </div>
+  );
+  // Only meaningful once rows exist; rendered next to the header below.
+  const expandAll = (rows: { user: string }[], all: boolean) => (
+    <button
+      onClick={() =>
+        setOpenStaff(all ? new Set() : new Set(rows.map((r) => r.user)))
+      }
+      className="text-xs font-medium text-blue-600 hover:text-blue-700 whitespace-nowrap"
+    >
+      {all ? 'Collapse all' : 'Expand all'}
+    </button>
   );
   if (!report)
     return (
@@ -1673,6 +1733,12 @@ function SalesByCashierView({
   }
   const modes = report.payment_modes ?? [];
   const grand = report.totals.grand_total || 0;
+  const range: ReportDateRange = {
+    from_date: report.from_date,
+    to_date: report.to_date,
+    terminal: report.terminal,
+  };
+  const allOpen = openStaff.size === report.rows.length && report.rows.length > 0;
   return (
     <div className="max-w-7xl mx-auto space-y-4">
       <Card>
@@ -1682,7 +1748,10 @@ function SalesByCashierView({
               <h3 className="text-lg font-semibold text-gray-900">
                 Sales by {report.group_by === 'waiter' ? 'Waiter' : 'Cashier'}
               </h3>
-              <div className="mt-2">{toggle}</div>
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                {toggle}
+                {expandAll(report.rows, allOpen)}
+              </div>
               <p className="text-sm text-gray-500">
                 {report.from_date} → {report.to_date} · {report.rows.length}{' '}
                 cashier{report.rows.length === 1 ? '' : 's'}
@@ -1706,12 +1775,6 @@ function SalesByCashierView({
                   <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
                     Invoices
                   </th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
-                    Returns
-                  </th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
-                    Discount
-                  </th>
                   {/* One column per mode actually used in this window, so
                       a site with three tenders doesn't get ten columns. */}
                   {modes.map((m) => (
@@ -1732,11 +1795,79 @@ function SalesByCashierView({
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {report.rows.map((row) => (
-                  <tr key={row.user}>
-                    <td className="px-4 py-3">
-                      <p className="font-medium text-gray-900">{row.full_name}</p>
-                      <p className="text-xs text-gray-500">{row.user}</p>
-                    </td>
+                  <StaffRow
+                    key={row.user}
+                    row={row}
+                    modes={modes}
+                    colSpan={3 + modes.length}
+                    expanded={openStaff.has(row.user)}
+                    onToggle={() => onToggleStaff(row.user)}
+                    range={range}
+                    grouping={report.group_by}
+                    paymentMode={paymentMode}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+/**
+ * One staff row, expandable into its invoices and then their items.
+ *
+ * Both levels are fetched LAZILY on first expand and then cached — a
+ * report with twenty staff should not pull twenty invoice lists, let
+ * alone every line item, just to render a summary table.
+ */
+function StaffRow({
+  row,
+  modes,
+  colSpan,
+  expanded,
+  onToggle,
+  range,
+  grouping,
+  paymentMode,
+}: {
+  row: SalesByCashierRow;
+  modes: string[];
+  colSpan: number;
+  expanded: boolean;
+  onToggle: () => void;
+  range: ReportDateRange;
+  grouping: StaffGrouping;
+  paymentMode: string;
+}) {
+  const [invoices, setInvoices] = useState<StaffInvoiceRow[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [openInvoice, setOpenInvoice] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!expanded || invoices !== null) return;
+    setLoading(true);
+    getStaffInvoices(row.user, range, grouping, paymentMode || null)
+      .then(setInvoices)
+      .catch(() => setInvoices([]))
+      .finally(() => setLoading(false));
+  }, [expanded, invoices, row.user, range, grouping, paymentMode]);
+
+  return (
+    <>
+      <tr
+        onClick={onToggle}
+        className="cursor-pointer hover:bg-gray-50"
+      >
+        <td className="px-4 py-3">
+          <p className="font-medium text-gray-900">
+            <span className="text-gray-400 mr-1.5">{expanded ? '▾' : '▸'}</span>
+            {row.full_name}
+          </p>
+          <p className="text-xs text-gray-500 pl-4">{row.user}</p>
+        </td>
                     <td className="px-4 py-3 text-right">
                       <span className="font-semibold">{row.sale_count}</span>
                       {row.return_count > 0 && (
@@ -1745,39 +1876,125 @@ function SalesByCashierView({
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-right text-gray-600">
-                      {row.return_amount > 0
-                        ? `−${formatCurrency(row.return_amount)}`
-                        : '—'}
+        {modes.map((m) => (
+          <td key={m} className="px-4 py-3 text-right text-gray-700 whitespace-nowrap">
+            {row.payments?.[m] ? formatCurrency(row.payments[m]) : '—'}
+          </td>
+        ))}
+        <td className="px-4 py-3 text-right text-gray-600">
+          {formatCurrency(row.net_total)}
+        </td>
+        <td className="px-4 py-3 text-right font-semibold text-gray-900">
+          {formatCurrency(row.grand_total)}
+        </td>
+      </tr>
+
+      {expanded && (
+        <tr>
+          <td colSpan={colSpan} className="bg-gray-50 px-4 py-3">
+            {loading && <p className="text-sm text-gray-500">Loading invoices…</p>}
+            {!loading && invoices?.length === 0 && (
+              <p className="text-sm text-gray-500">
+                No invoices in this window.
+              </p>
+            )}
+            {!loading && !!invoices?.length && (
+              <div className="space-y-1.5">
+                {invoices.map((inv) => (
+                  <InvoiceRow
+                    key={inv.name}
+                    invoice={inv}
+                    expanded={openInvoice.has(inv.name)}
+                    onToggle={() =>
+                      setOpenInvoice((cur) => {
+                        const next = new Set(cur);
+                        if (next.has(inv.name)) next.delete(inv.name);
+                        else next.add(inv.name);
+                        return next;
+                      })
+                    }
+                  />
+                ))}
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+/** Second drill-down level: one invoice, expanding into its line items. */
+function InvoiceRow({
+  invoice,
+  expanded,
+  onToggle,
+}: {
+  invoice: StaffInvoiceRow;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const [items, setItems] = useState<ReportInvoiceItem[] | null>(null);
+
+  useEffect(() => {
+    if (!expanded || items !== null) return;
+    getInvoiceItemsForReport(invoice.name)
+      .then(setItems)
+      .catch(() => setItems([]));
+  }, [expanded, items, invoice.name]);
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-md">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-gray-50"
+      >
+        <span className="text-gray-400">{expanded ? '▾' : '▸'}</span>
+        <span className="flex-1 min-w-0">
+          <span className="block text-sm font-medium text-gray-900 truncate">
+            {invoice.name}
+            {invoice.is_return ? (
+              <span className="ml-2 text-xs text-red-600">return</span>
+            ) : null}
+          </span>
+          <span className="block text-xs text-gray-500 truncate">
+            {invoice.posting_date} {String(invoice.posting_time).slice(0, 5)}
+            {invoice.customer_name ? ` · ${invoice.customer_name}` : ''}
+            {invoice.restaurant_table ? ` · ${invoice.restaurant_table}` : ''}
+          </span>
+        </span>
+        <span className="text-sm font-semibold text-gray-900 shrink-0">
+          {formatCurrency(invoice.grand_total)}
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-gray-100 px-3 py-2">
+          {items === null && <p className="text-xs text-gray-500">Loading items…</p>}
+          {items?.length === 0 && (
+            <p className="text-xs text-gray-500">No items on this invoice.</p>
+          )}
+          {!!items?.length && (
+            <table className="w-full text-xs">
+              <tbody>
+                {items.map((it, idx) => (
+                  <tr key={`${it.item_code}-${idx}`}>
+                    <td className="py-1 pr-2 text-gray-800">
+                      {it.item_name || it.item_code}
                     </td>
-                    <td className="px-4 py-3 text-right text-gray-600">
-                      {row.discount_amount > 0
-                        ? formatCurrency(row.discount_amount)
-                        : '—'}
+                    <td className="py-1 px-2 text-right text-gray-600 w-16">
+                      ×{it.qty}
                     </td>
-                    {modes.map((m) => (
-                      <td
-                        key={m}
-                        className="px-4 py-3 text-right text-gray-700 whitespace-nowrap"
-                      >
-                        {row.payments?.[m]
-                          ? formatCurrency(row.payments[m])
-                          : '—'}
-                      </td>
-                    ))}
-                    <td className="px-4 py-3 text-right text-gray-600">
-                      {formatCurrency(row.net_total)}
-                    </td>
-                    <td className="px-4 py-3 text-right font-semibold text-gray-900">
-                      {formatCurrency(row.grand_total)}
+                    <td className="py-1 pl-2 text-right text-gray-900 w-24">
+                      {formatCurrency(it.amount)}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
-        </CardContent>
-      </Card>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -3368,5 +3585,155 @@ function CoversView({ report }: { report: CourseSalesResponse | null }) {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------
+// PDF / print for the two staff-facing reports.
+//
+// Same approach the other printable reports here use: open a window,
+// write a self-contained styled document, and let the browser's own
+// dialog handle it — which is also where "Save as PDF" lives, so this
+// gives a PDF without a server-side renderer or a PDF dependency.
+// ---------------------------------------------------------------
+
+/** Escape text destined for the print document. Report data is
+ *  user-entered (customer names, item names), so it must never be
+ *  interpolated raw. */
+function escHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function openPrintDocument(title: string, bodyHtml: string) {
+  const win = window.open('', '_blank', 'width=1000,height=700');
+  if (!win) {
+    showToast.error('Please allow pop-ups to print');
+    return;
+  }
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>${escHtml(title)}</title>
+    <style>
+      *{box-sizing:border-box}
+      body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+           margin:24px;color:#111}
+      h1{font-size:19px;margin:0 0 2px}
+      .sub{color:#666;font-size:12px;margin-bottom:16px}
+      table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:18px}
+      th{text-align:left;border-bottom:2px solid #333;padding:6px 8px;
+         font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:#555}
+      td{border-bottom:1px solid #e5e5e5;padding:6px 8px}
+      .r{text-align:right}
+      tfoot td{border-top:2px solid #333;border-bottom:none;font-weight:700}
+      .grp{background:#f5f5f5;font-weight:600}
+      .sub-row td{padding-left:22px;color:#444;font-size:11px}
+      .foot{margin-top:20px;color:#888;font-size:10px;
+            border-top:1px solid #ddd;padding-top:8px}
+      @media print{body{margin:12mm} .no-print{display:none}}
+    </style></head><body>${bodyHtml}
+    <div class="foot">Generated ${escHtml(new Date().toLocaleString('en-US'))}</div>
+    <script>
+      window.onload = function() {
+        window.print();
+        window.onafterprint = function() { window.close(); };
+      };
+    </script>
+    </body></html>`);
+  win.document.close();
+}
+
+function printStaffReport(
+  report: SalesByCashierResponse,
+  currency: (n: number) => string
+) {
+  const modes = report.payment_modes ?? [];
+  const label = report.group_by === 'waiter' ? 'Waiter' : 'Cashier';
+  const head =
+    `<th>${label}</th><th class="r">Invoices</th>` +
+    modes.map((m) => `<th class="r">${escHtml(m)}</th>`).join('') +
+    `<th class="r">Net</th><th class="r">Grand Total</th>`;
+
+  const body = report.rows
+    .map(
+      (r) =>
+        `<tr><td>${escHtml(r.full_name)}</td><td class="r">${r.sale_count}</td>` +
+        modes
+          .map(
+            (m) =>
+              (() => {
+                const amt = r.payments?.[m];
+                return `<td class="r">${amt ? currency(amt) : '—'}</td>`;
+              })()
+          )
+          .join('') +
+        `<td class="r">${currency(r.net_total)}</td>` +
+        `<td class="r">${currency(r.grand_total)}</td></tr>`
+    )
+    .join('');
+
+  const totals = report.payment_totals ?? {};
+  const foot =
+    `<tr><td>Total</td><td class="r">${report.totals.invoice_count}</td>` +
+    modes
+      .map((m) => {
+        const amt = totals[m];
+        return `<td class="r">${amt ? currency(amt) : '—'}</td>`;
+      })
+      .join('') +
+    `<td class="r"></td><td class="r">${currency(
+      report.totals.grand_total ?? 0
+    )}</td></tr>`;
+
+  openPrintDocument(
+    `Sales by ${label}`,
+    `<h1>Sales by ${label}</h1>
+     <div class="sub">${escHtml(report.from_date)} to ${escHtml(report.to_date)}
+       · ${escHtml(report.branch)}
+       ${report.terminal ? '· ' + escHtml(report.terminal) : ''}
+       ${report.payment_mode ? '· ' + escHtml(report.payment_mode) + ' only' : ''}</div>
+     <table><thead><tr>${head}</tr></thead>
+     <tbody>${body}</tbody><tfoot>${foot}</tfoot></table>`
+  );
+}
+
+function printCoversReport(
+  report: CourseSalesResponse,
+  currency: (n: number) => string
+) {
+  // Courses and their items in one flat table — a printed page has no
+  // expander, so the drill-down is simply laid out inline.
+  const rows = report.courses
+    .map((c) => {
+      const head =
+        `<tr class="grp"><td>${escHtml(c.course)}</td>` +
+        `<td class="r">${c.bill_count}</td><td class="r">${c.qty}</td>` +
+        `<td class="r">${currency(c.amount)}</td></tr>`;
+      const items = c.items
+        .map(
+          (i) =>
+            `<tr class="sub-row"><td>${escHtml(i.item_name || i.item_code)}</td>` +
+            `<td class="r">${i.bill_count}</td><td class="r">${i.qty}</td>` +
+            `<td class="r">${currency(i.amount)}</td></tr>`
+        )
+        .join('');
+      return head + items;
+    })
+    .join('');
+
+  openPrintDocument(
+    'Covers by Course',
+    `<h1>Covers by Course</h1>
+     <div class="sub">${escHtml(report.from_date)} to ${escHtml(report.to_date)}
+       · ${escHtml(report.branch)}
+       ${report.terminal ? '· ' + escHtml(report.terminal) : ''}</div>
+     <table><thead><tr><th>Course / Item</th><th class="r">Times</th>
+       <th class="r">Qty</th><th class="r">Total</th></tr></thead>
+     <tbody>${rows}</tbody>
+     <tfoot><tr><td>Total</td><td class="r"></td>
+       <td class="r">${report.totals.qty}</td>
+       <td class="r">${currency(report.totals.amount)}</td></tr></tfoot></table>`
   );
 }
