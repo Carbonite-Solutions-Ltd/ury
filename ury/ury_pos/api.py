@@ -9213,3 +9213,131 @@ def get_invoice_items_for_report(invoice):
         fields=["item_code", "item_name", "qty", "rate", "amount"],
         order_by="idx",
     )
+
+
+def _payment_report_scope(from_date, to_date, terminal):
+    """Shared WHERE for the payment-method report and its drill-down, so
+    the two can never disagree. Mirrors get_sales_by_cashier: branch,
+    submitted only, date window, merged sources excluded, optional
+    terminal, and cashiers restricted to their own trading."""
+    is_admin = _user_can_see_admin_reports()
+    from_date, to_date = _reports_date_range(from_date, to_date)
+    branch = getBranch()
+
+    where_parts = [
+        "pi.branch = %s",
+        "pi.docstatus = 1",
+        "pi.posting_date BETWEEN %s AND %s",
+        "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
+    ]
+    params = [branch, from_date, to_date]
+    if terminal:
+        where_parts.append(
+            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
+        )
+        params.append(terminal)
+    if not is_admin:
+        me = frappe.session.user
+        where_parts.append("(pi.owner = %s OR pi.cashier = %s)")
+        params.extend([me, me])
+    return is_admin, from_date, to_date, branch, where_parts, params
+
+
+@frappe.whitelist()
+def get_sales_by_payment_method(from_date=None, to_date=None, terminal=None):
+    """How much was taken in each mode of payment.
+
+    ⚠ A BILL CAN BELONG TO MORE THAN ONE MODE. Split payments write one
+    `Sales Invoice Payment` row per tender, so a GHS 100 bill settled as
+    60 cash + 40 card contributes to BOTH modes. That is why:
+
+      * `amount` sums the PAYMENT rows, not invoice totals — so the
+        modes still add up to the day's takings, correctly.
+      * `bill_count` is a DISTINCT invoice count PER MODE, and the
+        counts therefore do NOT sum to the number of bills. A split bill
+        is legitimately counted once under each mode it was paid with.
+        `total_bills` is returned separately as the honest figure.
+    """
+    is_admin, from_date, to_date, branch, where_parts, params = _payment_report_scope(
+        from_date, to_date, terminal
+    )
+
+    rows = frappe.db.sql(
+        f"""
+        SELECT sip.mode_of_payment          AS mode,
+               COUNT(DISTINCT pi.name)      AS bill_count,
+               SUM(COALESCE(sip.amount, 0)) AS amount
+        FROM `tabPOS Invoice` AS pi
+        INNER JOIN `tabSales Invoice Payment` AS sip
+                ON sip.parent = pi.name AND sip.parenttype = 'POS Invoice'
+        WHERE {" AND ".join(where_parts)}
+        GROUP BY sip.mode_of_payment
+        ORDER BY amount DESC
+        """,
+        tuple(params),
+        as_dict=True,
+    )
+
+    total = sum(float(r["amount"] or 0) for r in rows)
+    for r in rows:
+        r["amount"] = float(r["amount"] or 0)
+        r["bill_count"] = int(r["bill_count"] or 0)
+        r["percentage"] = round(r["amount"] / total * 100, 1) if total else 0
+
+    total_bills = frappe.db.sql(
+        f"""SELECT COUNT(DISTINCT pi.name) FROM `tabPOS Invoice` AS pi
+            INNER JOIN `tabSales Invoice Payment` AS sip
+                    ON sip.parent = pi.name AND sip.parenttype = 'POS Invoice'
+            WHERE {" AND ".join(where_parts)}""",
+        tuple(params),
+    )[0][0]
+
+    return {
+        "from_date": from_date,
+        "to_date": to_date,
+        "branch": branch,
+        "terminal": terminal or None,
+        "is_admin": 1 if is_admin else 0,
+        "modes": rows,
+        "totals": {
+            "amount": total,
+            # Distinct bills overall — deliberately NOT the sum of the
+            # per-mode counts, which double-counts split payments.
+            "total_bills": int(total_bills or 0),
+            "mode_count": len(rows),
+        },
+    }
+
+
+@frappe.whitelist()
+def get_payment_mode_invoices(mode, from_date=None, to_date=None, terminal=None):
+    """Invoices that took money in one mode.
+
+    `paid_in_mode` is the amount settled IN THAT MODE, not the invoice's
+    grand total — otherwise a split bill would appear to have been paid
+    in full by every tender it touched, and the column would not sum to
+    the mode's total.
+    """
+    _is_admin, _fd, _td, _branch, where_parts, params = _payment_report_scope(
+        from_date, to_date, terminal
+    )
+    where_parts.append("sip.mode_of_payment = %s")
+    params.append(mode)
+
+    return frappe.db.sql(
+        f"""
+        SELECT pi.name, pi.posting_date, pi.posting_time, pi.customer_name,
+               pi.restaurant_table, pi.grand_total, pi.is_return, pi.status,
+               SUM(COALESCE(sip.amount, 0)) AS paid_in_mode
+        FROM `tabPOS Invoice` AS pi
+        INNER JOIN `tabSales Invoice Payment` AS sip
+                ON sip.parent = pi.name AND sip.parenttype = 'POS Invoice'
+        WHERE {" AND ".join(where_parts)}
+        GROUP BY pi.name, pi.posting_date, pi.posting_time, pi.customer_name,
+                 pi.restaurant_table, pi.grand_total, pi.is_return, pi.status
+        ORDER BY pi.posting_date DESC, pi.posting_time DESC
+        LIMIT 500
+        """,
+        tuple(params),
+        as_dict=True,
+    )

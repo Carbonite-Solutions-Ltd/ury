@@ -568,6 +568,9 @@ export interface DashboardStatsExtended {
 // ── Sales by Staff drill-down ───────────────────────────────────────
 
 export interface StaffInvoiceRow {
+  /** Payment-method drill-down only: amount settled IN THAT MODE, which
+   *  differs from grand_total on a split bill. */
+  paid_in_mode?: number;
   name: string;
   posting_date: string;
   posting_time: string;
@@ -613,6 +616,56 @@ export async function getInvoiceItemsForReport(
   const res = await call.get<{ message: ReportInvoiceItem[] }>(
     'ury.ury_pos.api.get_invoice_items_for_report',
     { invoice }
+  );
+  return res.message || [];
+}
+
+// ── Sales by Payment Method ─────────────────────────────────────────
+
+export interface PaymentModeRow {
+  mode: string;
+  /** Distinct bills that took money in this mode. Does NOT sum across
+   *  modes — a split bill counts under each tender it used. */
+  bill_count: number;
+  amount: number;
+  percentage: number;
+}
+
+export interface PaymentMethodResponse {
+  from_date: string;
+  to_date: string;
+  branch: string;
+  terminal: string | null;
+  is_admin: 0 | 1;
+  modes: PaymentModeRow[];
+  totals: { amount: number; total_bills: number; mode_count: number };
+}
+
+export async function getSalesByPaymentMethod(
+  range: ReportDateRange = {}
+): Promise<PaymentMethodResponse> {
+  const params: Record<string, unknown> = {};
+  if (range.from_date) params.from_date = range.from_date;
+  if (range.to_date) params.to_date = range.to_date;
+  if (range.terminal) params.terminal = range.terminal;
+  const res = await call.get<{ message: PaymentMethodResponse }>(
+    'ury.ury_pos.api.get_sales_by_payment_method',
+    params
+  );
+  return res.message;
+}
+
+export async function getPaymentModeInvoices(
+  mode: string,
+  range: ReportDateRange = {}
+): Promise<StaffInvoiceRow[]> {
+  const params: Record<string, unknown> = { mode };
+  if (range.from_date) params.from_date = range.from_date;
+  if (range.to_date) params.to_date = range.to_date;
+  if (range.terminal) params.terminal = range.terminal;
+  const res = await call.get<{ message: StaffInvoiceRow[] }>(
+    'ury.ury_pos.api.get_payment_mode_invoices',
+    params
   );
   return res.message || [];
 }
