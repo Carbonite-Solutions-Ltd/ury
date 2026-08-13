@@ -297,6 +297,16 @@ Running record of bugs fixed and non-obvious traps discovered. Add new entries a
 - **`POS Closing Entry.custom_closed_by_non_captain` is now near-vestigial** — only managers can close, so it will read 0 on essentially every new row. Left in place (harmless, and historic rows still mean something) rather than removed.
 - **Frontend + backend → `bench restart` + redeploy the `pos/` build. No migrate.**
 
+### 2026-08-06 — Cashiers got NOTHING from the staff reports: getBranch() hard-throws for an unlinked user
+- **Symptom (user):** "the cashier cant see the data in the sales by staff... for me the administrator i can see the cashier and waiters and select but the cashier is not able to see".
+- **Cause:** opening the report to cashiers (earlier the same day) scoped their rows correctly but left `branch = getBranch()` in place. **`getBranch()` HARD-THROWS** — `ValidationError: Your user is not linked to any Branch` — for any user with no `URY User` row on a Branch. On this site **3 of 7 plain cashiers are unlinked**, so the whole report failed before the query ran; it did not merely come back empty.
+- **The branch filter is redundant for a cashier anyway.** Their rows are already restricted to `(pi.owner = me OR pi.cashier = me)`, so branch adds nothing to the scope — it was only ever a hard dependency by accident. Exactly the trap fixed for the waiter Orders list on 2026-07-15, in a different endpoint.
+- **Fix — new `_report_branch(is_admin)`:** an ADMIN still gets `getBranch()` and still throws, because for them the branch **is** the scope and a missing one is a real misconfiguration. A cashier gets a best-effort lookup, and the `pi.branch` clause is omitted entirely when it resolves to nothing. Applied to all three cashier-reachable report paths: `get_sales_by_cashier`, `get_staff_invoices` and `_payment_report_scope`.
+- **Deliberately NOT changed:** the admin-only reports (`get_sales_by_category`, `get_top_bottom_items`, `get_course_sales`, merges / transfers / splits) keep the hard `getBranch()` — a branchless admin there is a genuine config error worth surfacing.
+- **Known, untouched:** `get_dashboard_stats` also calls `getBranch()` directly and is reachable by cashiers, so an unlinked cashier will hit the same throw on the Dashboard. Out of scope for this report but the same one-line fix when it comes up.
+- **Verified across every plain cashier on the site** (roles = `URY Cashier` only), branch-linked and not: all three reports now load with `is_admin=0` and no exception, where 3 of them previously threw. Administrator unchanged — `is_admin=1`, still branch-scoped.
+- **Backend-only → `bench restart`. No migrate, no frontend rebuild.**
+
 ### 2026-08-06 — Sales by Payment Method report (with invoice → item drill-down)
 - **Ask:** a Sales by Payment Method report, drilling down to the invoice and then the items on it.
 - **⚠ THE THING THAT MAKES THIS REPORT DIFFERENT FROM THE OTHERS — a bill can belong to MORE THAN ONE row.** Split payments write one `Sales Invoice Payment` row per tender, so a GHS 100 bill settled as 60 cash + 40 card contributes to BOTH modes. Three consequences, all handled explicitly rather than left to surprise someone:

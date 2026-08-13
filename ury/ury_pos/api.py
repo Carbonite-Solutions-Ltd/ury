@@ -4429,15 +4429,19 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
     is_admin = _user_can_see_admin_reports()
 
     from_date, to_date = _reports_date_range(from_date, to_date)
-    branch = getBranch()
+    # A cashier with no Branch link must still get their own numbers —
+    # see _report_branch. Their scope is their own invoices regardless.
+    branch = _report_branch(is_admin)
 
     where_parts = [
-        "pi.branch = %s",
         "pi.docstatus = 1",
         "pi.posting_date BETWEEN %s AND %s",
         "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
     ]
-    params = [branch, from_date, to_date]
+    params = [from_date, to_date]
+    if branch:
+        where_parts.insert(0, "pi.branch = %s")
+        params.insert(0, branch)
     if terminal:
         where_parts.append(
             "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
@@ -9146,15 +9150,17 @@ def get_staff_invoices(
     """
     is_admin = _user_can_see_admin_reports()
     from_date, to_date = _reports_date_range(from_date, to_date)
-    branch = getBranch()
+    branch = _report_branch(is_admin)
 
     where_parts = [
-        "pi.branch = %s",
         "pi.docstatus = 1",
         "pi.posting_date BETWEEN %s AND %s",
         "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
     ]
-    params = [branch, from_date, to_date]
+    params = [from_date, to_date]
+    if branch:
+        where_parts.insert(0, "pi.branch = %s")
+        params.insert(0, branch)
     if terminal:
         where_parts.append(
             "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
@@ -9215,6 +9221,27 @@ def get_invoice_items_for_report(invoice):
     )
 
 
+def _report_branch(is_admin):
+    """Branch to scope a staff report to, or None to skip the filter.
+
+    An ADMIN needs a branch — it IS their scope, so a missing one is a
+    real configuration error and should still throw.
+
+    A CASHIER does not. Their rows are already restricted to their own
+    invoices, so the branch filter adds nothing — and `getBranch()`
+    HARD-THROWS for a user who has no URY User row on any Branch, which
+    made the whole report unusable for them rather than merely
+    unfiltered. Same trap, and same fix, as the waiter Orders list on
+    2026-07-15. 2026-08-06.
+    """
+    if is_admin:
+        return getBranch()
+    try:
+        return getBranch()
+    except Exception:
+        return None
+
+
 def _payment_report_scope(from_date, to_date, terminal):
     """Shared WHERE for the payment-method report and its drill-down, so
     the two can never disagree. Mirrors get_sales_by_cashier: branch,
@@ -9222,15 +9249,17 @@ def _payment_report_scope(from_date, to_date, terminal):
     terminal, and cashiers restricted to their own trading."""
     is_admin = _user_can_see_admin_reports()
     from_date, to_date = _reports_date_range(from_date, to_date)
-    branch = getBranch()
+    branch = _report_branch(is_admin)
 
     where_parts = [
-        "pi.branch = %s",
         "pi.docstatus = 1",
         "pi.posting_date BETWEEN %s AND %s",
         "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
     ]
-    params = [branch, from_date, to_date]
+    params = [from_date, to_date]
+    if branch:
+        where_parts.insert(0, "pi.branch = %s")
+        params.insert(0, branch)
     if terminal:
         where_parts.append(
             "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
