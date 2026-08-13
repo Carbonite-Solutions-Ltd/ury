@@ -4366,14 +4366,24 @@ def _reports_date_range(from_date, to_date):
 
 
 @frappe.whitelist()
-def get_sales_by_cashier(from_date=None, to_date=None, terminal=None):
-    """Per-cashier sales breakdown over a date range.
+def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="cashier"):
+    """Per-staff sales breakdown over a date range.
 
-    Admin / captain / manager only. Returns one row per cashier who
-    rang at least one invoice in the window — with invoice count,
-    grand total, average order value, returns, and discount totals.
-    Branch-scoped; optional terminal filter so a captain can audit a
-    single till.
+    `group_by` picks WHICH member of staff, and they are genuinely
+    different questions on the same invoice:
+
+      "cashier"  → `owner`, the user who rang the order.
+      "waiter"   → `custom_waiter`, the URY Waiter who served the table.
+
+    On a site that uses waiters these are routinely different people,
+    so the report says which one it grouped on rather than leaving the
+    reader to assume. Invoices with no waiter are grouped as
+    "Unassigned" instead of being dropped — silently excluding them
+    would make the waiter totals disagree with the cashier totals for
+    no visible reason.
+
+    Admin / captain / manager only. Branch-scoped; optional terminal
+    filter so a captain can audit a single till.
     """
     if not _user_can_see_admin_reports():
         frappe.throw(
@@ -4397,10 +4407,20 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None):
         )
         params.append(terminal)
 
+    by_waiter = (group_by or "cashier").lower() == "waiter"
+    if by_waiter:
+        key_expr = "COALESCE(NULLIF(pi.custom_waiter, ''), '__unassigned__')"
+        name_expr = "COALESCE(NULLIF(w.full_name, ''), NULLIF(pi.custom_waiter, ''), 'Unassigned')"
+        join = "LEFT JOIN `tabURY Waiter` AS w ON w.name = pi.custom_waiter"
+    else:
+        key_expr = "pi.owner"
+        name_expr = "COALESCE(u.full_name, pi.owner)"
+        join = "LEFT JOIN `tabUser` AS u ON u.name = pi.owner"
+
     sql = f"""
         SELECT
-            pi.owner AS user,
-            COALESCE(u.full_name, pi.owner) AS full_name,
+            {key_expr} AS user,
+            {name_expr} AS full_name,
             COUNT(pi.name) AS invoice_count,
             SUM(CASE WHEN pi.is_return = 0 THEN 1 ELSE 0 END) AS sale_count,
             SUM(CASE WHEN pi.is_return = 1 THEN 1 ELSE 0 END) AS return_count,
@@ -4415,9 +4435,9 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None):
                 ELSE 0
             END AS average_order_value
         FROM `tabPOS Invoice` AS pi
-        LEFT JOIN `tabUser` AS u ON u.name = pi.owner
+        {join}
         WHERE {" AND ".join(where_parts)}
-        GROUP BY pi.owner
+        GROUP BY {key_expr}, {name_expr}
         ORDER BY grand_total DESC
     """
     rows = frappe.db.sql(sql, tuple(params), as_dict=True)
@@ -4430,6 +4450,7 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None):
         "to_date": to_date,
         "branch": branch,
         "terminal": terminal or None,
+        "group_by": "waiter" if by_waiter else "cashier",
         "rows": rows,
         "totals": {
             "grand_total": total_grand,
@@ -8864,3 +8885,144 @@ def get_item_groups_for_menu():
            WHERE disabled = 0 AND IFNULL(item_group, '') != ''
            ORDER BY item_group"""
     )
+
+
+@frappe.whitelist()
+def get_course_sales(from_date=None, to_date=None, terminal=None):
+    """Covers — sales by menu course, with the items inside each course.
+
+    Answers "how is each course selling, and what within it?" in ONE
+    call: a course row carries how many bills contained it, how many
+    units went out and what it took, and nests the items that make it
+    up so the UI can drill down without a second round-trip.
+
+    TWO THINGS THAT WOULD SKEW THIS IF IGNORED:
+
+    * An item can appear on SEVERAL menus (default, per-room,
+      per-order-type). Joining POS Invoice Item straight to URY Menu
+      Item would multiply a line once per menu it appears on and
+      inflate every figure. The join therefore goes through a
+      GROUP BY subquery that collapses each item to ONE course.
+    * `bill_count` is COUNT(DISTINCT invoice), not a row count. Two
+      lines of the same course on one bill is one bill, not two — and
+      "number of sales" read as a row count would overstate a busy
+      table.
+
+    Returns will (`is_return = 1`) contribute negative amounts, so a
+    refunded dish reduces its course rather than inflating it.
+    """
+    if not _user_can_see_admin_reports():
+        frappe.throw(
+            _("You don't have permission to see this report."),
+            frappe.PermissionError,
+        )
+
+    from_date, to_date = _reports_date_range(from_date, to_date)
+    branch = getBranch()
+
+    where_parts = [
+        "pi.branch = %s",
+        "pi.docstatus = 1",
+        "pi.posting_date BETWEEN %s AND %s",
+        "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
+    ]
+    params = [branch, from_date, to_date]
+    if terminal:
+        where_parts.append(
+            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
+        )
+        params.append(terminal)
+
+    # One course per item — see the docstring. MIN() is an arbitrary but
+    # STABLE pick when an item is on two menus under different courses,
+    # so the report doesn't shuffle between runs.
+    sql = f"""
+        SELECT
+            COALESCE(NULLIF(mi.course, ''), 'Uncategorised') AS course,
+            pii.item_code                                    AS item_code,
+            MAX(pii.item_name)                               AS item_name,
+            COUNT(DISTINCT pi.name)                          AS bill_count,
+            SUM(COALESCE(pii.qty, 0))                        AS qty,
+            SUM(COALESCE(pii.amount, 0))                     AS amount
+        FROM `tabPOS Invoice Item` AS pii
+        INNER JOIN `tabPOS Invoice` AS pi ON pi.name = pii.parent
+        LEFT JOIN (
+            SELECT item, MIN(course) AS course
+            FROM `tabURY Menu Item`
+            GROUP BY item
+        ) AS mi ON mi.item = pii.item_code
+        WHERE {" AND ".join(where_parts)}
+        GROUP BY course, pii.item_code
+        ORDER BY course ASC, amount DESC
+    """
+    rows = frappe.db.sql(sql, tuple(params), as_dict=True)
+
+    courses = {}
+    for r in rows:
+        c = courses.setdefault(
+            r["course"],
+            {
+                "course": r["course"],
+                "bill_count": 0,
+                "qty": 0.0,
+                "amount": 0.0,
+                "item_count": 0,
+                "items": [],
+            },
+        )
+        c["items"].append(
+            {
+                "item_code": r["item_code"],
+                "item_name": r["item_name"],
+                # How many separate bills this item appeared on — i.e.
+                # how many times it was ordered.
+                "bill_count": int(r["bill_count"] or 0),
+                "qty": float(r["qty"] or 0),
+                "amount": float(r["amount"] or 0),
+            }
+        )
+        c["qty"] += float(r["qty"] or 0)
+        c["amount"] += float(r["amount"] or 0)
+        c["item_count"] += 1
+
+    # A course's bill_count must be counted across the WHOLE course, not
+    # summed from its items — the same bill can hold three items of one
+    # course and would otherwise be counted three times.
+    course_bills = frappe.db.sql(
+        f"""
+        SELECT COALESCE(NULLIF(mi.course, ''), 'Uncategorised') AS course,
+               COUNT(DISTINCT pi.name) AS bill_count
+        FROM `tabPOS Invoice Item` AS pii
+        INNER JOIN `tabPOS Invoice` AS pi ON pi.name = pii.parent
+        LEFT JOIN (
+            SELECT item, MIN(course) AS course
+            FROM `tabURY Menu Item`
+            GROUP BY item
+        ) AS mi ON mi.item = pii.item_code
+        WHERE {" AND ".join(where_parts)}
+        GROUP BY course
+        """,
+        tuple(params),
+        as_dict=True,
+    )
+    for row in course_bills:
+        if row["course"] in courses:
+            courses[row["course"]]["bill_count"] = int(row["bill_count"] or 0)
+
+    ordered = sorted(courses.values(), key=lambda c: c["amount"], reverse=True)
+    total_amount = sum(c["amount"] for c in ordered)
+    for c in ordered:
+        c["percentage"] = round(c["amount"] / total_amount * 100, 1) if total_amount else 0
+
+    return {
+        "from_date": from_date,
+        "to_date": to_date,
+        "branch": branch,
+        "terminal": terminal or None,
+        "courses": ordered,
+        "totals": {
+            "amount": total_amount,
+            "qty": sum(c["qty"] for c in ordered),
+            "course_count": len(ordered),
+        },
+    }
