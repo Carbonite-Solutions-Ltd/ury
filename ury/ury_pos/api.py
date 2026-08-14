@@ -4453,9 +4453,9 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
         # scope get_daily_sales uses: bills they rang (owner) plus bills
         # they billed for someone else (cashier). Grouping by waiter then
         # shows which waiters fed THEIR till, not the whole floor.
-        me = frappe.session.user
-        where_parts.append("(pi.owner = %s OR pi.cashier = %s)")
-        params.extend([me, me])
+        clause, clause_params = _own_trading_clause()
+        where_parts.append(clause)
+        params.extend(clause_params)
 
     # Optional mode-of-payment filter. Restricts to invoices that took at
     # least one payment in that mode; the per-row breakdown below still
@@ -9167,9 +9167,9 @@ def get_staff_invoices(
         )
         params.append(terminal)
     if not is_admin:
-        me = frappe.session.user
-        where_parts.append("(pi.owner = %s OR pi.cashier = %s)")
-        params.extend([me, me])
+        clause, clause_params = _own_trading_clause()
+        where_parts.append(clause)
+        params.extend(clause_params)
     if payment_mode:
         where_parts.append(
             "EXISTS (SELECT 1 FROM `tabSales Invoice Payment` sip"
@@ -9236,10 +9236,35 @@ def _report_branch(is_admin):
     """
     if is_admin:
         return getBranch()
-    try:
-        return getBranch()
-    except Exception:
-        return None
+    # Deliberately None, not a best-effort lookup. A cashier's URY User
+    # branch is NOT reliably the branch stamped on the bills they take:
+    # the stamp comes from the table/till they ring on, so a cashier
+    # linked to one branch but working another had every row filtered
+    # away and saw an empty report with no error. Their rows are already
+    # restricted to their own trading, so the filter only ever subtracts.
+    # (Same trap as the waiter Orders list, 2026-07-15.) 2026-08-14.
+    return None
+
+
+def _own_trading_clause(alias="pi"):
+    """WHERE fragment + params matching the bills the CALLER handled.
+
+    `cashier` is a Data field and it is NOT consistently a user id. Two
+    paths write a FULL NAME into it -- the shift-close draft transfer
+    and the rejected-transfer queue -- while `qz_print_update` and
+    `make_invoice` write the user id. Matching on the id alone silently
+    dropped every bill that had ever been transferred at close.
+
+    `owner` is included because on a site WITHOUT waiters the cashier
+    creates the draft themselves; on a waiter-enabled site `owner` is
+    the waiter, and `cashier` is the field that carries the till.
+    """
+    me = frappe.session.user
+    full_name = frappe.db.get_value("User", me, "full_name") or me
+    return (
+        "({a}.owner = %s OR {a}.cashier = %s OR {a}.cashier = %s)".format(a=alias),
+        [me, me, full_name],
+    )
 
 
 def _payment_report_scope(from_date, to_date, terminal):
@@ -9266,9 +9291,9 @@ def _payment_report_scope(from_date, to_date, terminal):
         )
         params.append(terminal)
     if not is_admin:
-        me = frappe.session.user
-        where_parts.append("(pi.owner = %s OR pi.cashier = %s)")
-        params.extend([me, me])
+        clause, clause_params = _own_trading_clause()
+        where_parts.append(clause)
+        params.extend(clause_params)
     return is_admin, from_date, to_date, branch, where_parts, params
 
 
