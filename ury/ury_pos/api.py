@@ -4442,7 +4442,17 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
     if branch:
         where_parts.insert(0, "pi.branch = %s")
         params.insert(0, branch)
-    if terminal:
+    # ADMIN ONLY. For a captain/manager the terminal is a deliberate audit
+    # knob -- "show me just this till". For a CASHIER it is not a choice at
+    # all: the POS sends whatever till their BROWSER happens to be
+    # registered to, and a cashier's own bills are stamped with the till
+    # the PAYMENT was taken on, which is routinely a different one. A
+    # cashier on a side till therefore had every row filtered away and got
+    # an empty report with no error. Their rows are already restricted to
+    # their own trading, so this filter only ever subtracts. Third time
+    # this same shape has bitten (waiter Orders list 2026-07-15, branch
+    # 2026-08-14). 2026-08-14.
+    if terminal and is_admin:
         where_parts.append(
             "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
         )
@@ -9161,7 +9171,17 @@ def get_staff_invoices(
     if branch:
         where_parts.insert(0, "pi.branch = %s")
         params.insert(0, branch)
-    if terminal:
+    # ADMIN ONLY. For a captain/manager the terminal is a deliberate audit
+    # knob -- "show me just this till". For a CASHIER it is not a choice at
+    # all: the POS sends whatever till their BROWSER happens to be
+    # registered to, and a cashier's own bills are stamped with the till
+    # the PAYMENT was taken on, which is routinely a different one. A
+    # cashier on a side till therefore had every row filtered away and got
+    # an empty report with no error. Their rows are already restricted to
+    # their own trading, so this filter only ever subtracts. Third time
+    # this same shape has bitten (waiter Orders list 2026-07-15, branch
+    # 2026-08-14). 2026-08-14.
+    if terminal and is_admin:
         where_parts.append(
             "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
         )
@@ -9285,7 +9305,17 @@ def _payment_report_scope(from_date, to_date, terminal):
     if branch:
         where_parts.insert(0, "pi.branch = %s")
         params.insert(0, branch)
-    if terminal:
+    # ADMIN ONLY. For a captain/manager the terminal is a deliberate audit
+    # knob -- "show me just this till". For a CASHIER it is not a choice at
+    # all: the POS sends whatever till their BROWSER happens to be
+    # registered to, and a cashier's own bills are stamped with the till
+    # the PAYMENT was taken on, which is routinely a different one. A
+    # cashier on a side till therefore had every row filtered away and got
+    # an empty report with no error. Their rows are already restricted to
+    # their own trading, so this filter only ever subtracts. Third time
+    # this same shape has bitten (waiter Orders list 2026-07-15, branch
+    # 2026-08-14). 2026-08-14.
+    if terminal and is_admin:
         where_parts.append(
             "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
         )

@@ -66,7 +66,15 @@ def serve_kot(name, time):
                     pi.grand_total,
                     k.name as kot_name,
                     GROUP_CONCAT(
-                        CONCAT(ki.item_name, ' x', ki.qty) 
+                        -- `URY KOT Items` has NO `qty` column: the field is
+                        -- `quantity`, and it is a Data field, not a number.
+                        -- This threw (1054) on EVERY serve, and the bare
+                        -- except below swallowed it -- so the invoice was
+                        -- marked Served but the waiter's "food ready" alert
+                        -- was never published. 333 times on live before it
+                        -- was spotted. Same trap as the KOT print format,
+                        -- 2026-06-12.
+                        CONCAT(ki.item_name, ' x', ki.quantity)
                         ORDER BY ki.idx 
                         SEPARATOR ', '
                     ) as items_list,

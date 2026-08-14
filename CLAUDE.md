@@ -373,6 +373,30 @@ Running record of bugs fixed and non-obvious traps discovered. Add new entries a
 - **Verified in a real browser:** tapped a free table (BG-Tab 51) → lands on Dine In with **"Cash Customer - Airport"** preselected — the profile's real default, not the generic `Cash Customer` fallback, which confirms the value is flowing from the full profile rather than the hardcoded default.
 - **Frontend-only → redeploy the `pos/` build. No migrate, no restart.**
 
+### 2026-08-14 (round 2) — THE reason cashier "alex" saw nothing: the report is scoped to the till the BROWSER is on
+- **Diagnosed from a live database dump, not by reasoning.** The earlier round-1 fixes (branch filter, full-name `cashier`) were both real bugs — but neither was alex's. The dump proved it:
+  | Fact | Value |
+  |---|---|
+  | alex | `ofoll2244@gmail.com`, roles = **`URY Cashier` only** → non-admin scope applies |
+  | submitted invoices | **102**, all branch `Airport` (= alex's linked branch, so branch was never the blocker) |
+  | matching alex by `owner` OR `cashier` | **102 of 102** |
+  | `custom_terminal` on all of them | **`Airport Main Terminal`** |
+  | terminals on site | **six** — Airport Main, Bar, Chinese Kitchen, Main Kitchen, Main Restaurant Cashier, Terrace Cashier |
+  | `get_sales_by_cashier` entries in the live Error Log | **zero** |
+- **ROOT CAUSE:** `Reports.tsx` sends `terminal: terminalName` — the till **that device is registered to** — and the backend applied `custom_terminal = <device till> OR IS NULL OR ''`. A cashier's bills are stamped with the till the **payment** was taken on, which is routinely not the till their browser is bound to. Alex works a side till, every one of their 102 bills is stamped `Airport Main Terminal`, so **every row was filtered away**. No error, no log line, just an empty table. The admin "worked" only because their device happens to be on the main terminal.
+- **The filter is a CHOICE for an admin and an ACCIDENT for a cashier.** For a captain/manager it is a deliberate audit knob ("show me just this till"). For a cashier it is not a choice at all — the POS picks it — and their rows are already restricted to their own trading, so it can only ever subtract. **`if terminal and is_admin:`** in all three cashier-reachable report scopes.
+- **⚠ THIRD TIME this exact shape has bitten.** Waiter Orders list (2026-07-15 round 2 — "a waiter's orders span terminals"), the branch filter (2026-08-14 round 1), and now this. **Rule: when a query is already scoped to "this user's own rows", every additional scope filter is subtraction-only and must be admin-gated.**
+- **Verified on dev by reproducing alex exactly:** a bill stamped `Airport Main Terminal` with `cashier` = alex, read back as alex from a device on **`Terrace Cashier`** → **1 row, 50.00**. Before the fix that clause could not match and returned 0. Restored — 0 submitted invoices on dev.
+- **NOT the cause, but fixed in round 1 and worth keeping:** the branch filter (harmless here since alex's branch matched) and full-name `cashier` matching (no transferred bills in this dump).
+
+### 2026-08-14 (round 2b) — `ki.qty` killed every "food is ready" alert, 333 times, silently
+- **Found in the live Error Log while diagnosing the above** — not reported by the user, because the symptom is an alert that simply never arrives.
+- **`serve_kot` built its notification payload with `CONCAT(ki.item_name, ' x', ki.qty)`. `URY KOT Items` has NO `qty` column — the field is `quantity`** (and it is a Data field, not a number — the same trap as the KOT print format on 2026-06-12). Every serve threw `(1054, "Unknown column 'ki.qty' in 'SELECT'")`.
+- **The damage was hidden by a bare `except ... : pass`.** `custom_order_status = "Served"` is set BEFORE the query, so the invoice status landed correctly and the kitchen board behaved — but the `publish_realtime` that follows never ran. **The waiter and cashier got no "food ready" alert at all**, and the only trace was 333 rows in the Error Log titled "Serve KOT Error".
+- **Verified:** the corrected query runs on dev and returns real rows (`ABSOLUT x1`).
+- **Two other live errors surfaced in the same log and are NOT fixed here** (out of scope, flagged to the user): `get_stock_balance_for() missing 1 required positional argument: 'posting_date'` (**365 occurrences** — ERPNext signature drift, almost certainly `gh_erp`), and `'Item' object has no attribute 'custom_pos_add_on_items'` (**7** — already fixed in code on 2026-08-05; that site still needs the `bench migrate`).
+- **Backend-only → `bench restart`. No migrate, no frontend rebuild.**
+
 ### 2026-08-14 — Cashier STILL saw nothing on Sales by Staff: branch filter + a `cashier` field that isn't always a user id
 - **Symptom (user):** "the sales by staff is working fine but then again the cashier is not able to get the data. they have taken a lot of transaction but still does not show for the cashier that is sign in." This is AFTER the 2026-08-06 fix stopped `getBranch()` throwing for unlinked cashiers — so the report no longer errored, it just came back empty.
 - **Two independent causes, both found by inspecting real rows rather than reasoning from the code:**
