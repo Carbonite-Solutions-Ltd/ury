@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   TrendingUp,
   DollarSign,
@@ -175,6 +175,10 @@ export default function Reports() {
 
   const { terminalName } = usePOSStore();
   const { user } = useRootStore();
+  // Snapshot of what Sales by Staff has expanded + loaded, so the Print
+  // button (which renders above that table) can print the drill-down the
+  // user is actually looking at instead of a fully collapsed summary.
+  const staffDrill = useRef<StaffDrillSnapshot>(emptyDrill());
   const isAdmin = canSeeAdminReports(user);
 
   const isRangeTab =
@@ -826,7 +830,11 @@ export default function Reports() {
                 size="sm"
                 onClick={() =>
                   salesByCashier
-                    ? printStaffReport(salesByCashier, formatCurrency)
+                    ? printStaffReport(
+                        salesByCashier,
+                        formatCurrency,
+                        staffDrill.current
+                      )
                     : showToast.error('Nothing to print yet')
                 }
                 disabled={!salesByCashier?.rows.length}
@@ -965,6 +973,7 @@ export default function Reports() {
           <CoversView report={courseSales} />
         ) : activeTab === 'by-cashier' ? (
           <SalesByCashierView
+            drill={staffDrill}
             report={salesByCashier}
             grouping={staffGrouping}
             onGroupingChange={setStaffGrouping}
@@ -1700,13 +1709,40 @@ function StaffToggle({
   );
 }
 
+/**
+ * What the Sales by Staff table currently has OPEN and already LOADED.
+ *
+ * The print button lives above the table and the drilled-down rows are
+ * fetched lazily inside the leaf components, so neither one can see the
+ * other. Rather than lift every piece of state (and re-render the whole
+ * table on each expand), the table writes a snapshot into this ref and
+ * the print function reads it at click time. A ref is safe here because
+ * it is only ever read during a user gesture, long after render settles.
+ */
+export interface StaffDrillSnapshot {
+  /** Staff rows the user has expanded. */
+  openStaff: Set<string>;
+  /** Invoice rows the user has expanded, across all staff. */
+  openInvoice: Set<string>;
+  /** Invoices fetched so far, keyed by staff user. */
+  invoices: Record<string, StaffInvoiceRow[]>;
+  /** Line items fetched so far, keyed by invoice name. */
+  items: Record<string, ReportInvoiceItem[]>;
+}
+
+function emptyDrill(): StaffDrillSnapshot {
+  return { openStaff: new Set(), openInvoice: new Set(), invoices: {}, items: {} };
+}
+
 function SalesByCashierView({
   report,
   grouping,
   onGroupingChange,
   paymentMode,
   onPaymentModeChange,
+  drill,
 }: {
+  drill: React.MutableRefObject<StaffDrillSnapshot>;
   report: SalesByCashierResponse | null;
   grouping: StaffGrouping;
   onGroupingChange: (v: StaffGrouping) => void;
@@ -1723,6 +1759,18 @@ function SalesByCashierView({
       else next.add(user);
       return next;
     });
+  // Keep the print snapshot in step with what is on screen. Cheap, and it
+  // avoids lifting the lazily-fetched rows out of the leaf components.
+  drill.current.openStaff = openStaff;
+  // A new report means the old drill-down is stale -- a printout must never
+  // carry invoices from the previous date range or grouping.
+  useEffect(() => {
+    drill.current.openStaff = new Set();
+    drill.current.openInvoice = new Set();
+    drill.current.invoices = {};
+    drill.current.items = {};
+    setOpenStaff(new Set());
+  }, [report, drill]);
   // Controls render even while loading / empty, otherwise a grouping or
   // payment filter with no data would strand the user with no way back.
   const toggle = (
@@ -1841,6 +1889,7 @@ function SalesByCashierView({
                     colSpan={3 + modes.length}
                     expanded={openStaff.has(row.user)}
                     onToggle={() => onToggleStaff(row.user)}
+                    drill={drill}
                     range={range}
                     grouping={report.group_by}
                     paymentMode={paymentMode}
@@ -1871,6 +1920,7 @@ function StaffRow({
   range,
   grouping,
   paymentMode,
+  drill,
 }: {
   row: SalesByCashierRow;
   modes: string[];
@@ -1880,6 +1930,7 @@ function StaffRow({
   range: ReportDateRange;
   grouping: StaffGrouping;
   paymentMode: string;
+  drill: React.MutableRefObject<StaffDrillSnapshot>;
 }) {
   const [invoices, setInvoices] = useState<StaffInvoiceRow[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1889,10 +1940,15 @@ function StaffRow({
     if (!expanded || invoices !== null) return;
     setLoading(true);
     getStaffInvoices(row.user, range, grouping, paymentMode || null)
-      .then(setInvoices)
+      .then((rows) => {
+        setInvoices(rows);
+        // Hand it to the print snapshot as well -- otherwise the printout
+        // would show this row expanded but with nothing under it.
+        drill.current.invoices[row.user] = rows;
+      })
       .catch(() => setInvoices([]))
       .finally(() => setLoading(false));
-  }, [expanded, invoices, row.user, range, grouping, paymentMode]);
+  }, [expanded, invoices, row.user, range, grouping, paymentMode, drill]);
 
   return (
     <>
@@ -1949,9 +2005,14 @@ function StaffRow({
                         const next = new Set(cur);
                         if (next.has(inv.name)) next.delete(inv.name);
                         else next.add(inv.name);
+                        // Shared across every staff row, so the print
+                        // snapshot has one view of what is open.
+                        if (next.has(inv.name)) drill.current.openInvoice.add(inv.name);
+                        else drill.current.openInvoice.delete(inv.name);
                         return next;
                       })
                     }
+                    drill={drill}
                   />
                 ))}
               </div>
@@ -1968,19 +2029,24 @@ function InvoiceRow({
   invoice,
   expanded,
   onToggle,
+  drill,
 }: {
   invoice: StaffInvoiceRow;
   expanded: boolean;
   onToggle: () => void;
+  drill: React.MutableRefObject<StaffDrillSnapshot>;
 }) {
   const [items, setItems] = useState<ReportInvoiceItem[] | null>(null);
 
   useEffect(() => {
     if (!expanded || items !== null) return;
     getInvoiceItemsForReport(invoice.name)
-      .then(setItems)
+      .then((rows) => {
+        setItems(rows);
+        drill.current.items[invoice.name] = rows;
+      })
       .catch(() => setItems([]));
-  }, [expanded, items, invoice.name]);
+  }, [expanded, items, invoice.name, drill]);
 
   return (
     <div className="bg-white border border-gray-200 rounded-md">
@@ -3680,6 +3746,12 @@ function openPrintDocument(title: string, bodyHtml: string) {
       tfoot td{border-top:2px solid #333;border-bottom:none;font-weight:700}
       .grp{background:#f5f5f5;font-weight:600}
       .sub-row td{padding-left:22px;color:#444;font-size:11px}
+      /* Drill-down levels. A printed page has no expander, so the
+         hierarchy has to be carried by indentation and weight. */
+      .lvl1 td{padding-left:26px;background:#fafafa;font-size:11px;color:#333}
+      .lvl2 td{padding-left:46px;font-size:10.5px;color:#666;border-bottom:1px dotted #eee}
+      .lvl1 td:first-child{border-left:3px solid #d4d4d4}
+      .lvl2 td:first-child{border-left:3px solid #ececec}
       .foot{margin-top:20px;color:#888;font-size:10px;
             border-top:1px solid #ddd;padding-top:8px}
       @media print{body{margin:12mm} .no-print{display:none}}
@@ -3695,10 +3767,58 @@ function openPrintDocument(title: string, bodyHtml: string) {
   win.document.close();
 }
 
+
+/**
+ * Render the drill-down under one parent row for print.
+ *
+ * Prints exactly what the user expanded: invoices for an expanded parent,
+ * and line items for an expanded invoice. A parent that was never opened
+ * contributes nothing, so a collapsed report still prints as a clean
+ * summary. Indentation carries the hierarchy because a printed page has
+ * no expander to click.
+ */
+function printDrillRows(
+  key: string,
+  drill: StaffDrillSnapshot,
+  colSpan: number,
+  currency: (n: number) => string
+): string {
+  if (!drill.openStaff.has(key)) return '';
+  const invoices = drill.invoices[key];
+  if (!invoices?.length) return '';
+  return invoices
+    .map((inv) => {
+      const head =
+        `<tr class="lvl1"><td colspan="${colSpan - 2}">` +
+        `${escHtml(inv.name)}${inv.is_return ? ' <em>(return)</em>' : ''}` +
+        ` &middot; ${escHtml(inv.customer_name || '')}` +
+        ` &middot; ${escHtml(inv.posting_date)} ${escHtml(
+          String(inv.posting_time).slice(0, 5)
+        )}</td>` +
+        `<td class="r"></td><td class="r">${currency(inv.grand_total)}</td></tr>`;
+      if (!drill.openInvoice.has(inv.name)) return head;
+      const items = drill.items[inv.name];
+      if (!items?.length) return head;
+      const itemRows = items
+        .map(
+          (it) =>
+            `<tr class="lvl2"><td colspan="${colSpan - 2}">` +
+            `${escHtml(it.item_name)}</td>` +
+            `<td class="r">${it.qty}</td>` +
+            `<td class="r">${currency(it.amount)}</td></tr>`
+        )
+        .join('');
+      return head + itemRows;
+    })
+    .join('');
+}
+
 function printStaffReport(
   report: SalesByCashierResponse,
-  currency: (n: number) => string
+  currency: (n: number) => string,
+  drill: StaffDrillSnapshot
 ) {
+  const colSpan = 4 + (report.payment_modes?.length ?? 0);
   const modes = report.payment_modes ?? [];
   const label = report.group_by === 'waiter' ? 'Waiter' : 'Cashier';
   const head =
@@ -3720,7 +3840,9 @@ function printStaffReport(
           )
           .join('') +
         `<td class="r">${currency(r.net_total)}</td>` +
-        `<td class="r">${currency(r.grand_total)}</td></tr>`
+        `<td class="r">${currency(r.grand_total)}</td></tr>` +
+        // Whatever this row has open on screen prints under it.
+        printDrillRows(r.user, drill, colSpan, currency)
     )
     .join('');
 
@@ -3805,6 +3927,17 @@ function PaymentMethodView({
   range: ReportDateRange;
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
+  // Same snapshot mechanism as Sales by Staff, so Print reflects the
+  // drill-down actually on screen rather than a collapsed summary.
+  const payDrill = useRef<StaffDrillSnapshot>(emptyDrill());
+  payDrill.current.openStaff = open;
+  useEffect(() => {
+    payDrill.current.openStaff = new Set();
+    payDrill.current.openInvoice = new Set();
+    payDrill.current.invoices = {};
+    payDrill.current.items = {};
+    setOpen(new Set());
+  }, [report]);
   if (!report) return <EmptyState message="Loading…" />;
   if (!report.modes.length) {
     return (
@@ -3859,7 +3992,9 @@ function PaymentMethodView({
               <Button
                 variant="default"
                 size="sm"
-                onClick={() => printPaymentMethodReport(report, formatCurrency)}
+                onClick={() =>
+                  printPaymentMethodReport(report, formatCurrency, payDrill.current)
+                }
               >
                 <Printer className="w-4 h-4 mr-2" />
                 Print / PDF
@@ -3880,6 +4015,7 @@ function PaymentMethodView({
                 key={m.mode}
                 mode={m}
                 expanded={open.has(m.mode)}
+                drill={payDrill}
                 range={range}
                 onToggle={() =>
                   setOpen((cur) => {
@@ -3903,11 +4039,13 @@ function PaymentModeBlock({
   expanded,
   range,
   onToggle,
+  drill,
 }: {
   mode: { mode: string; bill_count: number; amount: number; percentage: number };
   expanded: boolean;
   range: ReportDateRange;
   onToggle: () => void;
+  drill: React.MutableRefObject<StaffDrillSnapshot>;
 }) {
   const [invoices, setInvoices] = useState<StaffInvoiceRow[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -3917,10 +4055,13 @@ function PaymentModeBlock({
     if (!expanded || invoices !== null) return;
     setLoading(true);
     getPaymentModeInvoices(mode.mode, range)
-      .then(setInvoices)
+      .then((rows) => {
+        setInvoices(rows);
+        drill.current.invoices[mode.mode] = rows;
+      })
       .catch(() => setInvoices([]))
       .finally(() => setLoading(false));
-  }, [expanded, invoices, mode.mode, range]);
+  }, [expanded, invoices, mode.mode, range, drill]);
 
   return (
     <div className="border border-gray-200 rounded-lg overflow-hidden">
@@ -3958,11 +4099,14 @@ function PaymentModeBlock({
                   key={inv.name}
                   invoice={inv}
                   expanded={openInvoice.has(inv.name)}
+                  drill={drill}
                   onToggle={() =>
                     setOpenInvoice((cur) => {
                       const next = new Set(cur);
                       if (next.has(inv.name)) next.delete(inv.name);
                       else next.add(inv.name);
+                      if (next.has(inv.name)) drill.current.openInvoice.add(inv.name);
+                      else drill.current.openInvoice.delete(inv.name);
                       return next;
                     })
                   }
@@ -3978,14 +4122,17 @@ function PaymentModeBlock({
 
 function printPaymentMethodReport(
   report: PaymentMethodResponse,
-  currency: (n: number) => string
+  currency: (n: number) => string,
+  drill: StaffDrillSnapshot
 ) {
   const rows = report.modes
     .map(
       (m) =>
         `<tr><td>${escHtml(m.mode)}</td><td class="r">${m.bill_count}</td>` +
         `<td class="r">${m.percentage}%</td>` +
-        `<td class="r">${currency(m.amount)}</td></tr>`
+        `<td class="r">${currency(m.amount)}</td></tr>` +
+        // Whatever this method has open on screen prints under it.
+        printDrillRows(m.mode, drill, 4, currency)
     )
     .join('');
   openPrintDocument(
