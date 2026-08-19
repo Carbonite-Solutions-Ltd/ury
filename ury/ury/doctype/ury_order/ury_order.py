@@ -977,7 +977,17 @@ def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDisc
     # used, which is why `cashier` was only ever set later by
     # qz_print_update — so a bill settled without a physical print had no
     # cashier at all and fell into the report's "Unassigned" bucket.
-    invoice.cashier = _resolve_billing_cashier(cashier)
+    #
+    # ...but NOT for a self-serve waiter (2026-08-19). `sync_order` and
+    # `qz_print_update` both already skip the stamp for her; this third
+    # site did not, so a waiter who reached the payment call ended up in
+    # BOTH `custom_waiter` and `cashier` and appeared twice on the
+    # printed bill and in Sales by Staff — once under each grouping.
+    # A waiter places the order; she never "takes the sale".
+    from ury.ury_pos.api import _get_self_waiter_for_user
+
+    if not _get_self_waiter_for_user():
+        invoice.cashier = _resolve_billing_cashier(cashier)
 
     invoice.additional_discount_percentage = additionalDiscount
     invoice.calculate_taxes_and_totals()

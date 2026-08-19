@@ -9603,3 +9603,193 @@ def change_invoice_payment_mode(invoice, row, new_mode):
         "to": new_mode,
         "account": account,
     }
+
+
+# ---------------------------------------------------------------------------
+# Correcting who a bill is attributed to (2026-08-19)
+#
+# `POS Invoice.cashier` and `POS Invoice.custom_waiter` are both read-only
+# with allow_on_submit = 0, so once a bill is submitted neither can be put
+# right from the desk form — yet they are exactly the two fields that drive
+# Sales by Staff, and they DO go wrong:
+#
+#   * A user who holds an elevated role (System Manager / URY Manager /
+#     URY Captain) is not treated as a self-serve waiter by
+#     `_get_self_waiter_for_user`, so they get the full cashier UI and are
+#     stamped as `cashier` when they settle a bill -- while still being
+#     pickable in the waiter dropdown. The same person then legitimately
+#     appears in BOTH fields.
+#   * A cashier can pick the wrong waiter at order time.
+#
+# Neither field is financial: they carry no GL, no stock and no tax, so
+# correcting them is safe at any point in a bill's life -- including AFTER
+# consolidation, which is usually when someone notices the report is wrong.
+# The write therefore goes through db.set_value rather than a doc.save(),
+# which would re-run invoice validation and refuse on a submitted doc.
+# ---------------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def get_invoice_attribution(invoice):
+    """Current waiter/cashier on a bill, plus the pickers' options.
+
+    Feeds the "Change Waiter / Cashier" dialog on the POS Invoice form so
+    it can show what is set now and offer only valid choices.
+    """
+    if not invoice or not frappe.db.exists("POS Invoice", invoice):
+        frappe.throw(
+            _("Invoice {0} was not found.").format(invoice or "?"),
+            title=_("Not Found"),
+        )
+
+    row = frappe.db.get_value(
+        "POS Invoice",
+        invoice,
+        ["name", "cashier", "custom_waiter", "owner", "docstatus", "status",
+         "consolidated_invoice", "posting_date", "grand_total"],
+        as_dict=True,
+    )
+
+    # Resolve display names so the dialog can show "Edith" / "Ama Serwaa"
+    # rather than a bare record id or an email.
+    waiter_name = None
+    if row.get("custom_waiter"):
+        waiter_name = frappe.db.get_value(
+            "URY Waiter", row["custom_waiter"], "full_name"
+        )
+    cashier_name = None
+    if row.get("cashier"):
+        # `cashier` is a Data field and is NOT reliably a user id -- the
+        # shift-close transfer path writes a FULL NAME into it. Look up a
+        # user, and fall back to the raw value when the lookup misses.
+        cashier_name = (
+            frappe.db.get_value("User", row["cashier"], "full_name")
+            or row["cashier"]
+        )
+
+    return {
+        "invoice": row["name"],
+        "docstatus": row["docstatus"],
+        "status": row.get("status"),
+        "posting_date": str(row.get("posting_date") or ""),
+        "grand_total": flt(row.get("grand_total")),
+        "consolidated": 1 if row.get("consolidated_invoice") else 0,
+        "owner": row.get("owner"),
+        "cashier": row.get("cashier"),
+        "cashier_name": cashier_name,
+        "waiter": row.get("custom_waiter"),
+        "waiter_name": waiter_name,
+        "can_edit": 1 if _user_can_manage_settings() else 0,
+    }
+
+
+@frappe.whitelist()
+def update_invoice_attribution(invoice, waiter=None, cashier=None, reason=None):
+    """Re-attribute a bill to a different waiter and/or cashier.
+
+    Administrator / System Manager / URY Manager only -- this rewrites who
+    a sale is credited to, so it is an owner-level correction, not a floor
+    action. Deliberately allowed on submitted AND consolidated invoices,
+    because that is when a wrong attribution is actually noticed.
+
+    Passing an EMPTY STRING clears the field; passing None leaves it
+    untouched. That distinction matters: "remove the wrong waiter" and
+    "don't change the waiter" are different requests.
+
+    Every change is recorded as a comment on the invoice naming the old
+    and new values plus the reason, so the correction is visible in the
+    desk rather than being an invisible edit.
+    """
+    if not _user_can_manage_settings():
+        frappe.throw(
+            _("Only an administrator or manager can change who a bill is attributed to."),
+            title=_("Not Permitted"),
+            exc=frappe.PermissionError,
+        )
+
+    if not invoice or not frappe.db.exists("POS Invoice", invoice):
+        frappe.throw(
+            _("Invoice {0} was not found.").format(invoice or "?"),
+            title=_("Not Found"),
+        )
+
+    current = frappe.db.get_value(
+        "POS Invoice", invoice, ["cashier", "custom_waiter", "docstatus"], as_dict=True
+    )
+    if current["docstatus"] == 2:
+        frappe.throw(
+            _("This bill is cancelled — there is nothing to re-attribute."),
+            title=_("Cancelled Invoice"),
+        )
+
+    updates = {}
+    notes = []
+
+    # --- waiter -------------------------------------------------------
+    if waiter is not None:
+        waiter = (waiter or "").strip()
+        if waiter:
+            if not frappe.db.exists("URY Waiter", waiter):
+                frappe.throw(
+                    _("{0} is not a valid waiter.").format(waiter),
+                    title=_("Unknown Waiter"),
+                )
+            if frappe.db.get_value("URY Waiter", waiter, "disabled"):
+                frappe.throw(
+                    _("{0} is disabled. Re-enable the waiter first, or pick another.").format(waiter),
+                    title=_("Waiter Disabled"),
+                )
+        if waiter != (current.get("custom_waiter") or ""):
+            updates["custom_waiter"] = waiter or None
+            notes.append(
+                "Waiter: {0} → {1}".format(
+                    current.get("custom_waiter") or "(none)", waiter or "(none)"
+                )
+            )
+
+    # --- cashier ------------------------------------------------------
+    if cashier is not None:
+        cashier = (cashier or "").strip()
+        if cashier:
+            if not frappe.db.exists("User", {"name": cashier, "enabled": 1}):
+                frappe.throw(
+                    _("{0} is not an enabled user.").format(cashier),
+                    title=_("Unknown User"),
+                )
+        if cashier != (current.get("cashier") or ""):
+            updates["cashier"] = cashier or None
+            notes.append(
+                "Cashier: {0} → {1}".format(
+                    current.get("cashier") or "(none)", cashier or "(none)"
+                )
+            )
+
+    if not updates:
+        return {"invoice": invoice, "changed": 0, "message": _("Nothing to change.")}
+
+    # db.set_value, not doc.save(): both fields are read-only with
+    # allow_on_submit = 0, and re-running invoice validation on a
+    # submitted (possibly consolidated) bill would refuse the write and
+    # re-trigger unrelated hooks for a purely descriptive change.
+    frappe.db.set_value("POS Invoice", invoice, updates)
+
+    detail = "; ".join(notes)
+    if reason:
+        detail += " — {0}".format(reason)
+    try:
+        frappe.get_doc("POS Invoice", invoice).add_comment(
+            "Comment", _("Attribution corrected by {0}: {1}").format(frappe.session.user, detail)
+        )
+    except Exception:
+        # An audit comment must never be the reason a correction fails.
+        frappe.log_error(
+            frappe.get_traceback(), "URY: attribution comment failed for {0}".format(invoice)
+        )
+    frappe.db.commit()
+
+    return {
+        "invoice": invoice,
+        "changed": 1,
+        "updates": updates,
+        "detail": detail,
+    }

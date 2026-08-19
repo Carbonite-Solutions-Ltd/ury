@@ -52,6 +52,7 @@ doctype_js = {
     "POS Profile": "public/js/pos_profile_geofence.js",
     "User": "public/js/user_biometric_enrollment.js",
     "Item": "public/js/item_add_to_menu.js",
+    "POS Invoice": "public/js/pos_invoice_attribution.js",
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
