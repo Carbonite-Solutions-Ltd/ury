@@ -16,6 +16,7 @@ import {
   RotateCcw,
   CreditCard,
   Tag,
+  Coffee,
 } from 'lucide-react';
 import { Card, CardContent, Badge } from '../components/ui';
 import { Button } from '../components/ui/button';
@@ -29,6 +30,7 @@ import { useRootStore } from '../store/root-store';
 import { canSeeAdminReports } from '../lib/role-utils';
 import {
   getCourseSales,
+  getMealPeriodSales,
   getPaymentModeInvoices,
   getSalesByPaymentMethod,
   getInvoiceItemsForReport,
@@ -43,6 +45,7 @@ import {
   getTransferReport,
   getPaymentSplitsReport,
   type CourseSalesResponse,
+  type MealPeriodResponse,
   type PaymentMethodResponse,
   type ReportDateRange,
   type ReportInvoiceItem,
@@ -101,6 +104,7 @@ type ReportTab =
   | 'my-shift'
   | 'by-cashier'
   | 'covers'
+  | 'meal-periods'
   | 'payment-methods'
   | 'by-category'
   | 'top-bottom'
@@ -157,6 +161,7 @@ export default function Reports() {
   const [staffGrouping, setStaffGrouping] = useState<StaffGrouping>('cashier');
   const [paymentMode, setPaymentMode] = useState<string>('');
   const [courseSales, setCourseSales] = useState<CourseSalesResponse | null>(null);
+  const [mealPeriods, setMealPeriods] = useState<MealPeriodResponse | null>(null);
   const [paymentMethods, setPaymentMethods] =
     useState<PaymentMethodResponse | null>(null);
   const [salesByCashier, setSalesByCashier] =
@@ -184,6 +189,7 @@ export default function Reports() {
   const isRangeTab =
     activeTab === 'by-cashier' ||
     activeTab === 'covers' ||
+    activeTab === 'meal-periods' ||
     activeTab === 'payment-methods' ||
     activeTab === 'by-category' ||
     activeTab === 'top-bottom' ||
@@ -207,6 +213,8 @@ export default function Reports() {
       fetchPaymentMethods();
     } else if (activeTab === 'covers') {
       fetchCourseSales();
+    } else if (activeTab === 'meal-periods') {
+      fetchMealPeriods();
     } else if (activeTab === 'by-cashier') {
       fetchSalesByCashier();
     } else if (activeTab === 'by-category') {
@@ -366,6 +374,24 @@ export default function Reports() {
     }
   };
 
+  const fetchMealPeriods = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setMealPeriods(
+        await getMealPeriodSales({
+          from_date: fromDate,
+          to_date: toDate,
+          terminal: terminalName,
+        })
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch meal periods');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const fetchSalesByCategory = async () => {
     setLoading(true);
     setError(null);
@@ -462,6 +488,7 @@ export default function Reports() {
     }
     else if (activeTab === 'payment-methods') fetchPaymentMethods();
     else if (activeTab === 'covers') fetchCourseSales();
+    else if (activeTab === 'meal-periods') fetchMealPeriods();
     else if (activeTab === 'by-cashier') fetchSalesByCashier();
     else if (activeTab === 'by-category') fetchSalesByCategory();
     else if (activeTab === 'top-bottom') fetchTopBottom();
@@ -909,6 +936,12 @@ export default function Reports() {
                   label="Covers"
                 />
                 <TabButton
+                  active={activeTab === 'meal-periods'}
+                  onClick={() => setActiveTab('meal-periods')}
+                  icon={<Coffee className="w-5 h-5" />}
+                  label="Meal Periods"
+                />
+                <TabButton
                   active={activeTab === 'by-category'}
                   onClick={() => setActiveTab('by-category')}
                   icon={<PieChart className="w-5 h-5" />}
@@ -971,6 +1004,8 @@ export default function Reports() {
           />
         ) : activeTab === 'covers' ? (
           <CoversView report={courseSales} />
+        ) : activeTab === 'meal-periods' ? (
+          <MealPeriodView report={mealPeriods} />
         ) : activeTab === 'by-cashier' ? (
           <SalesByCashierView
             drill={staffDrill}
@@ -4150,5 +4185,306 @@ function printPaymentMethodReport(
      <div class="sub">A bill split across tenders is counted under each method,
        so the per-method bill counts exceed the ${report.totals.total_bills}
        distinct bills.</div>`
+  );
+}
+
+/**
+ * Meal Period report — Breakfast / Lunch / Dinner.
+ *
+ * Three levels: period → order type → items, all delivered in one
+ * response, so expanding never waits on a fetch and printing can render
+ * whatever is open without tracking lazy loads.
+ *
+ * The one thing that needs saying on screen: a bill that contains both a
+ * breakfast item and a lunch item is ONE person who ate in TWO services.
+ * The money splits correctly across the periods (it is summed per item
+ * line) but the covers cannot be split without inventing a number, so
+ * that bill counts under both — and the period rows therefore do not add
+ * up to the distinct totals in the header. Saying so is better than
+ * letting someone conclude the report is broken.
+ */
+function MealPeriodView({ report }: { report: MealPeriodResponse | null }) {
+  const [openPeriod, setOpenPeriod] = useState<Set<string>>(new Set());
+  const [openOt, setOpenOt] = useState<Set<string>>(new Set());
+
+  // A new report means the old expansion is stale.
+  useEffect(() => {
+    setOpenPeriod(new Set());
+    setOpenOt(new Set());
+  }, [report]);
+
+  if (!report) return null;
+
+  const allOpen =
+    report.periods.length > 0 && openPeriod.size === report.periods.length;
+
+  const toggleAll = () => {
+    if (allOpen) {
+      setOpenPeriod(new Set());
+      setOpenOt(new Set());
+    } else {
+      setOpenPeriod(new Set(report.periods.map((p) => p.period)));
+      setOpenOt(
+        new Set(
+          report.periods.flatMap((p) =>
+            p.order_types.map((o) => `${p.period}::${o.order_type}`)
+          )
+        )
+      );
+    }
+  };
+
+  const flip = (set: Set<string>, key: string, fn: (s: Set<string>) => void) => {
+    const next = new Set(set);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    fn(next);
+  };
+
+  const coverSum = report.periods.reduce((a, p) => a + p.covers, 0);
+  const overlaps = coverSum !== report.totals.total_covers;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <StatTile
+          label="Total Sales"
+          value={formatCurrency(report.totals.amount)}
+          tone="green"
+        />
+        <StatTile label="People" value={String(report.totals.total_covers)} tone="blue" />
+        <StatTile label="Bills" value={String(report.totals.total_bills)} tone="purple" />
+      </div>
+
+      {report.configured_periods === 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-semibold">No meal periods are set up yet.</p>
+          <p className="mt-1">
+            Everything is showing under “Unassigned”. Create{' '}
+            <span className="font-medium">ExPOS Meal Period</span> records in the desk —
+            one for Breakfast, Lunch and Dinner — and list the items (or item groups)
+            that belong to each.
+          </p>
+        </div>
+      )}
+
+      <Card>
+        <CardContent className="p-6">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">Meal Periods</h3>
+              <p className="text-sm text-gray-500">
+                {report.from_date} to {report.to_date} · tap a period to see dine-in
+                vs take-away, then again for the dishes
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={toggleAll}
+                className="text-xs font-medium text-blue-600 hover:text-blue-700 whitespace-nowrap"
+              >
+                {allOpen ? 'Collapse all' : 'Expand all'}
+              </button>
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() =>
+                  printMealPeriodReport(report, formatCurrency, openPeriod, openOt)
+                }
+                disabled={!report.periods.length}
+              >
+                <Printer className="w-4 h-4 mr-2" />
+                Print / PDF
+              </Button>
+            </div>
+          </div>
+
+          {!report.periods.length && (
+            <p className="text-sm text-gray-500 py-8 text-center">
+              No sales in this window.
+            </p>
+          )}
+
+          <div className="space-y-2">
+            {report.periods.map((p) => {
+              const isOpen = openPeriod.has(p.period);
+              const unassigned = p.period === 'Unassigned';
+              return (
+                <div
+                  key={p.period}
+                  className={`border rounded-lg overflow-hidden ${
+                    unassigned ? 'border-amber-200' : 'border-gray-200'
+                  }`}
+                >
+                  <button
+                    onClick={() => flip(openPeriod, p.period, setOpenPeriod)}
+                    className={`w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 ${
+                      unassigned ? 'bg-amber-50' : ''
+                    }`}
+                  >
+                    <span className="text-gray-400 shrink-0">{isOpen ? '▾' : '▸'}</span>
+                    <span className="flex-1 min-w-0">
+                      <span className="block font-medium text-gray-900 truncate">
+                        {p.period}
+                        {unassigned && (
+                          <span className="ml-2 text-xs font-normal text-amber-700">
+                            items not assigned to a meal period
+                          </span>
+                        )}
+                      </span>
+                      <span className="block text-xs text-gray-500">
+                        {p.covers} {p.covers === 1 ? 'person' : 'people'} · {p.bill_count}{' '}
+                        {p.bill_count === 1 ? 'bill' : 'bills'}
+                      </span>
+                    </span>
+                    <span className="text-right shrink-0 font-semibold text-gray-900">
+                      {formatCurrency(p.amount)}
+                    </span>
+                  </button>
+
+                  {isOpen && (
+                    <div className="border-t border-gray-100 bg-gray-50 px-3 py-2 space-y-1.5">
+                      {p.order_types.map((o) => {
+                        const key = `${p.period}::${o.order_type}`;
+                        const otOpen = openOt.has(key);
+                        return (
+                          <div
+                            key={key}
+                            className="bg-white border border-gray-200 rounded-md"
+                          >
+                            <button
+                              onClick={() => flip(openOt, key, setOpenOt)}
+                              className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-gray-50"
+                            >
+                              <span className="text-gray-400">{otOpen ? '▾' : '▸'}</span>
+                              <span className="flex-1 min-w-0">
+                                <span className="block text-sm font-medium text-gray-900">
+                                  {o.order_type}
+                                </span>
+                                <span className="block text-xs text-gray-500">
+                                  {o.covers} {o.covers === 1 ? 'person' : 'people'} ·{' '}
+                                  {o.bill_count} {o.bill_count === 1 ? 'bill' : 'bills'}
+                                </span>
+                              </span>
+                              <span className="text-sm font-semibold text-gray-900 shrink-0">
+                                {formatCurrency(o.amount)}
+                              </span>
+                            </button>
+
+                            {otOpen && (
+                              <div className="border-t border-gray-100 overflow-x-auto">
+                                <table className="w-full text-sm min-w-[420px]">
+                                  <thead className="bg-gray-50">
+                                    <tr>
+                                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">
+                                        Item
+                                      </th>
+                                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">
+                                        Qty
+                                      </th>
+                                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">
+                                        People
+                                      </th>
+                                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">
+                                        Total
+                                      </th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-gray-100">
+                                    {o.items.map((it) => (
+                                      <tr key={it.item_code}>
+                                        <td className="px-3 py-2 text-gray-900">
+                                          {it.item_name}
+                                        </td>
+                                        <td className="px-3 py-2 text-right text-gray-600">
+                                          {it.qty}
+                                        </td>
+                                        <td className="px-3 py-2 text-right text-gray-600">
+                                          {it.covers}
+                                        </td>
+                                        <td className="px-3 py-2 text-right font-medium text-gray-900">
+                                          {formatCurrency(it.amount)}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {overlaps && (
+            <p className="mt-4 text-xs text-gray-500 leading-relaxed">
+              The per-period people counts add up to {coverSum}, more than the{' '}
+              {report.totals.total_covers} distinct{' '}
+              {report.totals.total_covers === 1 ? 'person' : 'people'} above. A bill
+              carrying items from two services counts in both — the money is split
+              correctly, but one party cannot be halved.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function printMealPeriodReport(
+  report: MealPeriodResponse,
+  currency: (n: number) => string,
+  openPeriod: Set<string>,
+  openOt: Set<string>
+) {
+  // Prints exactly what is expanded on screen, so a collapsed report
+  // still prints as a clean summary. Indentation carries the hierarchy
+  // because a printed page has no expander.
+  const rows = report.periods
+    .map((p) => {
+      let html =
+        `<tr class="grp"><td>${escHtml(p.period)}</td>` +
+        `<td class="r">${p.covers}</td><td class="r">${p.bill_count}</td>` +
+        `<td class="r">${currency(p.amount)}</td></tr>`;
+      if (!openPeriod.has(p.period)) return html;
+
+      for (const o of p.order_types) {
+        html +=
+          `<tr class="lvl1"><td>${escHtml(o.order_type)}</td>` +
+          `<td class="r">${o.covers}</td><td class="r">${o.bill_count}</td>` +
+          `<td class="r">${currency(o.amount)}</td></tr>`;
+        if (!openOt.has(`${p.period}::${o.order_type}`)) continue;
+        for (const it of o.items) {
+          html +=
+            `<tr class="lvl2"><td>${escHtml(it.item_name)}</td>` +
+            `<td class="r">${it.qty}</td><td class="r">${it.covers}</td>` +
+            `<td class="r">${currency(it.amount)}</td></tr>`;
+        }
+      }
+      return html;
+    })
+    .join('');
+
+  openPrintDocument(
+    'Meal Periods',
+    `<h1>Meal Periods</h1>
+     <div class="sub">${escHtml(report.from_date)} to ${escHtml(report.to_date)}
+       ${report.branch ? '· ' + escHtml(report.branch) : ''}
+       ${report.terminal ? '· ' + escHtml(report.terminal) : ''}</div>
+     <table><thead><tr><th>Meal period</th><th class="r">People</th>
+       <th class="r">Bills</th><th class="r">Total</th></tr></thead>
+     <tbody>${rows}</tbody>
+     <tfoot><tr><td>Total</td>
+       <td class="r">${report.totals.total_covers}</td>
+       <td class="r">${report.totals.total_bills}</td>
+       <td class="r">${currency(report.totals.amount)}</td></tr></tfoot></table>
+     <div class="sub">People and bills in the footer are DISTINCT counts. A bill
+       carrying items from two meal periods is counted under each, so the period
+       rows above can add up to more.</div>`
   );
 }

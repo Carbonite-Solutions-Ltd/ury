@@ -669,3 +669,68 @@ export async function getPaymentModeInvoices(
   );
   return res.message || [];
 }
+
+// ── Meal Period report — Breakfast / Lunch / Dinner (2026-08-23) ────
+
+export interface MealPeriodItemRow {
+  item_code: string;
+  item_name: string;
+  qty: number;
+  amount: number;
+  /** Covers on the bills that included this item. */
+  covers: number;
+  bill_count: number;
+}
+
+export interface MealPeriodOrderTypeRow {
+  order_type: string;
+  amount: number;
+  qty: number;
+  covers: number;
+  bill_count: number;
+  items: MealPeriodItemRow[];
+}
+
+export interface MealPeriodRow {
+  period: string;
+  display_order: number;
+  amount: number;
+  qty: number;
+  covers: number;
+  bill_count: number;
+  order_types: MealPeriodOrderTypeRow[];
+}
+
+export interface MealPeriodResponse {
+  from_date: string;
+  to_date: string;
+  branch: string | null;
+  terminal: string | null;
+  is_admin: 0 | 1;
+  periods: MealPeriodRow[];
+  totals: {
+    amount: number;
+    /** Distinct bills / covers in the window. Period rows can overlap when
+     *  a bill spans two services, so they will NOT sum to these. */
+    total_bills: number;
+    total_covers: number;
+  };
+  /** How many enabled URY Meal Period records exist — 0 means the report
+   *  has not been configured yet and everything falls into Unassigned. */
+  configured_periods: number;
+  unassigned_present: boolean;
+}
+
+export async function getMealPeriodSales(
+  range: ReportDateRange
+): Promise<MealPeriodResponse> {
+  const res = await call.get<{ message: MealPeriodResponse }>(
+    'ury.ury_pos.api.get_meal_period_sales',
+    {
+      from_date: range.from_date,
+      to_date: range.to_date,
+      ...(range.terminal ? { terminal: range.terminal } : {}),
+    }
+  );
+  return res.message;
+}

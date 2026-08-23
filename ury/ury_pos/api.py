@@ -9793,3 +9793,254 @@ def update_invoice_attribution(invoice, waiter=None, cashier=None, reason=None):
         "updates": updates,
         "detail": detail,
     }
+
+
+# ---------------------------------------------------------------------------
+# Meal Period report — Breakfast / Lunch / Dinner (2026-08-23)
+#
+# Three levels in ONE round trip: period → order type → items. Nesting it
+# all up front (rather than lazy-loading each level like Sales by Staff)
+# keeps printing honest — the print function can render whatever is
+# expanded without a fetch-tracking snapshot.
+#
+# TWO THINGS THAT WILL LOOK LIKE BUGS IF THEY AREN'T STATED:
+#
+# 1. A bill can belong to MORE THAN ONE period. Someone who orders a
+#    breakfast item and a lunch item on one bill is one person, but they
+#    ate in both services. The MONEY splits correctly (it is summed from
+#    the item rows), but the COVERS cannot be split without inventing a
+#    number — so that bill's covers count under both periods and the
+#    period covers do NOT sum to the day's total. `totals` therefore
+#    carries the honest distinct figures separately, and the UI says so.
+#    Same shape as the split-tender problem in Sales by Payment Method.
+#
+# 2. Items on no meal period land in an "Unassigned" bucket rather than
+#    being dropped. Silently excluding them would make the report
+#    disagree with the day's takings for no visible reason, and the whole
+#    point of the bucket is to show the admin what still needs
+#    configuring.
+# ---------------------------------------------------------------------------
+
+UNASSIGNED_MEAL_PERIOD = "Unassigned"
+
+
+def _meal_period_item_map():
+	"""{item_code: [period, ...]} from URY Meal Period.
+
+	Direct item rows win, and item-group rows are expanded on top, so an
+	item may sit in several periods (the doctype warns about that on save).
+	One query for the explicit rows, one for the group rows.
+	"""
+	mapping = {}
+
+	for row in frappe.db.sql(
+		"""
+		SELECT mpi.item AS item, mp.name AS period
+		FROM `tabURY Meal Period Item` mpi
+		JOIN `tabURY Meal Period` mp ON mp.name = mpi.parent
+		WHERE mpi.parenttype = 'URY Meal Period' AND mp.disabled = 0
+		""",
+		as_dict=True,
+	):
+		mapping.setdefault(row["item"], set()).add(row["period"])
+
+	for row in frappe.db.sql(
+		"""
+		SELECT i.name AS item, mp.name AS period
+		FROM `tabURY Production Item Groups` pig
+		JOIN `tabURY Meal Period` mp ON mp.name = pig.parent
+		JOIN `tabItem` i ON i.item_group = pig.item_group
+		WHERE pig.parenttype = 'URY Meal Period' AND mp.disabled = 0
+		""",
+		as_dict=True,
+	):
+		mapping.setdefault(row["item"], set()).add(row["period"])
+
+	return mapping
+
+
+def _meal_period_order():
+	"""Display order for the periods, so Breakfast/Lunch/Dinner read in
+	service order instead of alphabetically. Unassigned always last."""
+	order = {}
+	for row in frappe.get_all(
+		"URY Meal Period",
+		filters={"disabled": 0},
+		fields=["name", "display_order"],
+	):
+		order[row["name"]] = int(row.get("display_order") or 0)
+	order[UNASSIGNED_MEAL_PERIOD] = 10**6
+	return order
+
+
+@frappe.whitelist()
+def get_meal_period_sales(from_date=None, to_date=None, terminal=None):
+	"""Sales and covers per meal period, drilling into order type then items.
+
+	Open to cashiers, scoped to their own trading (same rule as Sales by
+	Staff). Branch and terminal are ADMIN-ONLY filters: a cashier's rows
+	are already restricted to them, so those filters can only subtract —
+	see the note on `_report_branch`.
+	"""
+	is_admin = _user_can_see_admin_reports()
+	from_date, to_date = _reports_date_range(from_date, to_date)
+	branch = _report_branch(is_admin)
+
+	where = [
+		"pi.docstatus = 1",
+		"pi.posting_date BETWEEN %(from_date)s AND %(to_date)s",
+		"(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
+		"pi.is_return = 0",
+	]
+	params = {"from_date": from_date, "to_date": to_date}
+	if branch:
+		where.append("pi.branch = %(branch)s")
+		params["branch"] = branch
+	if terminal and is_admin:
+		where.append(
+			"(pi.custom_terminal = %(terminal)s OR pi.custom_terminal IS NULL"
+			" OR pi.custom_terminal = '')"
+		)
+		params["terminal"] = terminal
+	if not is_admin:
+		me = frappe.session.user
+		params["me"] = me
+		params["me_name"] = frappe.db.get_value("User", me, "full_name") or me
+		where.append(
+			"(pi.owner = %(me)s OR pi.cashier = %(me)s OR pi.cashier = %(me_name)s)"
+		)
+
+	clause = " AND ".join(where)
+
+	# Every sold line in the window, with its bill's covers and order type.
+	# `no_of_pax` is a Data field on POS Invoice (Int on Sales Invoice —
+	# a legacy mismatch), and is frequently left at its default, so it is
+	# CAST and floored at 1: covers then equal the bill count until staff
+	# actually record party sizes, and become accurate the moment they do.
+	rows = frappe.db.sql(
+		f"""
+		SELECT
+			pii.item_code        AS item_code,
+			pii.item_name        AS item_name,
+			pii.qty              AS qty,
+			pii.net_amount       AS amount,
+			pi.name              AS invoice,
+			COALESCE(NULLIF(pi.order_type, ''), 'Unknown') AS order_type,
+			GREATEST(COALESCE(CAST(NULLIF(pi.no_of_pax, '') AS UNSIGNED), 1), 1) AS pax
+		FROM `tabPOS Invoice Item` pii
+		JOIN `tabPOS Invoice` pi ON pi.name = pii.parent
+		WHERE {clause}
+		""",
+		params,
+		as_dict=True,
+	)
+
+	item_map = _meal_period_item_map()
+	order_map = _meal_period_order()
+
+	periods = {}
+	# Covers are per BILL, so track which bills have already been counted
+	# at each level — otherwise a bill with three lunch items would count
+	# its party three times.
+	seen = {"period": {}, "ot": {}, "item": {}}
+
+	for r in rows:
+		amount = flt(r["amount"])
+		qty = flt(r["qty"])
+		pax = int(r["pax"] or 1)
+		inv = r["invoice"]
+		ot = r["order_type"]
+
+		for period in sorted(item_map.get(r["item_code"]) or {UNASSIGNED_MEAL_PERIOD}):
+			p = periods.setdefault(
+				period,
+				{
+					"period": period,
+					"display_order": order_map.get(period, 10**5),
+					"amount": 0.0,
+					"qty": 0.0,
+					"covers": 0,
+					"bill_count": 0,
+					"order_types": {},
+				},
+			)
+			p["amount"] += amount
+			p["qty"] += qty
+			if inv not in seen["period"].setdefault(period, set()):
+				seen["period"][period].add(inv)
+				p["covers"] += pax
+				p["bill_count"] += 1
+
+			o = p["order_types"].setdefault(
+				ot,
+				{
+					"order_type": ot,
+					"amount": 0.0,
+					"qty": 0.0,
+					"covers": 0,
+					"bill_count": 0,
+					"items": {},
+				},
+			)
+			o["amount"] += amount
+			o["qty"] += qty
+			if inv not in seen["ot"].setdefault((period, ot), set()):
+				seen["ot"][(period, ot)].add(inv)
+				o["covers"] += pax
+				o["bill_count"] += 1
+
+			it = o["items"].setdefault(
+				r["item_code"],
+				{
+					"item_code": r["item_code"],
+					"item_name": r["item_name"] or r["item_code"],
+					"qty": 0.0,
+					"amount": 0.0,
+					"covers": 0,
+					"bill_count": 0,
+				},
+			)
+			it["qty"] += qty
+			it["amount"] += amount
+			key = (period, ot, r["item_code"])
+			if inv not in seen["item"].setdefault(key, set()):
+				seen["item"][key].add(inv)
+				it["covers"] += pax
+				it["bill_count"] += 1
+
+	out = []
+	for p in periods.values():
+		ots = []
+		for o in p["order_types"].values():
+			o["items"] = sorted(
+				o["items"].values(), key=lambda x: x["amount"], reverse=True
+			)
+			ots.append(o)
+		p["order_types"] = sorted(ots, key=lambda x: x["amount"], reverse=True)
+		out.append(p)
+	out.sort(key=lambda x: (x["display_order"], -x["amount"]))
+
+	distinct_bills = {r["invoice"] for r in rows}
+	bill_pax = {}
+	for r in rows:
+		bill_pax[r["invoice"]] = int(r["pax"] or 1)
+
+	configured = frappe.db.count("URY Meal Period", {"disabled": 0})
+
+	return {
+		"from_date": from_date,
+		"to_date": to_date,
+		"branch": branch,
+		"terminal": terminal if (terminal and is_admin) else None,
+		"is_admin": 1 if is_admin else 0,
+		"periods": out,
+		"totals": {
+			"amount": sum(p["amount"] for p in out),
+			# The honest distinct figures. Period rows can overlap when a
+			# bill spans services, so they will not add up to these.
+			"total_bills": len(distinct_bills),
+			"total_covers": sum(bill_pax.values()),
+		},
+		"configured_periods": configured,
+		"unassigned_present": any(p["period"] == UNASSIGNED_MEAL_PERIOD for p in out),
+	}
