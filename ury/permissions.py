@@ -76,6 +76,11 @@ READ_ONLY_DOCTYPES = [
     # print calls can look up the printer doc server-side. Captains
     # and Managers get write via captain extras below.
     "URY Printer",
+    # Meal Period report (added 2026-08-23). Read-only for cashiers —
+    # the report is scoped to their own trading, but the period
+    # definitions themselves are branch-wide config. Managers get
+    # write via captain extras below.
+    "URY Meal Period",
     # Biometric system (added 2026-04-24). Cashiers need read so the
     # self-service PIN reset dialog can read their own row. Captains +
     # Managers get write via captain extras below so they can enrol
@@ -188,6 +193,12 @@ CAPTAIN_EXTRA_WRITE_DOCTYPES: list[tuple[str, dict]] = [
     ),
     (
         "URY Shift Assignment",
+        {"read": 1, "write": 1, "create": 1, "select": 1, "report": 1},
+    ),
+    # Meal periods: who eats breakfast/lunch/dinner is menu config, so
+    # captains and managers maintain it; cashiers stay read-only.
+    (
+        "URY Meal Period",
         {"read": 1, "write": 1, "create": 1, "select": 1, "report": 1},
     ),
     # Print system: captains + managers maintain the printer list.

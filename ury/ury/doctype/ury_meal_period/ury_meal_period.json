@@ -1,0 +1,122 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:meal_period",
+ "creation": "2026-08-23 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "meal_period",
+  "display_order",
+  "column_break_cfg",
+  "disabled",
+  "description",
+  "section_items",
+  "items",
+  "section_groups",
+  "item_groups"
+ ],
+ "fields": [
+  {
+   "fieldname": "meal_period",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Meal Period",
+   "reqd": 1,
+   "unique": 1,
+   "description": "Breakfast, Lunch, Dinner — or any other service you run."
+  },
+  {
+   "default": "0",
+   "fieldname": "display_order",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Display Order",
+   "description": "Lowest first in the report. Breakfast 1, Lunch 2, Dinner 3 — otherwise they sort alphabetically, which reads oddly."
+  },
+  {
+   "fieldname": "column_break_cfg",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "disabled",
+   "fieldtype": "Check",
+   "label": "Disabled"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "section_items",
+   "fieldtype": "Section Break",
+   "label": "Items"
+  },
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "Items",
+   "options": "URY Meal Period Item",
+   "description": "Items counted in this meal period."
+  },
+  {
+   "fieldname": "section_groups",
+   "fieldtype": "Section Break",
+   "label": "Item Groups",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "item_groups",
+   "fieldtype": "Table",
+   "label": "Item Groups",
+   "options": "URY Production Item Groups",
+   "description": "Optional shortcut: every item in these groups counts in this meal period, without listing them one by one. An item listed above is included even if its group is not here."
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-23 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "URY",
+ "name": "URY Meal Period",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "URY Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "URY Captain",
+   "select": 1
+  },
+  {
+   "read": 1,
+   "role": "URY Cashier",
+   "select": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

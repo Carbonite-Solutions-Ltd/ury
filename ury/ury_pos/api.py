@@ -9603,3 +9603,444 @@ def change_invoice_payment_mode(invoice, row, new_mode):
         "to": new_mode,
         "account": account,
     }
+
+
+# ---------------------------------------------------------------------------
+# Correcting who a bill is attributed to (2026-08-19)
+#
+# `POS Invoice.cashier` and `POS Invoice.custom_waiter` are both read-only
+# with allow_on_submit = 0, so once a bill is submitted neither can be put
+# right from the desk form — yet they are exactly the two fields that drive
+# Sales by Staff, and they DO go wrong:
+#
+#   * A user who holds an elevated role (System Manager / URY Manager /
+#     URY Captain) is not treated as a self-serve waiter by
+#     `_get_self_waiter_for_user`, so they get the full cashier UI and are
+#     stamped as `cashier` when they settle a bill -- while still being
+#     pickable in the waiter dropdown. The same person then legitimately
+#     appears in BOTH fields.
+#   * A cashier can pick the wrong waiter at order time.
+#
+# Neither field is financial: they carry no GL, no stock and no tax, so
+# correcting them is safe at any point in a bill's life -- including AFTER
+# consolidation, which is usually when someone notices the report is wrong.
+# The write therefore goes through db.set_value rather than a doc.save(),
+# which would re-run invoice validation and refuse on a submitted doc.
+# ---------------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def get_invoice_attribution(invoice):
+    """Current waiter/cashier on a bill, plus the pickers' options.
+
+    Feeds the "Change Waiter / Cashier" dialog on the POS Invoice form so
+    it can show what is set now and offer only valid choices.
+    """
+    if not invoice or not frappe.db.exists("POS Invoice", invoice):
+        frappe.throw(
+            _("Invoice {0} was not found.").format(invoice or "?"),
+            title=_("Not Found"),
+        )
+
+    row = frappe.db.get_value(
+        "POS Invoice",
+        invoice,
+        ["name", "cashier", "custom_waiter", "owner", "docstatus", "status",
+         "consolidated_invoice", "posting_date", "grand_total"],
+        as_dict=True,
+    )
+
+    # Resolve display names so the dialog can show "Edith" / "Ama Serwaa"
+    # rather than a bare record id or an email.
+    waiter_name = None
+    if row.get("custom_waiter"):
+        waiter_name = frappe.db.get_value(
+            "URY Waiter", row["custom_waiter"], "full_name"
+        )
+    cashier_name = None
+    if row.get("cashier"):
+        # `cashier` is a Data field and is NOT reliably a user id -- the
+        # shift-close transfer path writes a FULL NAME into it. Look up a
+        # user, and fall back to the raw value when the lookup misses.
+        cashier_name = (
+            frappe.db.get_value("User", row["cashier"], "full_name")
+            or row["cashier"]
+        )
+
+    return {
+        "invoice": row["name"],
+        "docstatus": row["docstatus"],
+        "status": row.get("status"),
+        "posting_date": str(row.get("posting_date") or ""),
+        "grand_total": flt(row.get("grand_total")),
+        "consolidated": 1 if row.get("consolidated_invoice") else 0,
+        "owner": row.get("owner"),
+        "cashier": row.get("cashier"),
+        "cashier_name": cashier_name,
+        "waiter": row.get("custom_waiter"),
+        "waiter_name": waiter_name,
+        "can_edit": 1 if _user_can_manage_settings() else 0,
+    }
+
+
+@frappe.whitelist()
+def update_invoice_attribution(invoice, waiter=None, cashier=None, reason=None):
+    """Re-attribute a bill to a different waiter and/or cashier.
+
+    Administrator / System Manager / URY Manager only -- this rewrites who
+    a sale is credited to, so it is an owner-level correction, not a floor
+    action. Deliberately allowed on submitted AND consolidated invoices,
+    because that is when a wrong attribution is actually noticed.
+
+    Passing an EMPTY STRING clears the field; passing None leaves it
+    untouched. That distinction matters: "remove the wrong waiter" and
+    "don't change the waiter" are different requests.
+
+    Every change is recorded as a comment on the invoice naming the old
+    and new values plus the reason, so the correction is visible in the
+    desk rather than being an invisible edit.
+    """
+    if not _user_can_manage_settings():
+        frappe.throw(
+            _("Only an administrator or manager can change who a bill is attributed to."),
+            title=_("Not Permitted"),
+            exc=frappe.PermissionError,
+        )
+
+    if not invoice or not frappe.db.exists("POS Invoice", invoice):
+        frappe.throw(
+            _("Invoice {0} was not found.").format(invoice or "?"),
+            title=_("Not Found"),
+        )
+
+    current = frappe.db.get_value(
+        "POS Invoice", invoice, ["cashier", "custom_waiter", "docstatus"], as_dict=True
+    )
+    if current["docstatus"] == 2:
+        frappe.throw(
+            _("This bill is cancelled — there is nothing to re-attribute."),
+            title=_("Cancelled Invoice"),
+        )
+
+    updates = {}
+    notes = []
+
+    # --- waiter -------------------------------------------------------
+    if waiter is not None:
+        waiter = (waiter or "").strip()
+        if waiter:
+            if not frappe.db.exists("URY Waiter", waiter):
+                frappe.throw(
+                    _("{0} is not a valid waiter.").format(waiter),
+                    title=_("Unknown Waiter"),
+                )
+            if frappe.db.get_value("URY Waiter", waiter, "disabled"):
+                frappe.throw(
+                    _("{0} is disabled. Re-enable the waiter first, or pick another.").format(waiter),
+                    title=_("Waiter Disabled"),
+                )
+        if waiter != (current.get("custom_waiter") or ""):
+            updates["custom_waiter"] = waiter or None
+            notes.append(
+                "Waiter: {0} → {1}".format(
+                    current.get("custom_waiter") or "(none)", waiter or "(none)"
+                )
+            )
+
+    # --- cashier ------------------------------------------------------
+    if cashier is not None:
+        cashier = (cashier or "").strip()
+        if cashier:
+            if not frappe.db.exists("User", {"name": cashier, "enabled": 1}):
+                frappe.throw(
+                    _("{0} is not an enabled user.").format(cashier),
+                    title=_("Unknown User"),
+                )
+        if cashier != (current.get("cashier") or ""):
+            updates["cashier"] = cashier or None
+            notes.append(
+                "Cashier: {0} → {1}".format(
+                    current.get("cashier") or "(none)", cashier or "(none)"
+                )
+            )
+
+    if not updates:
+        return {"invoice": invoice, "changed": 0, "message": _("Nothing to change.")}
+
+    # db.set_value, not doc.save(): both fields are read-only with
+    # allow_on_submit = 0, and re-running invoice validation on a
+    # submitted (possibly consolidated) bill would refuse the write and
+    # re-trigger unrelated hooks for a purely descriptive change.
+    frappe.db.set_value("POS Invoice", invoice, updates)
+
+    detail = "; ".join(notes)
+    if reason:
+        detail += " — {0}".format(reason)
+    try:
+        frappe.get_doc("POS Invoice", invoice).add_comment(
+            "Comment", _("Attribution corrected by {0}: {1}").format(frappe.session.user, detail)
+        )
+    except Exception:
+        # An audit comment must never be the reason a correction fails.
+        frappe.log_error(
+            frappe.get_traceback(), "URY: attribution comment failed for {0}".format(invoice)
+        )
+    frappe.db.commit()
+
+    return {
+        "invoice": invoice,
+        "changed": 1,
+        "updates": updates,
+        "detail": detail,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Meal Period report — Breakfast / Lunch / Dinner (2026-08-23)
+#
+# Three levels in ONE round trip: period → order type → items. Nesting it
+# all up front (rather than lazy-loading each level like Sales by Staff)
+# keeps printing honest — the print function can render whatever is
+# expanded without a fetch-tracking snapshot.
+#
+# TWO THINGS THAT WILL LOOK LIKE BUGS IF THEY AREN'T STATED:
+#
+# 1. A bill can belong to MORE THAN ONE period. Someone who orders a
+#    breakfast item and a lunch item on one bill is one person, but they
+#    ate in both services. The MONEY splits correctly (it is summed from
+#    the item rows), but the COVERS cannot be split without inventing a
+#    number — so that bill's covers count under both periods and the
+#    period covers do NOT sum to the day's total. `totals` therefore
+#    carries the honest distinct figures separately, and the UI says so.
+#    Same shape as the split-tender problem in Sales by Payment Method.
+#
+# 2. Items on no meal period land in an "Unassigned" bucket rather than
+#    being dropped. Silently excluding them would make the report
+#    disagree with the day's takings for no visible reason, and the whole
+#    point of the bucket is to show the admin what still needs
+#    configuring.
+# ---------------------------------------------------------------------------
+
+UNASSIGNED_MEAL_PERIOD = "Unassigned"
+
+
+def _meal_period_item_map():
+	"""{item_code: [period, ...]} from URY Meal Period.
+
+	Direct item rows win, and item-group rows are expanded on top, so an
+	item may sit in several periods (the doctype warns about that on save).
+	One query for the explicit rows, one for the group rows.
+	"""
+	mapping = {}
+
+	for row in frappe.db.sql(
+		"""
+		SELECT mpi.item AS item, mp.name AS period
+		FROM `tabURY Meal Period Item` mpi
+		JOIN `tabURY Meal Period` mp ON mp.name = mpi.parent
+		WHERE mpi.parenttype = 'URY Meal Period' AND mp.disabled = 0
+		""",
+		as_dict=True,
+	):
+		mapping.setdefault(row["item"], set()).add(row["period"])
+
+	for row in frappe.db.sql(
+		"""
+		SELECT i.name AS item, mp.name AS period
+		FROM `tabURY Production Item Groups` pig
+		JOIN `tabURY Meal Period` mp ON mp.name = pig.parent
+		JOIN `tabItem` i ON i.item_group = pig.item_group
+		WHERE pig.parenttype = 'URY Meal Period' AND mp.disabled = 0
+		""",
+		as_dict=True,
+	):
+		mapping.setdefault(row["item"], set()).add(row["period"])
+
+	return mapping
+
+
+def _meal_period_order():
+	"""Display order for the periods, so Breakfast/Lunch/Dinner read in
+	service order instead of alphabetically. Unassigned always last."""
+	order = {}
+	for row in frappe.get_all(
+		"URY Meal Period",
+		filters={"disabled": 0},
+		fields=["name", "display_order"],
+	):
+		order[row["name"]] = int(row.get("display_order") or 0)
+	order[UNASSIGNED_MEAL_PERIOD] = 10**6
+	return order
+
+
+@frappe.whitelist()
+def get_meal_period_sales(from_date=None, to_date=None, terminal=None):
+	"""Sales and covers per meal period, drilling into order type then items.
+
+	Open to cashiers, scoped to their own trading (same rule as Sales by
+	Staff). Branch and terminal are ADMIN-ONLY filters: a cashier's rows
+	are already restricted to them, so those filters can only subtract —
+	see the note on `_report_branch`.
+	"""
+	is_admin = _user_can_see_admin_reports()
+	from_date, to_date = _reports_date_range(from_date, to_date)
+	branch = _report_branch(is_admin)
+
+	where = [
+		"pi.docstatus = 1",
+		"pi.posting_date BETWEEN %(from_date)s AND %(to_date)s",
+		"(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
+		"pi.is_return = 0",
+	]
+	params = {"from_date": from_date, "to_date": to_date}
+	if branch:
+		where.append("pi.branch = %(branch)s")
+		params["branch"] = branch
+	if terminal and is_admin:
+		where.append(
+			"(pi.custom_terminal = %(terminal)s OR pi.custom_terminal IS NULL"
+			" OR pi.custom_terminal = '')"
+		)
+		params["terminal"] = terminal
+	if not is_admin:
+		me = frappe.session.user
+		params["me"] = me
+		params["me_name"] = frappe.db.get_value("User", me, "full_name") or me
+		where.append(
+			"(pi.owner = %(me)s OR pi.cashier = %(me)s OR pi.cashier = %(me_name)s)"
+		)
+
+	clause = " AND ".join(where)
+
+	# Every sold line in the window, with its bill's covers and order type.
+	# `no_of_pax` is a Data field on POS Invoice (Int on Sales Invoice —
+	# a legacy mismatch), and is frequently left at its default, so it is
+	# CAST and floored at 1: covers then equal the bill count until staff
+	# actually record party sizes, and become accurate the moment they do.
+	rows = frappe.db.sql(
+		f"""
+		SELECT
+			pii.item_code        AS item_code,
+			pii.item_name        AS item_name,
+			pii.qty              AS qty,
+			pii.net_amount       AS amount,
+			pi.name              AS invoice,
+			COALESCE(NULLIF(pi.order_type, ''), 'Unknown') AS order_type,
+			GREATEST(COALESCE(CAST(NULLIF(pi.no_of_pax, '') AS UNSIGNED), 1), 1) AS pax
+		FROM `tabPOS Invoice Item` pii
+		JOIN `tabPOS Invoice` pi ON pi.name = pii.parent
+		WHERE {clause}
+		""",
+		params,
+		as_dict=True,
+	)
+
+	item_map = _meal_period_item_map()
+	order_map = _meal_period_order()
+
+	periods = {}
+	# Covers are per BILL, so track which bills have already been counted
+	# at each level — otherwise a bill with three lunch items would count
+	# its party three times.
+	seen = {"period": {}, "ot": {}, "item": {}}
+
+	for r in rows:
+		amount = flt(r["amount"])
+		qty = flt(r["qty"])
+		pax = int(r["pax"] or 1)
+		inv = r["invoice"]
+		ot = r["order_type"]
+
+		for period in sorted(item_map.get(r["item_code"]) or {UNASSIGNED_MEAL_PERIOD}):
+			p = periods.setdefault(
+				period,
+				{
+					"period": period,
+					"display_order": order_map.get(period, 10**5),
+					"amount": 0.0,
+					"qty": 0.0,
+					"covers": 0,
+					"bill_count": 0,
+					"order_types": {},
+				},
+			)
+			p["amount"] += amount
+			p["qty"] += qty
+			if inv not in seen["period"].setdefault(period, set()):
+				seen["period"][period].add(inv)
+				p["covers"] += pax
+				p["bill_count"] += 1
+
+			o = p["order_types"].setdefault(
+				ot,
+				{
+					"order_type": ot,
+					"amount": 0.0,
+					"qty": 0.0,
+					"covers": 0,
+					"bill_count": 0,
+					"items": {},
+				},
+			)
+			o["amount"] += amount
+			o["qty"] += qty
+			if inv not in seen["ot"].setdefault((period, ot), set()):
+				seen["ot"][(period, ot)].add(inv)
+				o["covers"] += pax
+				o["bill_count"] += 1
+
+			it = o["items"].setdefault(
+				r["item_code"],
+				{
+					"item_code": r["item_code"],
+					"item_name": r["item_name"] or r["item_code"],
+					"qty": 0.0,
+					"amount": 0.0,
+					"covers": 0,
+					"bill_count": 0,
+				},
+			)
+			it["qty"] += qty
+			it["amount"] += amount
+			key = (period, ot, r["item_code"])
+			if inv not in seen["item"].setdefault(key, set()):
+				seen["item"][key].add(inv)
+				it["covers"] += pax
+				it["bill_count"] += 1
+
+	out = []
+	for p in periods.values():
+		ots = []
+		for o in p["order_types"].values():
+			o["items"] = sorted(
+				o["items"].values(), key=lambda x: x["amount"], reverse=True
+			)
+			ots.append(o)
+		p["order_types"] = sorted(ots, key=lambda x: x["amount"], reverse=True)
+		out.append(p)
+	out.sort(key=lambda x: (x["display_order"], -x["amount"]))
+
+	distinct_bills = {r["invoice"] for r in rows}
+	bill_pax = {}
+	for r in rows:
+		bill_pax[r["invoice"]] = int(r["pax"] or 1)
+
+	configured = frappe.db.count("URY Meal Period", {"disabled": 0})
+
+	return {
+		"from_date": from_date,
+		"to_date": to_date,
+		"branch": branch,
+		"terminal": terminal if (terminal and is_admin) else None,
+		"is_admin": 1 if is_admin else 0,
+		"periods": out,
+		"totals": {
+			"amount": sum(p["amount"] for p in out),
+			# The honest distinct figures. Period rows can overlap when a
+			# bill spans services, so they will not add up to these.
+			"total_bills": len(distinct_bills),
+			"total_covers": sum(bill_pax.values()),
+		},
+		"configured_periods": configured,
+		"unassigned_present": any(p["period"] == UNASSIGNED_MEAL_PERIOD for p in out),
+	}
