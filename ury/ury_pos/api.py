@@ -2,7 +2,7 @@ import frappe
 import json
 from frappe import _
 from frappe.utils import flt
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 
 
 
@@ -9796,81 +9796,131 @@ def update_invoice_attribution(invoice, waiter=None, cashier=None, reason=None):
 
 
 # ---------------------------------------------------------------------------
-# Meal Period report — Breakfast / Lunch / Dinner (2026-08-23)
+# Meal Period report — Breakfast / Lunch / Dinner (2026-08-23; made
+# TIME-based on 2026-08-24 at the client's request — it was item-based)
+#
+# A bill belongs to a service because of WHEN it was rung, not what was on
+# it. That is both what the client asked for and the more robust rule: a
+# coffee sold at 19:00 is dinner trade, and nobody has to maintain item
+# lists as the menu changes.
+#
+# Bucketing is on `posting_time`, which URY stamps at DRAFT CREATION (it
+# matches `creation` to the second on real data) — so it is when the order
+# was PLACED, not when it was settled. That is the honest "when did they
+# eat" timestamp; payment can come an hour later.
+#
+# Because the bucket is per INVOICE, each bill lands in exactly one period.
+# Money and covers therefore both add up cleanly to the day's totals —
+# unlike the item-based version, which had to disclaim an overlap.
 #
 # Three levels in ONE round trip: period → order type → items. Nesting it
-# all up front (rather than lazy-loading each level like Sales by Staff)
-# keeps printing honest — the print function can render whatever is
-# expanded without a fetch-tracking snapshot.
-#
-# TWO THINGS THAT WILL LOOK LIKE BUGS IF THEY AREN'T STATED:
-#
-# 1. A bill can belong to MORE THAN ONE period. Someone who orders a
-#    breakfast item and a lunch item on one bill is one person, but they
-#    ate in both services. The MONEY splits correctly (it is summed from
-#    the item rows), but the COVERS cannot be split without inventing a
-#    number — so that bill's covers count under both periods and the
-#    period covers do NOT sum to the day's total. `totals` therefore
-#    carries the honest distinct figures separately, and the UI says so.
-#    Same shape as the split-tender problem in Sales by Payment Method.
-#
-# 2. Items on no meal period land in an "Unassigned" bucket rather than
-#    being dropped. Silently excluding them would make the report
-#    disagree with the day's takings for no visible reason, and the whole
-#    point of the bucket is to show the admin what still needs
-#    configuring.
+# all up front keeps printing honest: the print function renders whatever
+# is expanded without tracking lazy fetches.
 # ---------------------------------------------------------------------------
 
-UNASSIGNED_MEAL_PERIOD = "Unassigned"
+OUTSIDE_MEAL_PERIODS = "Outside service hours"
+
+# Fallback windows, used only when a site has no URY Meal Period records
+# yet, so the report says something sensible out of the box. The patch
+# seeds these as real records on migrate; these are the same values.
+DEFAULT_MEAL_PERIODS = (
+	("Breakfast", "06:00:00", "11:30:00", 1),
+	("Lunch", "11:31:00", "16:00:00", 2),
+	("Dinner", "16:01:00", "22:00:00", 3),
+)
 
 
-def _meal_period_item_map():
-	"""{item_code: [period, ...]} from URY Meal Period.
+def time_to_seconds(value):
+	"""Seconds since midnight from a Time field, or None.
 
-	Direct item rows win, and item-group rows are expanded on top, so an
-	item may sit in several periods (the doctype warns about that on save).
-	One query for the explicit rows, one for the group rows.
+	Frappe hands Time fields back as `datetime.time`, `timedelta` or an
+	ISO-ish string depending on where they came from, so all three are
+	accepted rather than assuming one.
 	"""
-	mapping = {}
-
-	for row in frappe.db.sql(
-		"""
-		SELECT mpi.item AS item, mp.name AS period
-		FROM `tabURY Meal Period Item` mpi
-		JOIN `tabURY Meal Period` mp ON mp.name = mpi.parent
-		WHERE mpi.parenttype = 'URY Meal Period' AND mp.disabled = 0
-		""",
-		as_dict=True,
-	):
-		mapping.setdefault(row["item"], set()).add(row["period"])
-
-	for row in frappe.db.sql(
-		"""
-		SELECT i.name AS item, mp.name AS period
-		FROM `tabURY Production Item Groups` pig
-		JOIN `tabURY Meal Period` mp ON mp.name = pig.parent
-		JOIN `tabItem` i ON i.item_group = pig.item_group
-		WHERE pig.parenttype = 'URY Meal Period' AND mp.disabled = 0
-		""",
-		as_dict=True,
-	):
-		mapping.setdefault(row["item"], set()).add(row["period"])
-
-	return mapping
+	if value is None or value == "":
+		return None
+	if isinstance(value, timedelta):
+		return int(value.total_seconds())
+	if isinstance(value, dt_time):
+		return value.hour * 3600 + value.minute * 60 + value.second
+	text = str(value).strip()
+	if not text:
+		return None
+	parts = text.split(".")[0].split(":")
+	try:
+		nums = [int(p) for p in parts[:3]]
+	except ValueError:
+		return None
+	while len(nums) < 3:
+		nums.append(0)
+	return nums[0] * 3600 + nums[1] * 60 + nums[2]
 
 
-def _meal_period_order():
-	"""Display order for the periods, so Breakfast/Lunch/Dinner read in
-	service order instead of alphabetically. Unassigned always last."""
-	order = {}
-	for row in frappe.get_all(
+def meal_period_seconds(start, end):
+	"""[(from_sec, to_sec), ...] for a window, unwrapped across midnight.
+
+	The end minute is INCLUSIVE of its whole 60 seconds. That matters:
+	the client's windows are "…11:30" then "11:31…", so treating the end
+	as an exact instant would drop every bill rung between 11:30:01 and
+	11:30:59 into no period at all — a silent 59-second hole at each
+	boundary that nobody would ever spot in a total.
+	"""
+	start_sec, end_sec = time_to_seconds(start), time_to_seconds(end)
+	if start_sec is None or end_sec is None or start_sec == end_sec:
+		return []
+	end_sec = min(end_sec + 59, 86399)
+	if start_sec <= end_sec:
+		return [(start_sec, end_sec)]
+	# Runs past midnight (e.g. 22:00 → 02:00): two spans, one each side.
+	return [(start_sec, 86399), (0, end_sec)]
+
+
+def _meal_period_windows():
+	"""Configured periods as [{period, display_order, spans, start, end}].
+
+	Ordered by display_order so an accidental overlap resolves
+	deterministically to the earlier service rather than at random.
+	"""
+	rows = frappe.get_all(
 		"URY Meal Period",
 		filters={"disabled": 0},
-		fields=["name", "display_order"],
-	):
-		order[row["name"]] = int(row.get("display_order") or 0)
-	order[UNASSIGNED_MEAL_PERIOD] = 10**6
-	return order
+		fields=["name", "start_time", "end_time", "display_order"],
+	)
+	if not rows:
+		rows = [
+			frappe._dict(
+				{"name": n, "start_time": s, "end_time": e, "display_order": o}
+			)
+			for n, s, e, o in DEFAULT_MEAL_PERIODS
+		]
+
+	windows = []
+	for r in rows:
+		spans = meal_period_seconds(r.get("start_time"), r.get("end_time"))
+		if not spans:
+			continue
+		windows.append(
+			{
+				"period": r["name"],
+				"display_order": int(r.get("display_order") or 0),
+				"spans": spans,
+				"start": str(r.get("start_time") or "")[:8],
+				"end": str(r.get("end_time") or "")[:8],
+			}
+		)
+	windows.sort(key=lambda w: (w["display_order"], w["period"]))
+	return windows
+
+
+def _period_for_seconds(secs, windows):
+	"""First window containing this time-of-day, else None."""
+	if secs is None:
+		return None
+	for w in windows:
+		for lo, hi in w["spans"]:
+			if lo <= secs <= hi:
+				return w
+	return None
 
 
 @frappe.whitelist()
@@ -9912,11 +9962,11 @@ def get_meal_period_sales(from_date=None, to_date=None, terminal=None):
 
 	clause = " AND ".join(where)
 
-	# Every sold line in the window, with its bill's covers and order type.
-	# `no_of_pax` is a Data field on POS Invoice (Int on Sales Invoice —
-	# a legacy mismatch), and is frequently left at its default, so it is
-	# CAST and floored at 1: covers then equal the bill count until staff
-	# actually record party sizes, and become accurate the moment they do.
+	# Every sold line in the window, with its bill's time, covers and
+	# order type. `no_of_pax` is a Data field on POS Invoice (Int on Sales
+	# Invoice — a legacy mismatch) and is frequently left at its default,
+	# so it is CAST and floored at 1: covers equal the bill count until
+	# staff actually record party sizes, and sharpen the moment they do.
 	rows = frappe.db.sql(
 		f"""
 		SELECT
@@ -9925,6 +9975,7 @@ def get_meal_period_sales(from_date=None, to_date=None, terminal=None):
 			pii.qty              AS qty,
 			pii.net_amount       AS amount,
 			pi.name              AS invoice,
+			TIME_TO_SEC(pi.posting_time) AS secs,
 			COALESCE(NULLIF(pi.order_type, ''), 'Unknown') AS order_type,
 			GREATEST(COALESCE(CAST(NULLIF(pi.no_of_pax, '') AS UNSIGNED), 1), 1) AS pax
 		FROM `tabPOS Invoice Item` pii
@@ -9935,13 +9986,15 @@ def get_meal_period_sales(from_date=None, to_date=None, terminal=None):
 		as_dict=True,
 	)
 
-	item_map = _meal_period_item_map()
-	order_map = _meal_period_order()
+	windows = _meal_period_windows()
+	order_map = {w["period"]: w["display_order"] for w in windows}
+	order_map[OUTSIDE_MEAL_PERIODS] = 10**6
+	label = {w["period"]: (w["start"], w["end"]) for w in windows}
 
 	periods = {}
-	# Covers are per BILL, so track which bills have already been counted
-	# at each level — otherwise a bill with three lunch items would count
-	# its party three times.
+	# Covers are per BILL, so track which bills each level has already
+	# counted — a bill with three lines must not count its party three
+	# times.
 	seen = {"period": {}, "ot": {}, "item": {}}
 
 	for r in rows:
@@ -9951,62 +10004,68 @@ def get_meal_period_sales(from_date=None, to_date=None, terminal=None):
 		inv = r["invoice"]
 		ot = r["order_type"]
 
-		for period in sorted(item_map.get(r["item_code"]) or {UNASSIGNED_MEAL_PERIOD}):
-			p = periods.setdefault(
-				period,
-				{
-					"period": period,
-					"display_order": order_map.get(period, 10**5),
-					"amount": 0.0,
-					"qty": 0.0,
-					"covers": 0,
-					"bill_count": 0,
-					"order_types": {},
-				},
-			)
-			p["amount"] += amount
-			p["qty"] += qty
-			if inv not in seen["period"].setdefault(period, set()):
-				seen["period"][period].add(inv)
-				p["covers"] += pax
-				p["bill_count"] += 1
+		match = _period_for_seconds(
+			int(r["secs"]) if r["secs"] is not None else None, windows
+		)
+		period = match["period"] if match else OUTSIDE_MEAL_PERIODS
 
-			o = p["order_types"].setdefault(
-				ot,
-				{
-					"order_type": ot,
-					"amount": 0.0,
-					"qty": 0.0,
-					"covers": 0,
-					"bill_count": 0,
-					"items": {},
-				},
-			)
-			o["amount"] += amount
-			o["qty"] += qty
-			if inv not in seen["ot"].setdefault((period, ot), set()):
-				seen["ot"][(period, ot)].add(inv)
-				o["covers"] += pax
-				o["bill_count"] += 1
+		p = periods.setdefault(
+			period,
+			{
+				"period": period,
+				"display_order": order_map.get(period, 10**5),
+				"start_time": label.get(period, ("", ""))[0],
+				"end_time": label.get(period, ("", ""))[1],
+				"amount": 0.0,
+				"qty": 0.0,
+				"covers": 0,
+				"bill_count": 0,
+				"order_types": {},
+			},
+		)
+		p["amount"] += amount
+		p["qty"] += qty
+		if inv not in seen["period"].setdefault(period, set()):
+			seen["period"][period].add(inv)
+			p["covers"] += pax
+			p["bill_count"] += 1
 
-			it = o["items"].setdefault(
-				r["item_code"],
-				{
-					"item_code": r["item_code"],
-					"item_name": r["item_name"] or r["item_code"],
-					"qty": 0.0,
-					"amount": 0.0,
-					"covers": 0,
-					"bill_count": 0,
-				},
-			)
-			it["qty"] += qty
-			it["amount"] += amount
-			key = (period, ot, r["item_code"])
-			if inv not in seen["item"].setdefault(key, set()):
-				seen["item"][key].add(inv)
-				it["covers"] += pax
-				it["bill_count"] += 1
+		o = p["order_types"].setdefault(
+			ot,
+			{
+				"order_type": ot,
+				"amount": 0.0,
+				"qty": 0.0,
+				"covers": 0,
+				"bill_count": 0,
+				"items": {},
+			},
+		)
+		o["amount"] += amount
+		o["qty"] += qty
+		if inv not in seen["ot"].setdefault((period, ot), set()):
+			seen["ot"][(period, ot)].add(inv)
+			o["covers"] += pax
+			o["bill_count"] += 1
+
+		it = o["items"].setdefault(
+			r["item_code"],
+			{
+				"item_code": r["item_code"],
+				"item_name": r["item_name"] or r["item_code"],
+				"qty": 0.0,
+				"amount": 0.0,
+				"covers": 0,
+				"bill_count": 0,
+			},
+		)
+		it["qty"] += qty
+		it["amount"] += amount
+		key = (period, ot, r["item_code"])
+		if inv not in seen["item"].setdefault(key, set()):
+			seen["item"][key].add(inv)
+			it["covers"] += pax
+			it["bill_count"] += 1
 
 	out = []
 	for p in periods.values():
@@ -10021,11 +10080,7 @@ def get_meal_period_sales(from_date=None, to_date=None, terminal=None):
 	out.sort(key=lambda x: (x["display_order"], -x["amount"]))
 
 	distinct_bills = {r["invoice"] for r in rows}
-	bill_pax = {}
-	for r in rows:
-		bill_pax[r["invoice"]] = int(r["pax"] or 1)
-
-	configured = frappe.db.count("URY Meal Period", {"disabled": 0})
+	bill_pax = {r["invoice"]: int(r["pax"] or 1) for r in rows}
 
 	return {
 		"from_date": from_date,
@@ -10036,11 +10091,20 @@ def get_meal_period_sales(from_date=None, to_date=None, terminal=None):
 		"periods": out,
 		"totals": {
 			"amount": sum(p["amount"] for p in out),
-			# The honest distinct figures. Period rows can overlap when a
-			# bill spans services, so they will not add up to these.
 			"total_bills": len(distinct_bills),
 			"total_covers": sum(bill_pax.values()),
 		},
-		"configured_periods": configured,
-		"unassigned_present": any(p["period"] == UNASSIGNED_MEAL_PERIOD for p in out),
+		# Windows in force, so the UI can show "06:00–11:30" next to each
+		# period and say plainly when it is falling back to the defaults.
+		"windows": [
+			{
+				"period": w["period"],
+				"start_time": w["start"],
+				"end_time": w["end"],
+				"display_order": w["display_order"],
+			}
+			for w in windows
+		],
+		"configured_periods": frappe.db.count("URY Meal Period", {"disabled": 0}),
+		"outside_present": any(p["period"] == OUTSIDE_MEAL_PERIODS for p in out),
 	}
