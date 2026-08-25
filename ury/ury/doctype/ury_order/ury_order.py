@@ -976,6 +976,113 @@ def _default_payment_mode(pos_profile):
     return "Cash"
 
 
+def _customer_mobile(customer):
+    """The number to text about an on-account charge, or None.
+
+    Prefers URY's own `mobile_number` (which ury_customer.py already
+    makes mandatory when a customer is created from the POS) and falls
+    back to ERPNext's `mobile_no` for customers created in the desk.
+    """
+    if not customer:
+        return None
+    row = frappe.db.get_value(
+        "Customer", customer, ["mobile_number", "mobile_no"], as_dict=True
+    ) or {}
+    for key in ("mobile_number", "mobile_no"):
+        value = (row.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _send_on_account_sms(invoice_doc, customer, amount):
+    """Tell the customer their account was charged (2026-08-25).
+
+    THIS IS A FRAUD CONTROL, not a courtesy. Without it a waiter can put
+    food on a real customer's account and nobody finds out until the
+    statement. The customer getting a text the moment it happens is what
+    makes that visible.
+
+    Best-effort ON PURPOSE: an SMS gateway outage must not strand a guest
+    at the till mid-service, so a failure never blocks the sale. But it is
+    never silent either -- the outcome is stamped on the invoice
+    (`custom_on_account_sms_sent`) and failures reach the Error Log, so
+    "which charges was nobody told about?" is a desk filter rather than an
+    unanswerable question.
+
+    ⚠ WHY THIS DOESN'T JUST `try: send_sms(); return True`. Frappe's
+    `send_sms` does NOT raise when the gateway is unconfigured -- it
+    msgprints "Please Update SMS Settings" and returns normally. Its
+    `send_via_gateway` also swallows per-recipient HTTP failures, only
+    collecting the 2xx ones. So "no exception" proves nothing, and the
+    naive version reported every charge as alerted on a site with no
+    gateway at all. The gateway is therefore checked up front, and the
+    SMS Log row Frappe writes on success is used as confirmation where
+    that doctype still exists (it has been removed in newer Frappe).
+
+    Returns True only when the message was actually handed to a gateway.
+    """
+    mobile = _customer_mobile(customer)
+    if not mobile:
+        return False
+
+    if not frappe.db.get_single_value("SMS Settings", "sms_gateway_url"):
+        # The commonest failure by far: nobody ever set the gateway up.
+        # Say so once, loudly, rather than recording a phantom "sent".
+        frappe.log_error(
+            f"No SMS gateway is configured, so the customer was NOT told about "
+            f"the on-account charge on {invoice_doc.name}. Set it up in SMS "
+            f"Settings, or on-account charges go out unannounced.",
+            "URY: on-account SMS not configured",
+        )
+        return False
+
+    company = invoice_doc.get("company") or ""
+    outlet = invoice_doc.get("branch") or company or "our restaurant"
+    message = _(
+        "{0}: {1} has been charged to your account on {2} (bill {3}). "
+        "If this was not you, please contact us."
+    ).format(
+        outlet,
+        frappe.utils.fmt_money(amount, currency=invoice_doc.get("currency")),
+        frappe.utils.formatdate(invoice_doc.get("posting_date")),
+        invoice_doc.name,
+    )
+
+    can_confirm = bool(frappe.db.exists("DocType", "SMS Log"))
+    before = frappe.db.count("SMS Log") if can_confirm else 0
+
+    try:
+        from frappe.core.doctype.sms_settings.sms_settings import send_sms
+
+        # success_msg=False: this runs inside the payment request, and a
+        # green "SMS sent" toast on the cashier's screen is noise -- the
+        # alert is for the CUSTOMER, not for them.
+        send_sms([mobile], message, success_msg=False)
+    except Exception:
+        frappe.log_error(
+            frappe.get_traceback(),
+            f"URY: on-account SMS failed for {invoice_doc.name} -> {mobile}",
+        )
+        return False
+
+    if can_confirm:
+        # Frappe only writes an SMS Log when the gateway returned 2xx, so
+        # a new row is the one trustworthy "it actually went" signal.
+        if frappe.db.count("SMS Log") > before:
+            return True
+        frappe.log_error(
+            f"The SMS gateway did not accept the on-account alert for "
+            f"{invoice_doc.name} ({mobile}). The customer was NOT told.",
+            "URY: on-account SMS rejected by gateway",
+        )
+        return False
+
+    # No SMS Log on this Frappe version: the best that can be claimed is
+    # that a configured gateway accepted the call without raising.
+    return True
+
+
 def _assert_can_sell_on_account(invoice, pos_profile, customer, amount):
     """Guard the on-account path (2026-08-24).
 
@@ -1013,6 +1120,21 @@ def _assert_can_sell_on_account(invoice, pos_profile, customer, amount):
                 "own customer record first."
             ).format(customer),
             title=_("Walk-in Customer"),
+        )
+
+    # A number is REQUIRED, and this is the point of the whole feature.
+    # The customer's text is what stops a waiter quietly putting food on
+    # someone's account, so an account with no way to reach its owner is
+    # not one we will charge. Blocking here is deliberate: it is a data
+    # problem the cashier can fix in seconds, unlike a silent charge
+    # nobody ever hears about.
+    if not _customer_mobile(customer):
+        frappe.throw(
+            _(
+                "{0} has no mobile number, so they cannot be told about this charge. "
+                "Add one to the customer record before putting a bill on their account."
+            ).format(customer),
+            title=_("No Mobile Number"),
         )
 
     total = flt(invoice.rounded_total) or flt(invoice.grand_total)
@@ -1152,6 +1274,23 @@ def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDisc
     # render an actionable rich toast. Same surgery already done
     # on sync_order — see CLAUDE.md "Fixes log" 2026-04-08.
     invoice.submit()
+
+    # Tell the customer their account was charged (2026-08-25).
+    #
+    # AFTER submit, never before: texting someone about a bill that then
+    # fails to submit would be worse than not texting at all. The send is
+    # best-effort and its outcome is recorded, so a gateway outage costs
+    # the alert but not the sale -- see _send_on_account_sms.
+    if on_account:
+        sent = _send_on_account_sms(invoice, customer, on_account)
+        frappe.db.set_value(
+            "POS Invoice",
+            invoice.name,
+            "custom_on_account_sms_sent",
+            1 if sent else 0,
+            update_modified=False,
+        )
+        frappe.db.commit()
 
 
 def _user_can_split_orders():

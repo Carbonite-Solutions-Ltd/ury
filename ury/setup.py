@@ -192,6 +192,26 @@ def get_custom_fields():
 					"translatable": 0,
 				},
 				{
+					# Did the customer actually get told? (2026-08-25)
+					#
+					# The on-account SMS is a FRAUD CONTROL, not a courtesy: without it
+					# a waiter could put food on a real customer's account and nobody
+					# would know. So the outcome is recorded per bill, and this field is
+					# filterable in the desk -- on_account > 0 with sms_sent = 0 is
+					# exactly the list of charges nobody was told about.
+					"fieldname": "custom_on_account_sms_sent",
+					"fieldtype": "Check",
+					"label": "On Account SMS Sent",
+					"insert_after": "custom_on_account_amount",
+					"default": "0",
+					"no_copy": 1,
+					"read_only": 1,
+					"print_hide": 1,
+					"in_standard_filter": 1,
+					"description": "1 when the customer was texted about this on-account charge. Filter for on-account bills where this is 0 to find charges the customer was never told about.",
+					"translatable": 0,
+				},
+				{
 					"fieldname": "waiter",
 					"fieldtype": "Data",
 					"label": "Waiter",
