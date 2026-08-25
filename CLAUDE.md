@@ -373,6 +373,17 @@ Running record of bugs fixed and non-obvious traps discovered. Add new entries a
 - **Verified in a real browser:** tapped a free table (BG-Tab 51) → lands on Dine In with **"Cash Customer - Airport"** preselected — the profile's real default, not the generic `Cash Customer` fallback, which confirms the value is flowing from the full profile rather than the hardcoded default.
 - **Frontend-only → redeploy the `pos/` build. No migrate, no restart.**
 
+### 2026-08-24 — KDS board refreshes every 30s; the waiter's "food ready" alert re-rings every 30s
+- **Ask (user):** refresh the production-unit (KDS) screen every 30 seconds, and re-ring the waiter's alert every 30 seconds when the kitchen serves.
+- **⚠ The KDS had NO board refresh at all.** Checked before changing anything: the only `setInterval` in [kot.vue](URYMosaic/src/components/kot.vue) was the 1-second clock tick that ages the cards. The board itself was driven **purely by the realtime socket** — which is fine until the socket drops. A kitchen screen left running all service then sits there **silently stale**, and nobody notices, because a board that has stopped updating looks exactly like a board with no new orders. So this is a genuine reliability fix, not just a cadence change.
+- **The poll deliberately does NOT ring.** The bell belongs to the socket handler, which fires for genuinely NEW KOTs. A polling refresh that rang would chime every 30 seconds for tickets already sitting on the board — which is how people learn to ignore the bell. It also **skips while `document.hidden`**, so a backgrounded screen doesn't pointlessly hit the server, and it swallows a failed fetch because the next tick retries anyway.
+- Cleared in `beforeUnmount` alongside the existing tick handle.
+- **Waiter alert: 60s → 30s** ([Footer.tsx](pos/src/components/Footer.tsx)). A minute is long enough for a waiter to miss the chime over a noisy floor and leave food sitting under the pass.
+- **The two POS intervals are different on purpose and must not be merged**: the **15s** poll is what *discovers* a served order and raises the count; the **30s** re-ring only nags about a count that is already known. The `ShiftHoursBanner`'s own 60s poll is untouched — worth knowing, because `6e4` still appears in the built bundle and that is where it comes from.
+- **Verified:** `tsc` 0 errors; `eslint` on Footer.tsx shows the **same 6 problems before and after** (checked by stashing); both `yarn build`s clean; and the emitted KDS bundle contains `_refreshHandle`, confirming the new poll actually shipped.
+- **Not observed live** — the behaviour is a wall-clock timer, so confirming it means watching a real kitchen screen for a minute with the socket cut.
+- **Frontend-only → redeploy BOTH the `URYMosaic/` and `pos/` builds. No migrate, no restart.**
+
 ### 2026-08-24 — Meal Period report reworked from ITEM-based to TIME-based
 - **Ask (client):** the periods should be decided by the clock, not by a list of items — Breakfast **06:00–11:30**, Lunch **11:31–16:00**, Dinner **16:01–22:00**.
 - **This is the better rule anyway, for two reasons beyond the client's preference.** A coffee sold at 19:00 is dinner trade, and nobody has to maintain item lists as the menu changes. It also removes the one genuinely awkward property of the item-based version (below).

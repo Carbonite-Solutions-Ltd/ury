@@ -832,6 +832,7 @@ export default {
       targetError: "",
       service_policy_time: 0,
       _tickHandle: null,
+      _refreshHandle: null,
     };
   },
   methods: {
@@ -1686,12 +1687,31 @@ export default {
         this.showModal = true;
       });
     this._tickHandle = setInterval(this.updateTimeRemaining, 1000);
+    // Safety-net board refresh every 30s (2026-08-24).
+    //
+    // The board is driven by the realtime socket, which is fine until the
+    // socket drops — a kitchen screen left running all service then sits
+    // there silently stale, and nobody notices because there is nothing to
+    // notice. This re-fetches on a timer regardless.
+    //
+    // It deliberately does NOT ring: the bell belongs to the socket handler
+    // for genuinely new KOTs. A poll that rang would chime every 30s for
+    // tickets already sitting on the board.
+    this._refreshHandle = setInterval(() => {
+      if (document.hidden) return; // don't poll a backgrounded screen
+      this.fetchKOT()
+        .then(() => this.masonryLoading())
+        .catch(() => {
+          /* transient — the next tick tries again */
+        });
+    }, 30000);
   },
   beforeUnmount() {
     window.removeEventListener("online", this.handleOnline);
     window.removeEventListener("offline", this.handleOffline);
     document.removeEventListener("click", this.hideAudioAlertMessage);
     if (this._tickHandle) clearInterval(this._tickHandle);
+    if (this._refreshHandle) clearInterval(this._refreshHandle);
   },
   computed: {
     sortedKotItems() {

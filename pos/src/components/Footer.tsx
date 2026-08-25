@@ -99,17 +99,23 @@ const Footer = () => {
   }, [notificationCount]);
 
   // Recurring reminder: while there are un-served kitchen notifications,
-  // re-ring the sound + vibration every 60s until the user clears them
+  // re-ring the sound + vibration every 30s until the user clears them
   // (taps "Served" on the Alerts page → the count drops to 0 and this
   // stops on the next tick). Runs globally so the reminder follows the
-  // user wherever they are in the POS. 2026-07-16.
+  // user wherever they are in the POS. 2026-07-16; shortened from 60s to
+  // 30s on 2026-08-24 — a minute is long enough for a waiter to miss the
+  // chime over a noisy floor and leave the food sitting under the pass.
+  //
+  // The 15s notification poll is what raises the count in the first
+  // place; this only nags about a count that is already known, so the
+  // two intervals are deliberately different and must not be merged.
   useEffect(() => {
     const id = setInterval(() => {
       if (notifCountRef.current > 0) {
         playAlertSound();
         vibrateAlert();
       }
-    }, 60000);
+    }, 30000);
     return () => clearInterval(id);
   }, []);
 
