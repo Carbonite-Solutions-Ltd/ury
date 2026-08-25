@@ -157,6 +157,22 @@ def reinstate_kot(name):
             message={"kot": name, "reinstated": 1},
             after_commit=True,
         )
+
+    # Tell the POS too (2026-08-24). Clearing `custom_order_status` above
+    # is only half the job: `serve_kot` PUSHES `order_served_notification`
+    # to the invoice owner and the waiter's user, but the un-serve pushed
+    # nothing to them — it only pinged the kitchen board. So the waiter's
+    # Orders list kept its "Served" badge until she happened to refetch,
+    # which is exactly what was reported. Mirror serve_kot's recipients.
+    if invoice:
+        for recipient in _kot_notify_users(invoice):
+            frappe.publish_realtime(
+                event="order_unserved_notification",
+                message={"invoice": invoice, "kot": name},
+                user=recipient,
+                after_commit=True,
+            )
+
     return {"kot": name, "status": "Ready For Prepare"}
 
 

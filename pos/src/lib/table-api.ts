@@ -23,6 +23,9 @@ export interface Table {
   merge_log_name?: string | null;
   /** Count of source tables in the active merge. */
   merge_source_count?: number;
+  /** Full name of the waiter holding this table, from the active
+   *  draft on it. Null when unoccupied or no waiter is assigned. */
+  waiter_name?: string | null;
 }
 
 export interface TableMergeSource {

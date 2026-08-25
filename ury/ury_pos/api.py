@@ -56,7 +56,24 @@ def getTable(room):
                 INNER JOIN `tabURY Table Merge Log` AS ml2
                   ON ml2.name = ms.parent
                 WHERE ml2.master_table = t.name AND ml2.status = 'Active'
-            ) AS merge_source_count
+            ) AS merge_source_count,
+            -- Who is holding this table (2026-08-24). A waiter walking the
+            -- floor needs to see whose table it is before tapping it, and
+            -- the grid is the only place they look. Taken from the ACTIVE
+            -- draft on the table, newest first: a table can carry only one
+            -- live order, but ordering makes the pick deterministic.
+            (
+                SELECT w.full_name
+                FROM `tabPOS Invoice` AS piw
+                LEFT JOIN `tabURY Waiter` AS w ON w.name = piw.custom_waiter
+                WHERE piw.restaurant_table = t.name
+                  AND piw.docstatus = 0
+                  AND (piw.custom_merged_into IS NULL OR piw.custom_merged_into = '')
+                  AND piw.custom_waiter IS NOT NULL
+                  AND piw.custom_waiter != ''
+                ORDER BY piw.creation DESC
+                LIMIT 1
+            ) AS waiter_name
         FROM `tabURY Table` AS t
         WHERE t.branch = %s
           AND t.restaurant_room = %s

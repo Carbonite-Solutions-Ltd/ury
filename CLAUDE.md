@@ -373,6 +373,26 @@ Running record of bugs fixed and non-obvious traps discovered. Add new entries a
 - **Verified in a real browser:** tapped a free table (BG-Tab 51) → lands on Dine In with **"Cash Customer - Airport"** preselected — the profile's real default, not the generic `Cash Customer` fallback, which confirms the value is flowing from the full profile rather than the hardcoded default.
 - **Frontend-only → redeploy the `pos/` build. No migrate, no restart.**
 
+### 2026-08-24 (round 2) — Reinstate left "Served" on the waiter's order; covers reset to 1; waiter badge on occupied tables
+Three unrelated reports, three different causes.
+
+**1. Reinstating a KOT didn't clear "Served" in the waiter's Orders list.**
+- **The backend was already correct** — verified by running serve → reinstate against a real KOT: `custom_order_status` goes `'' → 'Served' → ''` and the KOT returns to `Ready For Prepare`. So this was never a data bug, which is why it looked so odd.
+- **The cause is that nothing TOLD the POS.** `serve_kot` *pushes* `order_served_notification` to the invoice owner **and** the waiter's linked user. `reinstate_kot` published only `kot_update_<branch>_All` — a **kitchen board** channel. The waiter's POS therefore never heard about the un-serve, and her Orders list kept its Served badge until she happened to refetch. The 15s notification poll cleared the *bell*, which made it look like the alert worked but the order was stuck.
+- **Fix:** `reinstate_kot` now publishes **`order_unserved_notification`** to the same recipients via the existing `_kot_notify_users(invoice)` helper, and [Footer.tsx](pos/src/components/Footer.tsx) — always mounted, so it works from any page — listens and refreshes both the notification count and the orders list. **Verified by spying on `publish_realtime`:** a reinstate emits the KDS ping plus `order_unserved_notification` to the waiter's user AND the owner.
+
+**2. A table order's covers silently reset to 1.**
+- **`sync_order` was saving `no_of_pax` correctly all along** — this was purely a read-side bug. `numberOfPeople` was **local state inside `OrderPanel`, initialised to `1`**, and `loadTableOrder` never restored it. So reopening a table showed 1 no matter what had been keyed in, **and the next save wrote that 1 back over the real number** — the silent part, and the reason the meal-period covers looked flat.
+- **Fix:** covers moved into the store alongside the other order context (customer, waiter, hotel room), rehydrated from `order.no_of_pax` on load, reset on all three clear paths, and included in the sessionStorage cart snapshot so a mid-order reload keeps them.
+- **⚠ `POSInvoice` is declared in THREE places** — [order-api.ts](pos/src/lib/order-api.ts) (the one `TableOrder` uses), [invoice-api.ts](pos/src/lib/invoice-api.ts) and [orders-slice.ts](pos/src/store/slices/orders-slice.ts) — and they have drifted. `no_of_pax` had to be added to all three; the compiler found each one in turn. A real de-duplication is still outstanding (first flagged 2026-08-05).
+
+**3. Waiter badge on occupied tables.**
+- `getTable` gained a correlated subquery returning the **full name of the waiter on the table's active draft** (`docstatus = 0`, not merged, newest first). Rendered as an indigo pill and deliberately placed as the **first line** of an occupied card: a waiter crossing the floor needs to know whose table it is *before* tapping it, and the grid is the only place they look.
+- **Verified against real data:** `MR-Tab 18` → `Georgina` after temporarily assigning a waiter, restored afterwards.
+
+- **Verified overall:** `py_compile` clean; `tsc` 0 errors; `eslint` shows the **same 12 problems before and after** across all eight touched files (checked by stashing); `yarn build` clean. All dev mutations reversed.
+- **Deploy: `bench restart` (changed `reinstate_kot` + `getTable`) + redeploy the `pos/` build. No migrate** — no schema change; `no_of_pax` and `custom_waiter` already exist.
+
 ### 2026-08-24 — KDS board refreshes every 30s; the waiter's "food ready" alert re-rings every 30s
 - **Ask (user):** refresh the production-unit (KDS) screen every 30 seconds, and re-ring the waiter's alert every 30 seconds when the kitchen serves.
 - **⚠ The KDS had NO board refresh at all.** Checked before changing anything: the only `setInterval` in [kot.vue](URYMosaic/src/components/kot.vue) was the 1-second clock tick that ages the cards. The board itself was driven **purely by the realtime socket** — which is fine until the socket drops. A kitchen screen left running all service then sits there **silently stale**, and nobody notices, because a board that has stopped updating looks exactly like a board with no new orders. So this is a genuine reliability fix, not just a cadence change.

@@ -67,15 +67,31 @@ const Footer = () => {
     // so the alert survives a flaky realtime socket. 2026-07-15.
     const interval = setInterval(fetchNotificationCount, 15000);
 
+    // The kitchen un-served an order (reinstate). Clearing the invoice's
+    // status server-side is only half of it — without this the waiter's
+    // Orders list keeps its "Served" badge until she happens to refetch.
+    // Refresh the count AND the orders list so the badge goes with it.
+    // 2026-08-24.
+    const handleUnserved = () => {
+      fetchNotificationCount();
+      // Refetches with whatever filters are currently set; harmless when
+      // the Orders page isn't mounted.
+      useRootStore.getState().fetchOrders().catch(() => {
+        /* transient — the 15s poll and the next visit will catch up */
+      });
+    };
+
     // Listen for realtime notifications
     if (socket) {
       socket.on('order_served_notification', handleNewNotification);
+      socket.on('order_unserved_notification', handleUnserved);
     }
 
     return () => {
       clearInterval(interval);
       if (socket) {
         socket.off('order_served_notification', handleNewNotification);
+        socket.off('order_unserved_notification', handleUnserved);
       }
     };
   }, []);

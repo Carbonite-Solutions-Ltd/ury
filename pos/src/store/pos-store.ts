@@ -94,6 +94,10 @@ interface POSState {
   searchQuery: string;
   selectedCustomer: Customer | null;
   selectedWaiter: Waiter | null;
+  /** Covers on the current dine-in order. Lives in the store, not in
+   *  OrderPanel local state, so reopening a table restores what was
+   *  actually keyed in instead of silently resetting to 1. */
+  numberOfPeople: number;
   selectedOrderType: OrderType;
   quickFilter: 'all' | 'special';
   selectedItem: MenuItem | null;
@@ -163,6 +167,7 @@ export interface POSStore extends POSState {
   setSearchQuery: (query: string) => void;
   setSelectedCustomer: (customer: Customer | null) => void;
   setSelectedWaiter: (waiter: Waiter | null) => void;
+  setNumberOfPeople: (n: number) => void;
   setSelectedTable: (table: string | null, room: string | null, doNotLoadOrder?: boolean) => void;
   setSelectedOrderType: (type: OrderType) => void;
   setQuickFilter: (filter: 'all' | 'special') => void;
@@ -247,6 +252,10 @@ interface PersistedCart {
   selectedOrderType: OrderType;
   selectedCustomer: Customer | null;
   selectedWaiter: Waiter | null;
+  /** Covers on the current dine-in order. Lives in the store, not in
+   *  OrderPanel local state, so reopening a table restores what was
+   *  actually keyed in instead of silently resetting to 1. */
+  numberOfPeople: number;
   selectedTable: string | null;
   selectedRoom: string | null;
   orderComment: string;
@@ -299,6 +308,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   searchQuery: '',
   selectedCustomer: restoredCart.selectedCustomer ?? null,
   selectedWaiter: restoredCart.selectedWaiter ?? null,
+  numberOfPeople: restoredCart.numberOfPeople ?? 1,
   selectedOrderType: restoredCart.selectedOrderType ?? (DEFAULT_ORDER_TYPE as OrderType),
   quickFilter: "all",
   selectedItem: null,
@@ -688,6 +698,9 @@ export const usePOSStore = create<POSStore>((set, get) => ({
     }
   },
   setSelectedWaiter: (waiter) => set({ selectedWaiter: waiter }),
+
+  setNumberOfPeople: (n: number) =>
+    set({ numberOfPeople: Math.max(1, Number(n) || 1) }),
   setSelectedTable: (table: string | null, room: string | null, doNotLoadOrder: boolean = false) => {
     set({ selectedTable: table, selectedRoom: room });
     if (table ) {
@@ -882,6 +895,11 @@ export const usePOSStore = create<POSStore>((set, get) => ({
           // deferred to the picker — the draft only stamps the room.
           hotelRoom: order.custom_hotel_room || null,
           ihotelProfile: order.custom_ihotel_profile || null,
+          // Restore the covers keyed in when the order was rung. This
+          // used to be OrderPanel local state initialised to 1, so
+          // reopening a table silently reset a party of 4 back to 1 —
+          // and the next save then overwrote the real number.
+          numberOfPeople: Math.max(1, Number(order.no_of_pax) || 1),
         });
       } else {
         set({
@@ -893,6 +911,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
           // which is why the default only ever appeared on the POS tab.
           selectedCustomer: defaultCustomer(get().posProfile),
           selectedWaiter: null,
+          numberOfPeople: 1,
           isUpdatingOrder: false,
           orderId: null,
           hotelRoom: null,
@@ -921,6 +940,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
       activeOrders: [],
       selectedCustomer: defaultCustomer(get().posProfile),
       selectedWaiter: null,
+      numberOfPeople: 1,
       isUpdatingOrder: false,
       orderId: null,
       hotelRoom: null,
@@ -1005,6 +1025,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   set({
     selectedCustomer: defaultCustomer(get().posProfile),
     selectedWaiter: null,
+    numberOfPeople: 1,
     lockedItemQtys: {},
     selectedTable: null,
     selectedRoom: selectedRoom,
@@ -1058,6 +1079,7 @@ usePOSStore.subscribe((state) => {
       selectedOrderType: state.selectedOrderType,
       selectedCustomer: state.selectedCustomer,
       selectedWaiter: state.selectedWaiter,
+      numberOfPeople: state.numberOfPeople,
       selectedTable: state.selectedTable,
       selectedRoom: state.selectedRoom,
       orderComment: state.orderComment,

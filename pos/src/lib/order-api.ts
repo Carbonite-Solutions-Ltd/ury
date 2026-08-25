@@ -32,6 +32,12 @@ export interface POSInvoice {
   total: number;
   grand_total: number;
   items: POSInvoiceItem[];
+  /** Covers keyed in on a dine-in order. A Data field on POS Invoice (Int
+   *  on Sales Invoice — the legacy mismatch), so it can come back as a
+   *  string. NOTE: POSInvoice is declared in THREE places — here,
+   *  lib/invoice-api.ts and store/slices/orders-slice.ts — and they have
+   *  drifted. This field was added to all three. */
+  no_of_pax?: number | string | null;
   /** iHotel: room intent persisted on the draft. Non-zero after charge_invoice_to_room. */
   custom_hotel_room?: string | null;
   custom_charge_to_room?: number;
