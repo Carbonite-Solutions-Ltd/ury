@@ -699,8 +699,13 @@ export const usePOSStore = create<POSStore>((set, get) => ({
   },
   setSelectedWaiter: (waiter) => set({ selectedWaiter: waiter }),
 
+  // 0 means "the field is empty while the cashier is typing", NOT zero
+  // covers. Clamping to a minimum of 1 here is what made the input
+  // impossible to edit: clearing it snapped straight back to 1 and the
+  // next keystroke landed AFTER that, so typing 2 gave 12. The floor is
+  // applied on blur and again at submit instead. 2026-08-25.
   setNumberOfPeople: (n: number) =>
-    set({ numberOfPeople: Math.max(1, Number(n) || 1) }),
+    set({ numberOfPeople: Math.max(0, Math.floor(Number(n) || 0)) }),
   setSelectedTable: (table: string | null, room: string | null, doNotLoadOrder: boolean = false) => {
     set({ selectedTable: table, selectedRoom: room });
     if (table ) {
