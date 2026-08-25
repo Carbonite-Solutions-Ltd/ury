@@ -5,71 +5,60 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 
+from ury.ury_pos.api import meal_period_seconds, time_to_seconds
+
 
 class URYMealPeriod(Document):
 	def validate(self):
-		self._dedupe_rows()
+		self._validate_window()
 		self._warn_on_overlap()
 
-	def _dedupe_rows(self):
-		"""Two rows for the same item would double-count it in the report."""
-		seen = set()
-		kept = []
-		for row in self.get("items") or []:
-			if not row.item or row.item in seen:
-				continue
-			seen.add(row.item)
-			kept.append(row)
-		self.items = kept
-		for idx, row in enumerate(self.items, start=1):
-			row.idx = idx
-
-		seen_groups = set()
-		kept_groups = []
-		for row in self.get("item_groups") or []:
-			if not row.item_group or row.item_group in seen_groups:
-				continue
-			seen_groups.add(row.item_group)
-			kept_groups.append(row)
-		self.item_groups = kept_groups
-		for idx, row in enumerate(self.item_groups, start=1):
-			row.idx = idx
+	def _validate_window(self):
+		start, end = time_to_seconds(self.start_time), time_to_seconds(self.end_time)
+		if start is None or end is None:
+			frappe.throw(
+				_("Set both a start and an end time."), title=_("Times Required")
+			)
+		if start == end:
+			frappe.throw(
+				_("Start and end time cannot be the same — that is a zero-length service."),
+				title=_("Invalid Window"),
+			)
 
 	def _warn_on_overlap(self):
-		"""An item on two meal periods is counted in BOTH.
+		"""Two services covering the same minute would both claim a bill.
 
-		Not an error — a site may legitimately serve the same dish at lunch
-		and dinner — but it silently makes the period totals overlap, so it
-		is worth saying out loud once rather than leaving someone to wonder
-		why the numbers don't add up.
+		The report assigns each bill to exactly ONE period (first match by
+		display order), so an overlap does not double-count — it silently
+		hands the bill to whichever period sorts first, which is not
+		obvious. Say it once, here, rather than leaving someone to wonder
+		why dinner looks light.
 		"""
-		mine = {row.item for row in (self.get("items") or []) if row.item}
+		mine = meal_period_seconds(self.start_time, self.end_time)
 		if not mine:
 			return
 
-		clashes = frappe.db.sql(
-			"""
-			SELECT DISTINCT mpi.item, mp.name AS period
-			FROM `tabURY Meal Period Item` mpi
-			JOIN `tabURY Meal Period` mp ON mp.name = mpi.parent
-			WHERE mpi.parenttype = 'URY Meal Period'
-			  AND mp.name != %(me)s
-			  AND mp.disabled = 0
-			  AND mpi.item IN %(items)s
-			""",
-			{"me": self.name or "__new__", "items": tuple(mine)},
-			as_dict=True,
+		others = frappe.get_all(
+			"URY Meal Period",
+			filters={"disabled": 0, "name": ["!=", self.name or "__new__"]},
+			fields=["name", "start_time", "end_time"],
 		)
-		if not clashes:
-			return
+		clashes = []
+		for o in others:
+			theirs = meal_period_seconds(o.start_time, o.end_time)
+			if not theirs:
+				continue
+			# Both are lists of (from, to) spans already unwrapped across
+			# midnight, so a plain pairwise intersection is enough.
+			if any(a[0] <= b[1] and b[0] <= a[1] for a in mine for b in theirs):
+				clashes.append(o.name)
 
-		listed = ", ".join(f"{c['item']} ({c['period']})" for c in clashes[:8])
-		if len(clashes) > 8:
-			listed += _(" and {0} more").format(len(clashes) - 8)
-		frappe.msgprint(
-			_(
-				"These items are also on another meal period, so they will be counted in both: {0}"
-			).format(listed),
-			title=_("Item On More Than One Meal Period"),
-			indicator="orange",
-		)
+		if clashes:
+			frappe.msgprint(
+				_(
+					"This window overlaps {0}. A bill in the overlapping minutes is counted "
+					"once, under whichever period has the lower Display Order."
+				).format(", ".join(clashes)),
+				title=_("Overlapping Meal Periods"),
+				indicator="orange",
+			)

@@ -76,6 +76,10 @@ export interface POSInvoice {
   custom_print_count?: number;
   /** Assigned URY Waiter (when the profile uses waiters). */
   custom_waiter?: string | null;
+  /** Covers keyed in on a dine-in order. Data field on POS Invoice
+   *  (Int on Sales Invoice — the legacy mismatch), so it can arrive
+   *  as a string. */
+  no_of_pax?: number | string | null;
   /** Reason captured when the order was cancelled (Cancelled filter). */
   cancel_reason?: string | null;
 }

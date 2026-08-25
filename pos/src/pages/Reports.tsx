@@ -4195,14 +4195,22 @@ function printPaymentMethodReport(
  * response, so expanding never waits on a fetch and printing can render
  * whatever is open without tracking lazy loads.
  *
- * The one thing that needs saying on screen: a bill that contains both a
- * breakfast item and a lunch item is ONE person who ate in TWO services.
- * The money splits correctly across the periods (it is summed per item
- * line) but the covers cannot be split without inventing a number, so
- * that bill counts under both — and the period rows therefore do not add
- * up to the distinct totals in the header. Saying so is better than
- * letting someone conclude the report is broken.
+ * TIME-based (changed from item-based on 2026-08-24): a bill belongs to a
+ * service because of WHEN it was rung. Bucketing uses posting_time, which
+ * URY stamps at draft creation, so it reflects when the order was PLACED
+ * rather than when it was settled — a table that sits an hour still counts
+ * in the service it ate in.
+ *
+ * Because the bucket is per invoice, every bill lands in exactly one
+ * period, so unlike Sales by Payment Method these rows DO add up to the
+ * totals in the header.
  */
+const hhmm = (t: string): string => {
+  if (!t) return '';
+  const [h, m] = t.split(':');
+  return `${String(h).padStart(2, '0')}:${m ?? '00'}`;
+};
+
 function MealPeriodView({ report }: { report: MealPeriodResponse | null }) {
   const [openPeriod, setOpenPeriod] = useState<Set<string>>(new Set());
   const [openOt, setOpenOt] = useState<Set<string>>(new Set());
@@ -4241,9 +4249,6 @@ function MealPeriodView({ report }: { report: MealPeriodResponse | null }) {
     fn(next);
   };
 
-  const coverSum = report.periods.reduce((a, p) => a + p.covers, 0);
-  const overlaps = coverSum !== report.totals.total_covers;
-
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -4257,13 +4262,12 @@ function MealPeriodView({ report }: { report: MealPeriodResponse | null }) {
       </div>
 
       {report.configured_periods === 0 && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          <p className="font-semibold">No meal periods are set up yet.</p>
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+          <p className="font-semibold">Using the built-in service hours.</p>
           <p className="mt-1">
-            Everything is showing under “Unassigned”. Create{' '}
-            <span className="font-medium">ExPOS Meal Period</span> records in the desk —
-            one for Breakfast, Lunch and Dinner — and list the items (or item groups)
-            that belong to each.
+            No <span className="font-medium">ExPOS Meal Period</span> records exist yet, so
+            this falls back to Breakfast 06:00–11:30, Lunch 11:31–16:00 and Dinner
+            16:01–22:00. Create them in the desk to change the hours.
           </p>
         </div>
       )}
@@ -4308,27 +4312,32 @@ function MealPeriodView({ report }: { report: MealPeriodResponse | null }) {
           <div className="space-y-2">
             {report.periods.map((p) => {
               const isOpen = openPeriod.has(p.period);
-              const unassigned = p.period === 'Unassigned';
+              const outside = p.period === 'Outside service hours';
               return (
                 <div
                   key={p.period}
                   className={`border rounded-lg overflow-hidden ${
-                    unassigned ? 'border-amber-200' : 'border-gray-200'
+                    outside ? 'border-amber-200' : 'border-gray-200'
                   }`}
                 >
                   <button
                     onClick={() => flip(openPeriod, p.period, setOpenPeriod)}
                     className={`w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 ${
-                      unassigned ? 'bg-amber-50' : ''
+                      outside ? 'bg-amber-50' : ''
                     }`}
                   >
                     <span className="text-gray-400 shrink-0">{isOpen ? '▾' : '▸'}</span>
                     <span className="flex-1 min-w-0">
                       <span className="block font-medium text-gray-900 truncate">
                         {p.period}
-                        {unassigned && (
+                        {p.start_time ? (
+                          <span className="ml-2 text-xs font-normal text-gray-500">
+                            {hhmm(p.start_time)}–{hhmm(p.end_time)}
+                          </span>
+                        ) : null}
+                        {outside && (
                           <span className="ml-2 text-xs font-normal text-amber-700">
-                            items not assigned to a meal period
+                            rung outside the configured service hours
                           </span>
                         )}
                       </span>
@@ -4421,15 +4430,6 @@ function MealPeriodView({ report }: { report: MealPeriodResponse | null }) {
             })}
           </div>
 
-          {overlaps && (
-            <p className="mt-4 text-xs text-gray-500 leading-relaxed">
-              The per-period people counts add up to {coverSum}, more than the{' '}
-              {report.totals.total_covers} distinct{' '}
-              {report.totals.total_covers === 1 ? 'person' : 'people'} above. A bill
-              carrying items from two services counts in both — the money is split
-              correctly, but one party cannot be halved.
-            </p>
-          )}
         </CardContent>
       </Card>
     </div>
@@ -4483,8 +4483,7 @@ function printMealPeriodReport(
        <td class="r">${report.totals.total_covers}</td>
        <td class="r">${report.totals.total_bills}</td>
        <td class="r">${currency(report.totals.amount)}</td></tr></tfoot></table>
-     <div class="sub">People and bills in the footer are DISTINCT counts. A bill
-       carrying items from two meal periods is counted under each, so the period
-       rows above can add up to more.</div>`
+     <div class="sub">Each bill falls in exactly one service, bucketed on the time
+       the order was placed, so the rows above add up to the totals.</div>`
   );
 }

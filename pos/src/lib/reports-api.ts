@@ -670,7 +670,15 @@ export async function getPaymentModeInvoices(
   return res.message || [];
 }
 
-// ── Meal Period report — Breakfast / Lunch / Dinner (2026-08-23) ────
+// ── Meal Period report — Breakfast / Lunch / Dinner (2026-08-24) ────
+//
+// TIME-based: a bill belongs to a service because of when it was rung,
+// not what was on it. Bucketing is on posting_time, which URY stamps at
+// draft creation, so it is when the order was PLACED.
+//
+// Because the bucket is per invoice, each bill lands in exactly one
+// period — so unlike most of the other reports here, the rows DO add up
+// to the totals.
 
 export interface MealPeriodItemRow {
   item_code: string;
@@ -694,11 +702,21 @@ export interface MealPeriodOrderTypeRow {
 export interface MealPeriodRow {
   period: string;
   display_order: number;
+  /** "06:00:00" — blank for the Outside-service-hours bucket. */
+  start_time: string;
+  end_time: string;
   amount: number;
   qty: number;
   covers: number;
   bill_count: number;
   order_types: MealPeriodOrderTypeRow[];
+}
+
+export interface MealPeriodWindow {
+  period: string;
+  start_time: string;
+  end_time: string;
+  display_order: number;
 }
 
 export interface MealPeriodResponse {
@@ -710,15 +728,15 @@ export interface MealPeriodResponse {
   periods: MealPeriodRow[];
   totals: {
     amount: number;
-    /** Distinct bills / covers in the window. Period rows can overlap when
-     *  a bill spans two services, so they will NOT sum to these. */
     total_bills: number;
     total_covers: number;
   };
-  /** How many enabled URY Meal Period records exist — 0 means the report
-   *  has not been configured yet and everything falls into Unassigned. */
+  /** The windows in force, so the UI can show them and flag the fallback. */
+  windows: MealPeriodWindow[];
+  /** 0 means no ExPOS Meal Period records exist and the built-in
+   *  defaults are being used. */
   configured_periods: number;
-  unassigned_present: boolean;
+  outside_present: boolean;
 }
 
 export async function getMealPeriodSales(

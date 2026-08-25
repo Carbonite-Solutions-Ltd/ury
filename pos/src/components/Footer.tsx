@@ -67,15 +67,31 @@ const Footer = () => {
     // so the alert survives a flaky realtime socket. 2026-07-15.
     const interval = setInterval(fetchNotificationCount, 15000);
 
+    // The kitchen un-served an order (reinstate). Clearing the invoice's
+    // status server-side is only half of it — without this the waiter's
+    // Orders list keeps its "Served" badge until she happens to refetch.
+    // Refresh the count AND the orders list so the badge goes with it.
+    // 2026-08-24.
+    const handleUnserved = () => {
+      fetchNotificationCount();
+      // Refetches with whatever filters are currently set; harmless when
+      // the Orders page isn't mounted.
+      useRootStore.getState().fetchOrders().catch(() => {
+        /* transient — the 15s poll and the next visit will catch up */
+      });
+    };
+
     // Listen for realtime notifications
     if (socket) {
       socket.on('order_served_notification', handleNewNotification);
+      socket.on('order_unserved_notification', handleUnserved);
     }
 
     return () => {
       clearInterval(interval);
       if (socket) {
         socket.off('order_served_notification', handleNewNotification);
+        socket.off('order_unserved_notification', handleUnserved);
       }
     };
   }, []);
@@ -99,17 +115,23 @@ const Footer = () => {
   }, [notificationCount]);
 
   // Recurring reminder: while there are un-served kitchen notifications,
-  // re-ring the sound + vibration every 60s until the user clears them
+  // re-ring the sound + vibration every 30s until the user clears them
   // (taps "Served" on the Alerts page → the count drops to 0 and this
   // stops on the next tick). Runs globally so the reminder follows the
-  // user wherever they are in the POS. 2026-07-16.
+  // user wherever they are in the POS. 2026-07-16; shortened from 60s to
+  // 30s on 2026-08-24 — a minute is long enough for a waiter to miss the
+  // chime over a noisy floor and leave the food sitting under the pass.
+  //
+  // The 15s notification poll is what raises the count in the first
+  // place; this only nags about a count that is already known, so the
+  // two intervals are deliberately different and must not be merged.
   useEffect(() => {
     const id = setInterval(() => {
       if (notifCountRef.current > 0) {
         playAlertSound();
         vibrateAlert();
       }
-    }, 60000);
+    }, 30000);
     return () => clearInterval(id);
   }, []);
 

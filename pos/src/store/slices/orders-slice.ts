@@ -19,6 +19,12 @@ import { getSavedTerminal } from '../../lib/terminal-api';
 import { storage } from '../../lib/storage';
 
 export interface POSInvoice {
+  /** Covers keyed in on a dine-in order. Data field on POS Invoice
+   *  (Int on Sales Invoice — the legacy mismatch), so it can arrive
+   *  as a string. NOTE: POSInvoice is declared in BOTH this file and
+   *  lib/invoice-api.ts and the two have drifted; this field was
+   *  added to both. */
+  no_of_pax?: number | string | null;
   name: string;
   invoice_printed: number;
   grand_total: number;

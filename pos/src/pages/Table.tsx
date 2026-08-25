@@ -16,6 +16,7 @@ import {
   Undo2,
   Users,
   X,
+  UserRound,
 } from 'lucide-react';
 import { cn, extractFrappeServerError } from '../lib/utils';
 import { usePOSStore } from '../store/pos-store';
@@ -727,6 +728,22 @@ const TableView = () => {
                       </div>
 
                       <div className="space-y-1 text-xs text-gray-700 pl-1">
+                        {/* Who is holding the table. First line on an
+                            occupied card on purpose: a waiter crossing the
+                            floor needs to know whose table it is BEFORE
+                            they tap it, and the grid is the only place
+                            they look. 2026-08-24. */}
+                        {isOccupied && table.waiter_name && (
+                          <div
+                            className="flex items-center gap-1 rounded bg-indigo-50 border border-indigo-100 px-1.5 py-1 text-indigo-700"
+                            title={`Held by ${table.waiter_name}`}
+                          >
+                            <UserRound className="w-3 h-3 shrink-0" />
+                            <span className="truncate font-medium">
+                              {table.waiter_name}
+                            </span>
+                          </div>
+                        )}
                         <div className="flex items-center justify-between">
                           <span className="font-medium">Room</span>
                           <span className="truncate ml-1">{table.restaurant_room}</span>

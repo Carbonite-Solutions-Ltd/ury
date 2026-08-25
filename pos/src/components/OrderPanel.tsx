@@ -78,7 +78,11 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
   const [showContactDialog, setShowContactDialog] = useState(false);
   const [contactPrompted, setContactPrompted] = useState(false);
   const [pendingWaiter, setPendingWaiter] = useState<Waiter | undefined>(undefined);
-  const [numberOfPeople, setNumberOfPeople] = useState<number>(1);
+  // Covers live in the STORE, not here. As local state initialised to 1,
+  // reopening a table silently reset a party of 4 back to 1 and the next
+  // save overwrote the real number on the invoice. 2026-08-24.
+  const numberOfPeople = usePOSStore((state) => state.numberOfPeople);
+  const setNumberOfPeople = usePOSStore((state) => state.setNumberOfPeople);
 
   // Waiter feature: pop a waiter picker when CREATING a new order on a
   // profile that uses waiters. Not on updates (the order already has one).
