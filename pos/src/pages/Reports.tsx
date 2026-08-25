@@ -23,7 +23,7 @@ import { Button } from '../components/ui/button';
 import { Spinner } from '../components/ui/spinner';
 import { DatePicker } from '../components/ui/date-picker';
 import { call } from '../lib/frappe-sdk';
-import { formatCurrency, cn } from '../lib/utils';
+import { formatCurrency, cn, extractFrappeServerError } from '../lib/utils';
 import { showToast } from '../components/ui/toast';
 import { usePOSStore } from '../store/pos-store';
 import { useRootStore } from '../store/root-store';
@@ -386,7 +386,15 @@ export default function Reports() {
         })
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch meal periods');
+      // Surface the SERVER's message. frappe-js-sdk throws a plain object
+      // for a Frappe error, so `err instanceof Error` is false and the
+      // generic fallback used to swallow the real cause — which for this
+      // report is almost always one of: the bench hasn't been restarted
+      // (method not whitelisted), it hasn't been migrated (no ExPOS Meal
+      // Period doctype), or the user isn't linked to a Branch.
+      setError(
+        extractFrappeServerError(err, 'Failed to fetch meal periods').message
+      );
     } finally {
       setLoading(false);
     }
