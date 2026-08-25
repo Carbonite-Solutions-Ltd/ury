@@ -17,6 +17,8 @@ import {
   CreditCard,
   Tag,
   Coffee,
+
+  Landmark,
 } from 'lucide-react';
 import { Card, CardContent, Badge } from '../components/ui';
 import { Button } from '../components/ui/button';
@@ -1862,6 +1864,9 @@ function SalesByCashierView({
     );
   }
   const modes = report.payment_modes ?? [];
+  // Only show the On Account column when there is any, so a site that
+  // never sells on credit doesn't get a permanently-empty column.
+  const hasOnAccount = (report.totals?.on_account ?? 0) > 0;
   const grand = report.totals.grand_total || 0;
   const range: ReportDateRange = {
     from_date: report.from_date,
@@ -1915,6 +1920,13 @@ function SalesByCashierView({
                       {m}
                     </th>
                   ))}
+                  {/* Money not collected (2026-08-24). Its own column so a
+                      manager can see how much of the takings is owed. */}
+                  {hasOnAccount && (
+                    <th className="px-4 py-3 text-right text-xs font-medium text-purple-600 uppercase whitespace-nowrap">
+                      On Account
+                    </th>
+                  )}
                   <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
                     Net
                   </th>
@@ -1929,7 +1941,8 @@ function SalesByCashierView({
                     key={row.user}
                     row={row}
                     modes={modes}
-                    colSpan={3 + modes.length}
+                    showOnAccount={hasOnAccount}
+                    colSpan={3 + modes.length + (hasOnAccount ? 1 : 0)}
                     expanded={openStaff.has(row.user)}
                     onToggle={() => onToggleStaff(row.user)}
                     drill={drill}
@@ -1957,6 +1970,7 @@ function SalesByCashierView({
 function StaffRow({
   row,
   modes,
+  showOnAccount,
   colSpan,
   expanded,
   onToggle,
@@ -1967,6 +1981,7 @@ function StaffRow({
 }: {
   row: SalesByCashierRow;
   modes: string[];
+  showOnAccount: boolean;
   colSpan: number;
   expanded: boolean;
   onToggle: () => void;
@@ -2019,6 +2034,11 @@ function StaffRow({
             {row.payments?.[m] ? formatCurrency(row.payments[m]) : '—'}
           </td>
         ))}
+        {showOnAccount && (
+          <td className="px-4 py-3 text-right whitespace-nowrap text-purple-700 font-medium">
+            {row.on_account ? formatCurrency(row.on_account) : '—'}
+          </td>
+        )}
         <td className="px-4 py-3 text-right text-gray-600">
           {formatCurrency(row.net_total)}
         </td>
@@ -4070,6 +4090,27 @@ function PaymentMethodView({
                 }
               />
             ))}
+            {/* Not a tender (2026-08-24). Rendered apart from the real
+                methods, and labelled, so it never reads as cash in a
+                drawer — nothing was collected, it is money owed. */}
+            {(report.on_account?.amount ?? 0) > 0 && (
+              <div className="border border-purple-200 bg-purple-50 rounded-lg px-4 py-3 flex items-center gap-3">
+                <Landmark className="w-4 h-4 text-purple-700 shrink-0" />
+                <span className="flex-1 min-w-0">
+                  <span className="block font-medium text-purple-900">
+                    On Account
+                  </span>
+                  <span className="block text-xs text-purple-800">
+                    Not collected · {report.on_account?.bill_count}{' '}
+                    {report.on_account?.bill_count === 1 ? 'bill' : 'bills'} owed by
+                    customers
+                  </span>
+                </span>
+                <span className="font-semibold text-purple-900 shrink-0">
+                  {formatCurrency(report.on_account?.amount ?? 0)}
+                </span>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>

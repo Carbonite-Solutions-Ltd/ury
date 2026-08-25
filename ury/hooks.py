@@ -407,6 +407,9 @@ fixtures = [
                     "POS Invoice-custom_hold_reason",
                     "POS Invoice-custom_held_by",
                     "POS Invoice-custom_held_at",
+                    # Sell on account (2026-08-24)
+                    "POS Invoice-custom_on_account_amount",
+                    "POS Profile-custom_enable_on_account",
                     "POS Profile-custom_cancel_grace_minutes",
                     "POS Profile-custom_edit_order_type",
                     "Printer Settings-kot_print_format_",

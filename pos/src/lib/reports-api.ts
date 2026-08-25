@@ -12,9 +12,13 @@ export interface ReportTotals {
   grand_total?: number;
   total_amount?: number;
   invoice_count?: number;
+  /** Money left on customers' accounts across the report (2026-08-24). */
+  on_account?: number;
 }
 
 export interface SalesByCashierRow {
+  /** Money left on customers' accounts, not collected (2026-08-24). */
+  on_account?: number;
   /** Amount taken by this person per mode of payment. */
   payments?: Record<string, number>;
   user: string;
@@ -632,6 +636,9 @@ export interface PaymentModeRow {
 }
 
 export interface PaymentMethodResponse {
+  /** Not a tender — money put on customers' accounts. Shown apart from
+   *  `modes` so it never reads as cash in a drawer. */
+  on_account?: { amount: number; bill_count: number };
   from_date: string;
   to_date: string;
   branch: string;

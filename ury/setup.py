@@ -177,6 +177,21 @@ def get_custom_fields():
 					"translatable": 0,
 				},
 				{
+					# The portion of this bill deliberately left on the customer's
+					# account (2026-08-24). Denormalised so no report has to infer it
+					# from grand_total - paid_amount, which would also catch bills
+					# that are short for unrelated reasons.
+					"fieldname": "custom_on_account_amount",
+					"fieldtype": "Currency",
+					"label": "On Account Amount",
+					"insert_after": "custom_held_at",
+					"no_copy": 1,
+					"read_only": 1,
+					"in_standard_filter": 1,
+					"description": "How much of this bill was put on the customer's account rather than collected. The balance is a receivable, settled later in the back office.",
+					"translatable": 0,
+				},
+				{
 					"fieldname": "waiter",
 					"fieldtype": "Data",
 					"label": "Waiter",
@@ -714,6 +729,19 @@ def get_custom_fields():
 				"label": "Enable Returns",
 				"default": "0",
 				"description": "Master switch for the Return Orders feature on the Orders page. OFF by default - returns are hidden everywhere and the backend rejects return requests. Turn ON to allow returns (still subject to 'Restrict Returns to Captain').",
+			},
+			{
+				# Sell on account (2026-08-24). Master switch for putting a bill
+				# on a customer's account instead of taking payment. OFF by
+				# default. When ON, install.py also ticks ERPNext's own
+				# POS Profile.allow_partial_payment, without which a bill that is
+				# not fully tendered is rejected outright.
+				"fieldname": "custom_enable_on_account",
+				"fieldtype": "Check",
+				"insert_after": "custom_enable_returns",
+				"label": "Enable Sell On Account",
+				"default": "0",
+				"description": "Master switch for on-account (credit) sales. OFF by default. When ON, a cashier can leave part or all of a bill on a real customer's account instead of collecting it; the balance becomes a receivable settled later in the back office. Not related to the Credit Card payment method.",
 			},
 			# Per-invoice transfer hop cap (2026-06-05). How many times a
 			# single unpaid order may be transferred between cashiers at

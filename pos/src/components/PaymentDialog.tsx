@@ -10,7 +10,7 @@ import {
   Trash2,
   BedDouble,
   AlertCircle,
-} from 'lucide-react';
+ Landmark,} from 'lucide-react';
 import { usePOSStore } from '../store/pos-store';
 import {
   cn,
@@ -65,7 +65,7 @@ interface PaymentDialogProps {
   hotelRoomLabel?: string | null;
 }
 
-type PaymentMode = 'single' | 'split' | 'room';
+type PaymentMode = 'single' | 'split' | 'room' | 'account';
 
 // Cent-safe equal distribution: floor to cents for N-1 payers, last
 // payer absorbs the rounding remainder so the sum matches exactly.
@@ -135,6 +135,27 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
   // Picking the room happens in the CustomerSelect component, not here.
   const ihotelEnabled = storePosProfile?.custom_ihotel_enabled === 1;
   const canChargeToRoom = Boolean(ihotelEnabled && hotelRoom);
+
+  // Sell on account (2026-08-24). On-account is the ABSENCE of a tender,
+  // not a payment method — ERPNext has no credit mode and one pointing at
+  // Debtors breaks the GL. So the cashier says how much is being collected
+  // now, and whatever is left becomes a receivable on the customer.
+  //
+  // The walk-in customer is refused: a balance owed by "Cash Customer" is
+  // owed by nobody, and quietly corrupts the AR ledger.
+  const onAccountEnabled = storePosProfile?.custom_enable_on_account === 1;
+  const walkInCustomer = storePosProfile?.default_customer || null;
+  const isWalkInCustomer = Boolean(
+    walkInCustomer && customer && customer === walkInCustomer
+  );
+  const [accountPaidNow, setAccountPaidNow] = useState('');
+  const [accountMode, setAccountMode] = useState('');
+  // Modes beyond the base Single/Split pair. Drives whether the
+  // selector renders as a segmented control or the original switch.
+  const extraModes = [
+    ...(canChargeToRoom ? ['room'] : []),
+    ...(onAccountEnabled ? ['account'] : []),
+  ];
 
   // Which of the three payment paths is currently active. Default to
   // Charge to Room when it's available (cashier explicitly chose a
@@ -419,6 +440,11 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
     [outgoingPayments]
   );
 
+  // How much of the bill is being left on the customer's account.
+  const accountPaid = Math.max(0, parseFloat(accountPaidNow) || 0);
+  const accountRemainder =
+    Math.round(Math.max(0, finalTotal - accountPaid) * 100) / 100;
+
   // Customer dual-screen: push amount due / collected / change to the display
   // bridge while this dialog is open (no DOM scraping). 2026-06-11.
   const changeDue = Math.max(0, Math.round((outgoingTotal - finalTotal) * 100) / 100);
@@ -432,7 +458,15 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
   }, [finalTotal, outgoingTotal, changeDue]);
 
   const canSubmit =
-    paymentMode === 'room'
+    paymentMode === 'account'
+      ? onAccountEnabled &&
+        !isWalkInCustomer &&
+        !!customer &&
+        accountRemainder > 0 &&
+        accountPaid <= finalTotal + 0.01 &&
+        (accountPaid === 0 || !!accountMode) &&
+        !isProcessing
+      : paymentMode === 'room'
       ? canChargeToRoom && !isProcessing
       : splitEnabled
       ? splitBalanced && payers.every((p) => (parseFloat(p.amount) || 0) > 0)
@@ -484,19 +518,32 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
         await fetchOrders();
         return;
       }
+      const isAccount = paymentMode === 'account';
       await call.post('ury.ury.doctype.ury_order.ury_order.make_invoice', {
         additionalDiscount: discountValue ? parseInt(discountValue) : null,
         cashier: billingCashier || cashier,
         customer,
         invoice,
         owner,
-        payments: outgoingPayments,
+        // On account: send only what is actually being collected now. The
+        // rest is deliberately NOT tendered, so ERPNext leaves it as a
+        // receivable on the customer.
+        payments: isAccount
+          ? accountPaid > 0
+            ? [{ mode_of_payment: accountMode, amount: accountPaid }]
+            : []
+          : outgoingPayments,
+        on_account_amount: isAccount ? accountRemainder : null,
         pos_profile: posProfile,
         table,
         // Only meaningful for non-cash tenders; blank/null otherwise.
         transaction_id: hasNonCashPayment ? transactionId.trim() || null : null,
       });
-      showToast.success('Payment successful');
+      showToast.success(
+        paymentMode === 'account'
+          ? `${formatCurrency(accountRemainder)} put on ${customer}'s account`
+          : 'Payment successful'
+      );
 
       // Value split (2026-06-05): print one itemized receipt per payer,
       // each headed with the grand total + that receipt's portion. A
@@ -616,10 +663,14 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
             </Button>
           </div>
 
-          {/* Mode selector: 2-way toggle when iHotel is off, 3-way
-              segmented control when the draft has a hotel room tagged. */}
-          {canChargeToRoom ? (
-            <div className="mb-5 grid grid-cols-3 gap-1 rounded-lg border border-gray-200 p-1 bg-gray-50 text-xs font-semibold">
+          {/* Mode selector. Renders as a segmented control as soon as
+              there are more than two modes (on-account and/or a tagged
+              hotel room), and as the original switch otherwise. */}
+          {extraModes.length > 0 ? (
+            <div
+              className="mb-5 grid gap-1 rounded-lg border border-gray-200 p-1 bg-gray-50 text-xs font-semibold"
+              style={{ gridTemplateColumns: `repeat(${2 + extraModes.length}, minmax(0, 1fr))` }}
+            >
               <button
                 type="button"
                 onClick={() => setPaymentMode('single')}
@@ -644,18 +695,34 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
               >
                 <Users className="w-3.5 h-3.5" /> Split
               </button>
-              <button
-                type="button"
-                onClick={() => setPaymentMode('room')}
-                className={cn(
-                  'flex items-center justify-center gap-1.5 py-2 rounded-md transition-colors',
-                  paymentMode === 'room'
-                    ? 'bg-white text-amber-700 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700'
-                )}
-              >
-                <BedDouble className="w-3.5 h-3.5" /> Room
-              </button>
+              {canChargeToRoom && (
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('room')}
+                  className={cn(
+                    'flex items-center justify-center gap-1.5 py-2 rounded-md transition-colors',
+                    paymentMode === 'room'
+                      ? 'bg-white text-amber-700 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  )}
+                >
+                  <BedDouble className="w-3.5 h-3.5" /> Room
+                </button>
+              )}
+              {onAccountEnabled && (
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('account')}
+                  className={cn(
+                    'flex items-center justify-center gap-1.5 py-2 rounded-md transition-colors',
+                    paymentMode === 'account'
+                      ? 'bg-white text-purple-700 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  )}
+                >
+                  <Landmark className="w-3.5 h-3.5" /> On Account
+                </button>
+              )}
             </div>
           ) : (
             <div className="mb-5 flex items-center justify-between rounded-lg border border-gray-200 p-3 bg-gray-50">
@@ -693,6 +760,97 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
                   )}
                 />
               </button>
+            </div>
+          )}
+
+          {/* On Account panel (2026-08-24). Mixed tender is the default
+              shape here, not an afterthought: the cashier says what is
+              being collected NOW and the remainder goes on the account.
+              Collecting nothing is simply the all-on-account case. */}
+          {paymentMode === 'account' && (
+            <div className="space-y-4">
+              {isWalkInCustomer || !customer ? (
+                <div className="rounded-lg border-2 border-red-200 bg-red-50 p-4 text-sm text-red-900">
+                  <div className="font-semibold mb-1">
+                    This bill can&apos;t go on an account
+                  </div>
+                  {customer
+                    ? `"${customer}" is this till's walk-in customer, so the balance would be owed by nobody. Close this dialog and pick the guest's own customer record first.`
+                    : 'Pick the customer whose account this bill should go to first.'}
+                </div>
+              ) : (
+                <>
+                  <div className="rounded-lg border-2 border-purple-200 bg-purple-50 p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-purple-200">
+                        <Landmark className="w-5 h-5 text-purple-800" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-purple-900">
+                          On {customer}&apos;s account
+                        </div>
+                        <div className="text-xs text-purple-800 mt-0.5">
+                          Whatever isn&apos;t collected now becomes money they owe,
+                          settled later in the back office.
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1.5">
+                      Collecting now (leave blank for none)
+                    </label>
+                    <div className="flex gap-2">
+                      <select
+                        value={accountMode}
+                        onChange={(e) => setAccountMode(e.target.value)}
+                        className="border border-gray-300 rounded-lg px-2.5 py-2 text-sm w-40"
+                      >
+                        <option value="">Method…</option>
+                        {paymentModes.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        value={accountPaidNow}
+                        onChange={(e) => setAccountPaidNow(e.target.value)}
+                        placeholder="0.00"
+                        className="flex-1 text-right"
+                      />
+                    </div>
+                    {accountPaid > 0 && !accountMode && (
+                      <p className="text-xs text-red-600 mt-1">
+                        Pick the method the money is coming in by.
+                      </p>
+                    )}
+                    {accountPaid > finalTotal + 0.01 && (
+                      <p className="text-xs text-red-600 mt-1">
+                        That is more than the bill total.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="rounded-lg border border-gray-200 p-3 space-y-1.5 text-sm">
+                    <div className="flex justify-between text-gray-600">
+                      <span>Bill total</span>
+                      <span>{formatCurrency(finalTotal)}</span>
+                    </div>
+                    <div className="flex justify-between text-gray-600">
+                      <span>Collected now</span>
+                      <span>{formatCurrency(accountPaid)}</span>
+                    </div>
+                    <div className="flex justify-between font-semibold text-purple-800 pt-1.5 border-t border-gray-200">
+                      <span>To {customer}&apos;s account</span>
+                      <span>{formatCurrency(accountRemainder)}</span>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -1162,11 +1320,17 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
               paymentMode === 'room' &&
                 !isProcessing &&
                 canSubmit &&
-                'bg-amber-600 hover:bg-amber-700 text-white'
+                'bg-amber-600 hover:bg-amber-700 text-white',
+              paymentMode === 'account' &&
+                !isProcessing &&
+                canSubmit &&
+                'bg-purple-600 hover:bg-purple-700 text-white'
             )}
           >
             {isProcessing
               ? 'Processing...'
+              : paymentMode === 'account'
+              ? `Put ${formatCurrency(accountRemainder)} on account`
               : paymentMode === 'room'
               ? `Charge ${formatCurrency(finalTotal)} to Room ${hotelRoom}`
               : `Pay ${formatCurrency(

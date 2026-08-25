@@ -44,6 +44,12 @@ export interface PosProfileLimited {
    * on. Evaluated before custom_restrict_returns_to_captain.
    */
   custom_enable_returns?: number;
+  /** Sell on account (2026-08-24): master switch for putting a bill on a
+   *  real customer's account instead of collecting it. */
+  custom_enable_on_account?: 0 | 1;
+  /** The till's walk-in customer. A bill can never go on ITS account —
+   *  the balance would be owed by nobody. */
+  default_customer?: string | null;
   /**
    * How many times a single unpaid order may be transferred between
    * cashiers at shift close (per-invoice hop count). 0 disables
@@ -198,6 +204,12 @@ export interface PosProfileCombined extends PosProfileFull {
   custom_restrict_merge_to_captain?: number;
   custom_restrict_returns_to_captain?: number;
   custom_enable_returns?: number;
+  /** Sell on account (2026-08-24): master switch for putting a bill on a
+   *  real customer's account instead of collecting it. */
+  custom_enable_on_account?: 0 | 1;
+  /** The till's walk-in customer. A bill can never go on ITS account —
+   *  the balance would be owed by nobody. */
+  default_customer?: string | null;
   custom_max_invoice_transfers?: number;
   custom_min_screen_width?: number;
   self_waiter?: Waiter | null;
@@ -306,6 +318,8 @@ export async function getCombinedPosProfile(
     custom_restrict_returns_to_captain:
       limitedProfile.custom_restrict_returns_to_captain,
     custom_enable_returns: limitedProfile.custom_enable_returns,
+    custom_enable_on_account: limitedProfile.custom_enable_on_account,
+    default_customer: limitedProfile.default_customer,
     custom_max_invoice_transfers: limitedProfile.custom_max_invoice_transfers,
     custom_use_waiter: limitedProfile.custom_use_waiter,
     self_waiter: limitedProfile.self_waiter,

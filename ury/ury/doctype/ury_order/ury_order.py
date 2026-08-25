@@ -4,6 +4,7 @@
 import json
 import frappe
 from frappe import _
+from frappe.utils import flt
 from frappe.model.document import Document
 from erpnext.controllers.queries import item_query
 from ury.ury_pos.api import getBranch, _VALID_ORDER_TYPES
@@ -953,8 +954,95 @@ def _resolve_billing_cashier(requested):
     return requested
 
 
+def _default_payment_mode(pos_profile):
+    """A mode of payment to hang the inert zero-amount row on.
+
+    Prefers the profile's own default, then its first configured mode,
+    then plain Cash. Only ever used for a 100%-on-account bill, where the
+    row exists solely to satisfy ERPNext's "at least one mode of payment"
+    rule and posts nothing.
+    """
+    rows = frappe.get_all(
+        "POS Payment Method",
+        filters={"parent": pos_profile, "parenttype": "POS Profile"},
+        fields=["mode_of_payment", "`default`"],
+        order_by="idx asc",
+    )
+    for r in rows:
+        if r.get("default"):
+            return r["mode_of_payment"]
+    if rows:
+        return rows[0]["mode_of_payment"]
+    return "Cash"
+
+
+def _assert_can_sell_on_account(invoice, pos_profile, customer, amount):
+    """Guard the on-account path (2026-08-24).
+
+    The load-bearing check is the walk-in one. Putting a bill on the
+    profile's default "Cash Customer" creates a receivable against a
+    shared placeholder that nobody can ever collect from, and quietly
+    corrupts the AR ledger. Everything else here is arithmetic.
+    """
+    profile = frappe.db.get_value(
+        "POS Profile",
+        pos_profile,
+        ["custom_enable_on_account", "customer", "allow_partial_payment"],
+        as_dict=True,
+    ) or {}
+
+    if not profile.get("custom_enable_on_account"):
+        frappe.throw(
+            _("Selling on account is not enabled for this POS Profile."),
+            title=_("Not Enabled"),
+        )
+
+    if not customer:
+        frappe.throw(
+            _("Pick the customer whose account this bill goes to."),
+            title=_("Customer Required"),
+        )
+
+    # The walk-in placeholder is not a real debtor.
+    default_customer = (profile.get("customer") or "").strip()
+    if default_customer and customer == default_customer:
+        frappe.throw(
+            _(
+                "'{0}' is this till's walk-in customer, so a bill cannot be put on "
+                "its account — the balance would be owed by nobody. Pick the guest's "
+                "own customer record first."
+            ).format(customer),
+            title=_("Walk-in Customer"),
+        )
+
+    total = flt(invoice.rounded_total) or flt(invoice.grand_total)
+    if amount < 0:
+        frappe.throw(_("The on-account amount cannot be negative."), title=_("Invalid Amount"))
+    if amount - total > 0.01:
+        frappe.throw(
+            _("The on-account amount ({0}) is more than the bill total ({1}).").format(
+                amount, total
+            ),
+            title=_("Invalid Amount"),
+        )
+
+    # ERPNext refuses an under-tendered POS Invoice without this. It is
+    # ticked automatically on migrate for profiles that enable on-account
+    # selling (see install.py `_sync_allow_partial_payment`), so reaching
+    # here means someone un-ticked it by hand.
+    if not profile.get("allow_partial_payment"):
+        frappe.throw(
+            _(
+                "'Allow Partial Payment' is switched off on POS Profile {0}, so a bill "
+                "cannot be left partly unpaid. Tick it on the profile, or run "
+                "bench migrate to have it set automatically."
+            ).format(pos_profile),
+            title=_("Partial Payment Disabled"),
+        )
+
+
 @frappe.whitelist()
-def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDiscount=None, table=None, invoice=None, transaction_id=None):
+def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDiscount=None, table=None, invoice=None, transaction_id=None, on_account_amount=None):
     _assert_not_pending_cancellation(invoice)
     order_type = invoice_name = frappe.get_value("POS Invoice", invoice, "order_type")
     invoice = get_order_invoice(table, invoice, order_type, "Payments")
@@ -992,13 +1080,59 @@ def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDisc
     invoice.additional_discount_percentage = additionalDiscount
     invoice.calculate_taxes_and_totals()
 
-    for pay in invoice.payments:
-        pay.delete(pay.mode_of_payment)
+    # Clear any existing tender before rebuilding it.
+    #
+    # This used to be `for pay in invoice.payments: pay.delete(...)`, which
+    # was wrong twice over: `Document.delete()`'s first positional is
+    # `ignore_permissions`, so the mode name was being passed as that; and
+    # deleting the row from the DB does NOT remove it from the in-memory
+    # `invoice.payments` list. The stale row therefore survived into
+    # calculate_paid_amount and was counted AGAIN alongside the new one.
+    #
+    # Invisible in the normal flow, because a draft has no payment rows and
+    # the loop is a no-op. It only bites on a RETRY after a failed payment
+    # attempt (out of stock, stale opening entry...), where the second try
+    # silently recorded double the tender. Found 2026-08-24 while testing
+    # on-account sales: a 20.00 cash tender came out as paid_amount 40.00.
+    invoice.set("payments", [])
 
     for d in payments:
         invoice.append(
             "payments", dict(mode_of_payment=d["mode_of_payment"], amount=d["amount"])
         )
+
+    # ------------------------------------------------------------------
+    # Sell on account (2026-08-24)
+    #
+    # On-account is the ABSENCE of a tender, never a Mode of Payment.
+    # ERPNext has no credit payment type, the GL never reads
+    # `Mode of Payment.type`, and a mode pointing at Debtors throws
+    # "Customer is required against Receivable account" because the
+    # payment leg carries no party — the exact misconfiguration behind
+    # the 2026-04-10 incident. URY's own close pre-flight rejects it too.
+    #
+    # So we simply tender less than the total and let ERPNext leave the
+    # residual on the customer: make_customer_gl_entry debits the FULL
+    # grand total to the receivable, make_pos_gl_entries credits back
+    # only what was actually paid, and set_outstanding_amount records the
+    # difference. No new GL code.
+    # ------------------------------------------------------------------
+    on_account = flt(on_account_amount)
+    if on_account:
+        _assert_can_sell_on_account(invoice, pos_profile, customer, on_account)
+        invoice.custom_on_account_amount = on_account
+        # ERPNext demands at least one payment row on a POS Invoice
+        # (validate_mode_of_payment). A bill that is 100% on account has
+        # nothing tendered, so give it a single ZERO row: make_pos_gl_entries
+        # skips rows with a falsy base_amount, so it posts nothing and is
+        # inert — it exists purely to satisfy that validation.
+        if not invoice.get("payments"):
+            invoice.append(
+                "payments",
+                dict(mode_of_payment=_default_payment_mode(pos_profile), amount=0),
+            )
+    else:
+        invoice.custom_on_account_amount = 0
 
     # Optional transaction / reference id for non-cash payments (2026-07-16).
     if transaction_id:

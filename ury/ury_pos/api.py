@@ -1718,6 +1718,7 @@ def getPosProfile(terminal=None):
         # = 0) so a fresh / freshly-migrated profile keeps returns hidden
         # everywhere until an admin turns the feature on.
         enable_returns = int(pos_profiles.get("custom_enable_returns") or 0)
+        enable_on_account = int(pos_profiles.get("custom_enable_on_account") or 0)
         # Per-invoice transfer hop cap (2026-06-05). Default 2 when the
         # field isn't set. 0 disables transfers entirely at shift close.
         raw_max_transfers = pos_profiles.get("custom_max_invoice_transfers")
@@ -1824,6 +1825,11 @@ def getPosProfile(terminal=None):
         "custom_restrict_merge_to_captain": restrict_merge_to_captain,
         "custom_restrict_returns_to_captain": restrict_returns_to_captain,
         "custom_enable_returns": enable_returns,
+        # Sell on account (2026-08-24). The walk-in customer is sent
+        # too so the Payment dialog can refuse an on-account sale
+        # against it without another round trip.
+        "custom_enable_on_account": enable_on_account,
+        "default_customer": pos_profiles.get("customer"),
         "custom_max_invoice_transfers": max_invoice_transfers,
         "custom_use_waiter": use_waiter,
         # When the logged-in user is a self-serve waiter (URY Waiter role +
@@ -2049,11 +2055,22 @@ def _get_shift_invoice_breakdown(opening_doc):
             pi.name, pi.customer, pi.customer_name,
             pi.posting_date, pi.grand_total, pi.net_total, pi.total_qty,
             pi.total_taxes_and_charges, pi.restaurant_table,
-            pi.is_return, pi.return_against
+            pi.is_return, pi.return_against,
+            pi.custom_on_account_amount, pi.outstanding_amount
         FROM `tabPOS Invoice` AS pi
         WHERE {where_sql}
           AND pi.docstatus = 1
-          AND pi.status IN ('Paid', 'Consolidated', 'Return')
+          -- Unpaid / Partly Paid / Overdue are here for ON-ACCOUNT bills
+          -- (2026-08-24). A submitted POS Invoice that was not fully
+          -- tendered carries those statuses, and excluding them meant it
+          -- was invisible to the close: it never attached to a Closing
+          -- Entry, never consolidated, and rotted as an orphan with the
+          -- receivable never reaching the books. Do NOT narrow this back
+          -- to ('Paid','Consolidated','Return').
+          AND pi.status IN (
+            'Paid', 'Consolidated', 'Return',
+            'Unpaid', 'Partly Paid', 'Overdue'
+          )
         ORDER BY pi.creation ASC
         """,
         tuple(params),
@@ -2231,6 +2248,12 @@ def preview_pos_closing_entry(opening_entry):
         for row in blocking_draft
     ]
     draft_grand_total = sum(r["grand_total"] for r in draft_list)
+    on_account_total = sum(
+        flt(row.get("custom_on_account_amount")) for row in paid
+    )
+    on_account_count = sum(
+        1 for row in paid if flt(row.get("custom_on_account_amount"))
+    )
 
     # Unpaid drafts always escalate to a CAPTAIN / Manager at shift close,
     # whoever is closing (cashier OR captain). The captain then approves the
@@ -2265,6 +2288,13 @@ def preview_pos_closing_entry(opening_entry):
         "total_taxes_and_charges": total_tax,
         "invoice_count": len(paid),
         "payments": payments,
+        # Money deliberately left on customers' accounts this shift
+        # (2026-08-24). Reported SEPARATELY from the mode-of-payment rows
+        # so the cashier is never asked to count cash that was never
+        # collected -- it would look like a till shortage. It is a
+        # receivable, settled later in the back office.
+        "on_account_total": on_account_total,
+        "on_account_count": on_account_count,
         # Draft-side state drives the transfer-before-close UI.
         "draft_count": len(draft_list),
         "draft_grand_total": draft_grand_total,
@@ -4556,6 +4586,11 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
             SUM(COALESCE(pi.net_total, 0)) AS net_total,
             SUM(CASE WHEN pi.is_return = 1 THEN ABS(COALESCE(pi.grand_total, 0)) ELSE 0 END) AS return_amount,
             SUM(COALESCE(pi.discount_amount, 0)) AS discount_amount,
+            -- Money left on customers' accounts rather than collected
+            -- (2026-08-24). Read from the denormalised field, not from
+            -- grand_total - paid_amount, which would also pick up bills
+            -- that are short for unrelated reasons.
+            SUM(COALESCE(pi.custom_on_account_amount, 0)) AS on_account,
             CASE
                 WHEN SUM(CASE WHEN pi.is_return = 0 THEN 1 ELSE 0 END) > 0
                 THEN SUM(CASE WHEN pi.is_return = 0 THEN COALESCE(pi.grand_total, 0) ELSE 0 END)
@@ -4616,6 +4651,10 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
         "totals": {
             "grand_total": total_grand,
             "invoice_count": total_invoices,
+            # Money left on customers' accounts across the whole report
+            # (2026-08-24). Shown as its own column so a manager can see
+            # at a glance how much of the day's takings was not collected.
+            "on_account": sum(flt(r.get("on_account")) for r in rows),
         },
     }
 
@@ -9424,6 +9463,25 @@ def get_sales_by_payment_method(from_date=None, to_date=None, terminal=None):
         tuple(params),
     )[0][0]
 
+    # Money put on customers' accounts (2026-08-24). This is NOT a tender —
+    # nothing was collected — so it is returned as its own figure rather
+    # than mixed into `modes`, where it would look like cash in a drawer
+    # and inflate the takings. The UI renders it as a clearly-labelled
+    # "not collected" row beneath the real tenders.
+    on_account_row = frappe.db.sql(
+        f"""SELECT COALESCE(SUM(pi.custom_on_account_amount), 0) AS amt,
+                   COUNT(DISTINCT CASE WHEN COALESCE(pi.custom_on_account_amount, 0) > 0
+                                       THEN pi.name END) AS cnt
+            FROM `tabPOS Invoice` AS pi
+            INNER JOIN `tabSales Invoice Payment` AS sip
+                    ON sip.parent = pi.name AND sip.parenttype = 'POS Invoice'
+            WHERE {" AND ".join(where_parts)}""",
+        tuple(params),
+        as_dict=True,
+    )
+    on_account_amount = flt(on_account_row[0]["amt"]) if on_account_row else 0.0
+    on_account_bills = int(on_account_row[0]["cnt"] or 0) if on_account_row else 0
+
     return {
         "from_date": from_date,
         "to_date": to_date,
@@ -9431,6 +9489,10 @@ def get_sales_by_payment_method(from_date=None, to_date=None, terminal=None):
         "terminal": terminal or None,
         "is_admin": 1 if is_admin else 0,
         "modes": rows,
+        "on_account": {
+            "amount": on_account_amount,
+            "bill_count": on_account_bills,
+        },
         "totals": {
             "amount": total,
             # Distinct bills overall — deliberately NOT the sum of the
