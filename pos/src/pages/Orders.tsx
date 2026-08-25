@@ -20,6 +20,8 @@ import {
   Edit,
   AlertTriangle,
   Wallet,
+  PauseCircle,
+  PlayCircle,
 } from 'lucide-react';
 import { Badge, Button, Card, CardContent } from '../components/ui';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../components/ui/dialog';
@@ -34,6 +36,8 @@ import { useNavigate } from 'react-router-dom';
 import PaymentDialog from '../components/PaymentDialog';
 import ReturnDialog from '../components/ReturnDialog';
 import ChangePaymentModeDialog from '../components/ChangePaymentModeDialog';
+import HoldBillDialog from '../components/HoldBillDialog';
+import { resumeOrder } from '../lib/hold-api';
 import { printOrder } from '../lib/print';
 import { firePendingKotsForInvoice } from '../lib/kot-listener';
 import { call } from '../lib/frappe-sdk';
@@ -44,8 +48,7 @@ import {
   canReturnOrders,
   canSkipPhysicalPrint,
   isCaptainOrAbove,
-  isWaiterOnly,
-} from '../lib/role-utils';
+  isWaiterOnly, canHoldOrders } from '../lib/role-utils';
 import {
   reversePosReturn,
   updatePrintStatus,
@@ -161,6 +164,8 @@ export default function Orders() {
     React.useState(0);
   const [showReturnDialog, setShowReturnDialog] = React.useState(false);
   const [showPaymentModeDialog, setShowPaymentModeDialog] = React.useState(false);
+  const [showHoldDialog, setShowHoldDialog] = React.useState(false);
+  const [holdLoading, setHoldLoading] = React.useState(false);
   const [reverseLoading, setReverseLoading] = React.useState(false);
   // Incoming-transfer approval state (2026-06-05).
   const [transferLoading, setTransferLoading] = React.useState(false);
@@ -229,6 +234,26 @@ export default function Orders() {
 
   // Reprint gating: captains/managers/admins reprint freely; a cashier may
   // reprint until the bill's print count hits the profile's max (default 3).
+  const canHold = useMemo(() => canHoldOrders(user), [user]);
+
+  /** Take a parked bill off hold. The table is NOT taken back — the
+   *  backend says so in its response and we pass that straight on. */
+  const handleResumeOrder = async () => {
+    if (!selectedOrder) return;
+    setHoldLoading(true);
+    try {
+      const res = await resumeOrder(selectedOrder.name);
+      showToast.success({ title: 'Bill resumed', description: res.note });
+      selectOrder({ ...selectedOrder, custom_on_hold: 0, custom_hold_reason: null });
+      await fetchOrders();
+    } catch (err) {
+      const p = extractFrappeServerError(err, 'Could not resume this bill.');
+      showToast.error({ title: p.title || 'Resume failed', description: p.message });
+    } finally {
+      setHoldLoading(false);
+    }
+  };
+
   const canReprintNow = useMemo(() => {
     if (canReprint) return true;
     if (!selectedOrder) return false;
@@ -1177,6 +1202,28 @@ export default function Orders() {
                 </div>
               </div>
             )}
+            {/* Parked bill (2026-08-24). Whoever picks this up later needs
+                to know why it is sitting here and that the table is gone. */}
+            {selectedOrder.custom_on_hold === 1 && (
+              <div className="mx-6 mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-amber-800">
+                  <PauseCircle className="w-4 h-4" />
+                  On hold
+                </div>
+                <div className="mt-1 text-sm text-amber-900">
+                  {selectedOrder.custom_hold_reason && (
+                    <div>
+                      <span className="font-medium">Reason:</span>{' '}
+                      {selectedOrder.custom_hold_reason}
+                    </div>
+                  )}
+                  <div className="mt-1 text-xs">
+                    The table was released when this was held. Resume it to
+                    carry on, then seat it again if the guest is back.
+                  </div>
+                </div>
+              </div>
+            )}
             {/* Cancel Order Dialog */}
             <Dialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
               <DialogContent>
@@ -1579,6 +1626,38 @@ export default function Orders() {
                     Undo Return
                   </Button>
                 )}
+                {/* Park / un-park a bill (2026-08-24). Draft only — once a
+                    bill is paid there is nothing left to hold. Hidden while a
+                    cancellation is with the kitchen, since that already locks
+                    the order. */}
+                {canHold &&
+                  selectedOrder.status === 'Draft' &&
+                  selectedOrder.custom_cancel_pending !== 1 &&
+                  selectedOrder.custom_charge_to_room !== 1 &&
+                  (selectedOrder.custom_on_hold === 1 ? (
+                    <Button
+                      variant="outline"
+                      className="flex-1 border-amber-300 text-amber-700 hover:bg-amber-50"
+                      onClick={handleResumeOrder}
+                      disabled={holdLoading}
+                    >
+                      {holdLoading ? (
+                        <Spinner className="w-4 h-4 mr-1.5" hideMessage />
+                      ) : (
+                        <PlayCircle className="w-4 h-4 mr-1.5" />
+                      )}
+                      Resume
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      className="flex-1 border-amber-300 text-amber-700 hover:bg-amber-50"
+                      onClick={() => setShowHoldDialog(true)}
+                    >
+                      <PauseCircle className="w-4 h-4 mr-1.5" />
+                      Hold
+                    </Button>
+                  ))}
                 {/* Change the tender on a settled bill. Shown for paid
                     invoices only — a draft has no payment yet, and a
                     return's refund mode belongs to the return flow. The
@@ -1623,6 +1702,19 @@ export default function Orders() {
           clearSelectedOrder={clearSelectedOrder}
           hotelRoom={selectedOrder.custom_hotel_room || null}
           hotelRoomLabel={selectedOrder.customer_name || null}
+        />
+      )}
+      {showHoldDialog && selectedOrder && (
+        <HoldBillDialog
+          invoice={selectedOrder.name}
+          total={getOrderTotal(selectedOrder)}
+          table={selectedOrder.restaurant_table}
+          onClose={() => setShowHoldDialog(false)}
+          onHeld={() => {
+            setShowHoldDialog(false);
+            clearSelectedOrder();
+            fetchOrders();
+          }}
         />
       )}
       {showPaymentModeDialog && selectedOrder && (

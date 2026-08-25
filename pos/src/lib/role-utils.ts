@@ -219,6 +219,24 @@ export const isWaiterOnly = (user: User | null): boolean => {
 };
 
 /**
+ * Who may park a bill (2026-08-24).
+ *
+ * Everyone who bills — cashier, captain, manager, admin — but NOT a waiter.
+ * A waiter places orders and hands off to the cashier, so parking a bill
+ * isn't theirs to do. Holding is reversible and records a reason plus an
+ * audit comment, so it doesn't need a supervisor.
+ *
+ * Backend `_user_can_hold_orders` is the authoritative check.
+ */
+export const canHoldOrders = (user: User | null): boolean => {
+  if (!user || !user.roles) return false;
+  if (user.name === 'Administrator') return true;
+  if (isWaiterOnly(user)) return false;
+  const allowed = ['System Manager', 'URY Manager', 'URY Captain', 'URY Cashier'];
+  return user.roles.some((role) => allowed.includes(role));
+};
+
+/**
  * Captain / Manager / Admin tier. The canonical "elevated user" check
  * used for order-lifecycle actions a plain cashier shouldn't have:
  *   - Cancelling an order (the X on a draft) — 2026-06-11.

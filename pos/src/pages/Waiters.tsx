@@ -12,6 +12,7 @@ import {
   ChevronRight,
   GripVertical,
   ArrowRightLeft,
+  PauseCircle,
 } from 'lucide-react';
 import { Input } from '../components/ui/input';
 import { useRootStore } from '../store/root-store';
@@ -21,6 +22,11 @@ import {
   type WaiterWithOrders,
   type WaiterPendingOrder,
 } from '../lib/waiter-api';
+import {
+  getHeldOrders,
+  resumeOrder,
+  type HeldOrder,
+} from '../lib/hold-api';
 import { formatCurrency, extractFrappeServerError, cn } from '../lib/utils';
 import { showToast } from '../components/ui/toast';
 import { Button } from '../components/ui/button';
@@ -63,6 +69,8 @@ const Waiters = () => {
   const [dragOverWaiter, setDragOverWaiter] = useState<string | null>(null);
   const [reassigningId, setReassigningId] = useState<string | null>(null);
   const [justMovedId, setJustMovedId] = useState<string | null>(null);
+  const [held, setHeld] = useState<HeldOrder[]>([]);
+  const [resumingId, setResumingId] = useState<string | null>(null);
 
   const isCollapsed = (w: WaiterWithOrders) =>
     collapsed[w.name] ?? w.orders.length === 0;
@@ -77,6 +85,11 @@ const Waiters = () => {
     try {
       // includeEmpty: show every active waiter so any can be a drop target.
       setWaiters(await getWaitersWithPendingOrders(true));
+      // Held bills are branch-wide, not per-waiter, so they get their own
+      // section above the cards. A failure here must not break the list.
+      getHeldOrders()
+        .then((h) => setHeld(h.orders))
+        .catch(() => setHeld([]));
     } catch (e) {
       showToast.error(
         extractFrappeServerError(e, 'Failed to load waiters').message
@@ -154,6 +167,20 @@ const Waiters = () => {
     );
   }, [waiters, search]);
 
+  const handleResume = async (order: HeldOrder) => {
+    setResumingId(order.name);
+    try {
+      const res = await resumeOrder(order.name);
+      showToast.success({ title: 'Bill resumed', description: res.note });
+      setHeld((cur) => cur.filter((o) => o.name !== order.name));
+    } catch (err) {
+      const p = extractFrappeServerError(err, 'Could not resume this bill.');
+      showToast.error({ title: p.title || 'Resume failed', description: p.message });
+    } finally {
+      setResumingId(null);
+    }
+  };
+
   return (
     <div className="h-full flex flex-col bg-gray-50">
       {/* Header */}
@@ -192,6 +219,68 @@ const Waiters = () => {
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+        {/* Held bills (2026-08-24). Branch-wide, so it sits above the
+            per-waiter cards rather than inside one. Only rendered when
+            something is actually parked — an always-present empty panel
+            would just be noise on a busy floor. */}
+        {held.length > 0 && (
+          <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50/60 overflow-hidden">
+            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-amber-200 bg-amber-50">
+              <PauseCircle className="w-4 h-4 text-amber-700" />
+              <h2 className="text-sm font-semibold text-amber-900">Held Bills</h2>
+              <span className="ml-auto inline-flex items-center justify-center min-w-[1.5rem] h-6 px-2 rounded-full bg-amber-600 text-white text-xs font-semibold">
+                {held.length}
+              </span>
+            </div>
+            <div className="divide-y divide-amber-100">
+              {held.map((o) => (
+                <div
+                  key={o.name}
+                  className="flex items-start gap-3 px-4 py-3 hover:bg-amber-50/80"
+                >
+                  <button
+                    onClick={() => handleOpenInOrders(o.name)}
+                    className="flex-1 min-w-0 text-left"
+                  >
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium text-gray-900 truncate">
+                        {o.name}
+                      </span>
+                      {o.waiter_name && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">
+                          {o.waiter_name}
+                        </span>
+                      )}
+                      <span className="text-sm font-semibold text-gray-900">
+                        {formatCurrency(o.grand_total)}
+                      </span>
+                    </div>
+                    {o.reason && (
+                      <div className="text-xs text-amber-900 mt-0.5">{o.reason}</div>
+                    )}
+                    <div className="text-[11px] text-gray-500 mt-0.5">
+                      Held by {o.held_by_name || o.held_by || 'unknown'}
+                      {o.held_at ? ` · ${o.held_at.slice(0, 16)}` : ''}
+                    </div>
+                  </button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0 border-amber-300 text-amber-800 hover:bg-amber-100"
+                    onClick={() => handleResume(o)}
+                    disabled={resumingId === o.name}
+                  >
+                    {resumingId === o.name ? (
+                      <Spinner className="w-3.5 h-3.5" hideMessage />
+                    ) : (
+                      'Resume'
+                    )}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {loading ? (
           <div className="flex items-center justify-center py-20">
             <Spinner className="w-8 h-8" />

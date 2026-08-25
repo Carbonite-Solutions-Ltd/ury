@@ -127,6 +127,56 @@ def get_custom_fields():
 					"translatable": 0,
 				},
 				{
+					# Held bills (2026-08-24). A cashier parks a bill with a reason --
+					# guest stepped out, dispute, waiting on a manager -- and finds it
+					# again from the Waiters page. Holding FREES the table so it can be
+					# reseated; resuming does NOT re-claim it, because someone else may
+					# be sitting there by then.
+					"fieldname": "custom_on_hold",
+					"fieldtype": "Check",
+					"label": "On Hold",
+					"insert_after": "custom_cancel_pending",
+					"default": "0",
+					"no_copy": 1,
+					"read_only": 1,
+					"print_hide": 1,
+					"in_standard_filter": 1,
+					"description": "1 while this bill is parked. A held bill is hidden from the normal Draft / Unbilled lists and appears under Held instead. It still blocks the shift close, because it is unfinished business.",
+					"translatable": 0,
+				},
+				{
+					"fieldname": "custom_hold_reason",
+					"fieldtype": "Small Text",
+					"label": "Hold Reason",
+					"insert_after": "custom_on_hold",
+					"no_copy": 1,
+					"read_only": 1,
+					"print_hide": 1,
+					"description": "Why the bill was put on hold. Required when holding -- a hold with no reason is the thing this feature exists to prevent.",
+					"translatable": 0,
+				},
+				{
+					"fieldname": "custom_held_by",
+					"fieldtype": "Link",
+					"options": "User",
+					"label": "Held By",
+					"insert_after": "custom_hold_reason",
+					"no_copy": 1,
+					"read_only": 1,
+					"print_hide": 1,
+					"translatable": 0,
+				},
+				{
+					"fieldname": "custom_held_at",
+					"fieldtype": "Datetime",
+					"label": "Held At",
+					"insert_after": "custom_held_by",
+					"no_copy": 1,
+					"read_only": 1,
+					"print_hide": 1,
+					"translatable": 0,
+				},
+				{
 					"fieldname": "waiter",
 					"fieldtype": "Data",
 					"label": "Waiter",

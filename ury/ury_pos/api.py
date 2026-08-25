@@ -1,7 +1,7 @@
 import frappe
 import json
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import flt, now
 from datetime import date, datetime, time as dt_time, timedelta
 
 
@@ -692,6 +692,7 @@ def get_incoming_transfers(terminal=None, posting_date=None):
             pi.owner, pi.is_return, pi.return_against,
             pi.custom_charge_to_room, pi.custom_hotel_room,
             pi.custom_cancel_pending,
+            pi.custom_on_hold, pi.custom_hold_reason,
             pi.custom_order_contact_name, pi.custom_order_contact_mobile,
             pi.custom_ihotel_profile, pi.custom_transfer_status,
             t.name AS transfer_name, t.from_user AS transfer_from_user,
@@ -967,12 +968,14 @@ def getPosInvoice(
         "Draft": (
             "Draft",
             "AND (pi.invoice_printed = 1 OR (pi.invoice_printed = 0 AND COALESCE(pi.restaurant_table, '') = '')) "
-            "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)",
+            "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0) "
+            "AND (pi.custom_on_hold IS NULL OR pi.custom_on_hold = 0)",
         ),
         "Unbilled": (
             "Draft",
             "AND (pi.invoice_printed = 0 AND pi.restaurant_table IS NOT NULL) "
-            "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)",
+            "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0) "
+            "AND (pi.custom_on_hold IS NULL OR pi.custom_on_hold = 0)",
         ),
         "Recently Paid": ("Paid", ""),
         # "Pending" = every unpaid draft (take-away AND dine-in table),
@@ -983,8 +986,12 @@ def getPosInvoice(
         # 2026-07-15.
         "Pending": (
             "Draft",
-            "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)",
+            "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0) "
+            "AND (pi.custom_on_hold IS NULL OR pi.custom_on_hold = 0)",
         ),
+        # Parked bills, kept out of every list above so they don't look
+        # like orders still being built. 2026-08-24.
+        "Held": ("Draft", "AND pi.custom_on_hold = 1"),
         "Room Charges": (
             "Draft",
             "AND pi.custom_charge_to_room = 1",
@@ -992,6 +999,7 @@ def getPosInvoice(
         "Pending KOTs": (
             "Draft",
             "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0) "
+            "AND (pi.custom_on_hold IS NULL OR pi.custom_on_hold = 0) "
             "AND EXISTS ("
             "  SELECT 1 FROM `tabURY KOT` kot "
             "  WHERE kot.invoice = pi.name "
@@ -1052,6 +1060,7 @@ def getPosInvoice(
             pi.owner, pi.is_return, pi.return_against,
             pi.custom_charge_to_room, pi.custom_hotel_room,
             pi.custom_cancel_pending,
+            pi.custom_on_hold, pi.custom_hold_reason,
             pi.custom_order_contact_name, pi.custom_order_contact_mobile,
             pi.custom_ihotel_profile, pi.custom_print_count, pi.custom_waiter,
             pi.cancel_reason,
@@ -1146,6 +1155,9 @@ def searchPosInvoice(
     # 2026-04-16 print revamp.
     if status == "Pending KOTs":
         db_status = "Draft"
+    # Held bills are drafts too (2026-08-24).
+    if status == "Held":
+        db_status = "Draft"
     where_parts = ["pi.status = %s"]
     params = [db_status]
     if branch and not is_waiter:
@@ -1169,6 +1181,17 @@ def searchPosInvoice(
     else:
         where_parts.append(
             "(pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)"
+        )
+
+    # Held bills surface ONLY under their own bucket, exactly like
+    # charged-to-room drafts above. This mirrors status_map in
+    # getPosInvoice, which search deliberately does not share — the two
+    # must be edited in lockstep. 2026-08-24.
+    if status == "Held":
+        where_parts.append("pi.custom_on_hold = 1")
+    else:
+        where_parts.append(
+            "(pi.custom_on_hold IS NULL OR pi.custom_on_hold = 0)"
         )
 
     # Pending KOTs status: correlated EXISTS clause matching any URY
@@ -1217,6 +1240,7 @@ def searchPosInvoice(
             pi.is_return, pi.return_against,
             pi.custom_charge_to_room, pi.custom_hotel_room,
             pi.custom_cancel_pending,
+            pi.custom_on_hold, pi.custom_hold_reason,
             pi.custom_order_contact_name, pi.custom_order_contact_mobile,
             pi.custom_ihotel_profile,
             u.full_name AS owner_full_name,
@@ -1557,6 +1581,7 @@ def get_waiters_with_pending_orders(include_empty=0):
           AND pi.status = 'Draft'
           AND COALESCE(pi.custom_waiter, '') != ''
           AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)
+          AND (pi.custom_on_hold IS NULL OR pi.custom_on_hold = 0)
           AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
         ORDER BY pi.creation DESC
         """,
@@ -1605,6 +1630,7 @@ def get_waiter_pending_order_count():
           AND pi.status = 'Draft'
           AND COALESCE(pi.custom_waiter, '') != ''
           AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)
+          AND (pi.custom_on_hold IS NULL OR pi.custom_on_hold = 0)
           AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
         """,
         {"branch": branch},
@@ -2067,6 +2093,11 @@ def _get_shift_invoice_breakdown(opening_doc):
         # return — matches ERPNext's expectation in consolidate_pos_invoices.
         paid = list(orphan_rows) + paid
 
+    # NOTE: held bills are deliberately NOT excluded here (2026-08-24).
+    # A held bill is an unpaid draft like any other, so it must still block
+    # the close and be paid, cancelled or transferred. Holding is a way to
+    # park an awkward bill during service, not a way to make it vanish at
+    # the end of the night. Do not add a custom_on_hold filter to this query.
     draft = frappe.db.sql(
         f"""
         SELECT
@@ -10125,3 +10156,224 @@ def get_meal_period_sales(from_date=None, to_date=None, terminal=None):
 		"configured_periods": frappe.db.count("URY Meal Period", {"disabled": 0}),
 		"outside_present": any(p["period"] == OUTSIDE_MEAL_PERIODS for p in out),
 	}
+
+
+# ---------------------------------------------------------------------------
+# Held bills (2026-08-24)
+#
+# A cashier parks a bill with a reason -- the guest stepped out, there is a
+# dispute, a manager is being fetched -- and finds it again from the Waiters
+# page instead of leaving it cluttering the Draft list where it looks like an
+# order still being built.
+#
+# Two deliberate behaviours:
+#
+#   * Holding FREES the table, so it can be reseated. Resuming does NOT
+#     re-claim it -- someone else may be sitting there by now, and silently
+#     stealing an occupied table back would be worse than making the cashier
+#     re-seat the bill.
+#
+#   * A held bill STILL BLOCKS the shift close, exactly like any other unpaid
+#     draft. Holding is not a way to make an awkward bill disappear at the end
+#     of the night; it is unfinished business and must be paid, cancelled or
+#     transferred like everything else.
+# ---------------------------------------------------------------------------
+
+
+def _user_can_hold_orders(user=None):
+	"""Anyone who bills can hold a bill -- everyone except a waiter.
+
+	A waiter places orders and hands off to the cashier (2026-07-14), so
+	parking a bill is not theirs to do. Everyone else on the floor may:
+	holding is reversible and leaves a reason and an audit comment, so it
+	does not need a supervisor.
+	"""
+	user = user or frappe.session.user
+	if user == "Administrator":
+		return True
+	if _get_self_waiter_for_user(user):
+		return False
+	roles = set(frappe.get_roles(user))
+	return bool(
+		roles & {"System Manager", "URY Manager", "URY Captain", "URY Cashier"}
+	)
+
+
+def _assert_can_hold(user=None):
+	if not _user_can_hold_orders(user):
+		frappe.throw(
+			_("You do not have permission to hold a bill."),
+			title=_("Not Permitted"),
+			exc=frappe.PermissionError,
+		)
+
+
+@frappe.whitelist()
+def hold_order(invoice, reason):
+	"""Park a draft bill with a reason, and free its table."""
+	_assert_can_hold()
+
+	reason = (reason or "").strip()
+	if not reason:
+		frappe.throw(
+			_("Give a reason for holding this bill."), title=_("Reason Required")
+		)
+
+	if not invoice or not frappe.db.exists("POS Invoice", invoice):
+		frappe.throw(
+			_("Invoice {0} was not found.").format(invoice or "?"), title=_("Not Found")
+		)
+
+	row = frappe.db.get_value(
+		"POS Invoice",
+		invoice,
+		["docstatus", "status", "restaurant_table", "custom_on_hold",
+		 "custom_cancel_pending"],
+		as_dict=True,
+	)
+	if row.docstatus != 0 or row.status != "Draft":
+		frappe.throw(
+			_("Only an unpaid order can be held."), title=_("Not a Draft")
+		)
+	if row.get("custom_on_hold"):
+		frappe.throw(_("This bill is already on hold."), title=_("Already Held"))
+	if row.get("custom_cancel_pending"):
+		frappe.throw(
+			_("This order is waiting for the kitchen to accept a cancellation. "
+			  "Resolve that first."),
+			title=_("Cancellation Pending"),
+		)
+
+	table = row.get("restaurant_table")
+	frappe.db.set_value(
+		"POS Invoice",
+		invoice,
+		{
+			"custom_on_hold": 1,
+			"custom_hold_reason": reason,
+			"custom_held_by": frappe.session.user,
+			"custom_held_at": now(),
+			# Release the table with the bill, so the floor can reseat it.
+			"restaurant_table": None,
+		},
+	)
+
+	freed = None
+	if table and frappe.db.exists("URY Table", table):
+		frappe.db.set_value(
+			"URY Table", table, {"occupied": 0, "latest_invoice_time": None}
+		)
+		try:
+			auto_unmerge_table_if_active(table)
+		except Exception:
+			# Best effort -- an un-merge hiccup must not strand the hold.
+			frappe.log_error(
+				frappe.get_traceback(), f"URY: unmerge after hold failed for {table}"
+			)
+		freed = table
+
+	try:
+		frappe.get_doc("POS Invoice", invoice).add_comment(
+			"Comment",
+			_("Put on hold by {0}: {1}").format(frappe.session.user, reason),
+		)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), f"URY: hold comment failed for {invoice}")
+
+	frappe.db.commit()
+	return {"invoice": invoice, "held": 1, "table_freed": freed}
+
+
+@frappe.whitelist()
+def resume_order(invoice):
+	"""Take a bill off hold. The table is NOT re-claimed -- see module note."""
+	_assert_can_hold()
+
+	if not invoice or not frappe.db.exists("POS Invoice", invoice):
+		frappe.throw(
+			_("Invoice {0} was not found.").format(invoice or "?"), title=_("Not Found")
+		)
+	if not frappe.db.get_value("POS Invoice", invoice, "custom_on_hold"):
+		frappe.throw(_("This bill is not on hold."), title=_("Nothing to Resume"))
+
+	frappe.db.set_value(
+		"POS Invoice",
+		invoice,
+		{
+			"custom_on_hold": 0,
+			"custom_hold_reason": None,
+			"custom_held_by": None,
+			"custom_held_at": None,
+		},
+	)
+	try:
+		frappe.get_doc("POS Invoice", invoice).add_comment(
+			"Comment", _("Taken off hold by {0}.").format(frappe.session.user)
+		)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), f"URY: resume comment failed for {invoice}")
+	frappe.db.commit()
+
+	return {
+		"invoice": invoice,
+		"held": 0,
+		# Said out loud so the UI can tell the cashier rather than leaving
+		# them to wonder where the table went.
+		"note": _("The table was released when this bill was held. Seat it again if needed."),
+	}
+
+
+def _held_orders_where(branch):
+	return (
+		"pi.branch = %(branch)s AND pi.docstatus = 0 AND pi.status = 'Draft'"
+		" AND pi.custom_on_hold = 1"
+		" AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
+		{"branch": branch},
+	)
+
+
+@frappe.whitelist()
+def get_held_orders():
+	"""Every held bill on the branch, for the Waiters-page section."""
+	_assert_can_hold()
+	branch = getBranch()
+	where, params = _held_orders_where(branch)
+
+	rows = frappe.db.sql(
+		f"""
+		SELECT pi.name, pi.customer, pi.customer_name, pi.grand_total,
+		       pi.order_type, pi.custom_hold_reason AS reason,
+		       pi.custom_held_by AS held_by, pi.custom_held_at AS held_at,
+		       pi.custom_waiter AS waiter, u.full_name AS held_by_name,
+		       w.full_name AS waiter_name
+		FROM `tabPOS Invoice` pi
+		LEFT JOIN `tabUser` u ON u.name = pi.custom_held_by
+		LEFT JOIN `tabURY Waiter` w ON w.name = pi.custom_waiter
+		WHERE {where}
+		ORDER BY pi.custom_held_at DESC
+		""",
+		params,
+		as_dict=True,
+	)
+	for r in rows:
+		r["grand_total"] = flt(r["grand_total"])
+		r["held_at"] = str(r["held_at"] or "")
+	return {"branch": branch, "orders": rows, "count": len(rows)}
+
+
+@frappe.whitelist()
+def get_held_order_count():
+	"""Cheap count for the sidebar / section badge."""
+	if not _user_can_hold_orders():
+		return {"count": 0}
+	try:
+		branch = getBranch()
+	except Exception:
+		return {"count": 0}
+	where, params = _held_orders_where(branch)
+	row = frappe.db.sql(
+		f"SELECT COUNT(pi.name) AS c FROM `tabPOS Invoice` pi WHERE {where}",
+		params,
+		as_dict=True,
+	)
+	return {"count": int(row[0]["c"]) if row else 0}
