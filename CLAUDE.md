@@ -393,6 +393,15 @@ Three unrelated reports, three different causes.
 - **Verified overall:** `py_compile` clean; `tsc` 0 errors; `eslint` shows the **same 12 problems before and after** across all eight touched files (checked by stashing); `yarn build` clean. All dev mutations reversed.
 - **Deploy: `bench restart` (changed `reinstate_kot` + `getTable`) + redeploy the `pos/` build. No migrate** — no schema change; `no_of_pax` and `custom_waiter` already exist.
 
+### 2026-08-26 — Waiters page tabs, tighter action bar, and why "On Account" wasn't showing
+- **Three asks off a live screenshot.**
+- **Held Bills is now a TAB, not a panel.** It sat above the waiter cards, so the moment anything was parked the cards were pushed below the fold — on a 12-order floor the page opened on held bills rather than on waiters. Tabs at the top now: **Waiters (default) | Held Bills**, each with its own count badge (held in amber). The search box and the drag hint only render on the Waiters tab, since neither applies to held bills. The Held tab gets a real empty state instead of silently rendering nothing.
+- **Action bar compacted.** "Print Invoice" was wrapping onto two lines next to Hold. The label is now just **Print**, both buttons are `size="sm"` with `whitespace-nowrap px-3`, and the total dropped `text-xl` → `text-lg` (4 sites) — it was competing for the same row. The icon is the affordance; "Invoice" was never carrying meaning next to a printer glyph.
+- **⚠ "I don't see where to select as the creditor" is CONFIG, not a missing feature.** The On Account tab is built and wired — it is gated on `POS Profile.custom_enable_on_account`, which is **0 by default**. Verified end to end: `extraModes` includes `'account'` only when the flag is 1, and `default_customer` (which drives the walk-in refusal in the dialog) is returned by `getPosProfile` and threaded through both frontend profile types, so the guard genuinely fires rather than silently passing. **Tick "Enable Sell On Account" on the POS Profile and the tab appears.** `bench migrate` then ticks ERPNext's `allow_partial_payment` automatically.
+- **Verified:** `tsc` 0 errors; `eslint` **86 problems, identical to version-16**; `yarn build` clean.
+- **NOT seen in a browser** — the dev web server isn't running, so the tab strip and the compacted buttons have not been eyeballed at tablet width.
+- **Frontend-only → redeploy the `pos/` build. No migrate, no restart.**
+
 ### 2026-08-25 (round 2) — Covers input couldn't be edited: clearing "1" and typing 2 gave 12
 - **Symptom (user):** on a table order, "the number of people thats 1 by default when clearing the 1 to make it 2 ... it does not allow you but rather allow you to type in a new number after the one".
 - **A regression I introduced on 2026-08-24** when covers moved from OrderPanel's local state into the store. The store setter was `Math.max(1, Number(n) || 1)`, so the chain was: clear the field → `parseInt('') || 0` → `0` → setter clamps to **1** → the input re-renders as "1" with the caret after it → the next keystroke appends → **12**. The clamp ran on every keystroke, which made the field effectively uneditable.

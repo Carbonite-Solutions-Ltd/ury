@@ -1452,7 +1452,7 @@ export default function Orders() {
                         </span>
                       )}
                     </div>
-                    <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
+                    <span className="ml-auto text-lg font-bold text-gray-900 whitespace-nowrap">
                       {formatCurrency(getOrderTotal(selectedOrder))}
                     </span>
                   </>
@@ -1481,7 +1481,7 @@ export default function Orders() {
                       <X className="w-4 h-4 mr-1.5" />
                       Reject
                     </Button>
-                    <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
+                    <span className="ml-auto text-lg font-bold text-gray-900 whitespace-nowrap">
                       {formatCurrency(getOrderTotal(selectedOrder))}
                     </span>
                   </>
@@ -1507,7 +1507,7 @@ export default function Orders() {
                         </>
                       )}
                     </Button>
-                    <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
+                    <span className="ml-auto text-lg font-bold text-gray-900 whitespace-nowrap">
                       {formatCurrency(getOrderTotal(selectedOrder))}
                     </span>
                   </>
@@ -1543,19 +1543,20 @@ export default function Orders() {
                  selectedOrder.custom_charge_to_room !== 1 &&
                  String(selectedOrder.invoice_printed) === '0' ? (
                   <Button
-                    className="flex-1"
+                    size="sm"
+                    className="flex-1 whitespace-nowrap px-3"
                     onClick={handlePrintOrder}
                     disabled={isPrinting}
                   >
                     {isPrinting ? (
                       <>
-                        <Spinner className="w-5 h-5 mr-2" hideMessage />
+                        <Spinner className="w-4 h-4 mr-1.5" hideMessage />
                         Printing…
                       </>
                     ) : (
                       <>
-                        <Printer className="w-5 h-5 mr-2" />
-                        Print Invoice
+                        <Printer className="w-4 h-4 mr-1.5" />
+                        Print
                       </>
                     )}
                   </Button>
@@ -1637,7 +1638,8 @@ export default function Orders() {
                   (selectedOrder.custom_on_hold === 1 ? (
                     <Button
                       variant="outline"
-                      className="flex-1 border-amber-300 text-amber-700 hover:bg-amber-50"
+                      size="sm"
+                      className="flex-1 whitespace-nowrap px-3 border-amber-300 text-amber-700 hover:bg-amber-50"
                       onClick={handleResumeOrder}
                       disabled={holdLoading}
                     >
@@ -1651,7 +1653,8 @@ export default function Orders() {
                   ) : (
                     <Button
                       variant="outline"
-                      className="flex-1 border-amber-300 text-amber-700 hover:bg-amber-50"
+                      size="sm"
+                      className="flex-1 whitespace-nowrap px-3 border-amber-300 text-amber-700 hover:bg-amber-50"
                       onClick={() => setShowHoldDialog(true)}
                     >
                       <PauseCircle className="w-4 h-4 mr-1.5" />
@@ -1677,7 +1680,7 @@ export default function Orders() {
                     </Button>
                   )}
                 {/* Total */}
-                <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
+                <span className="ml-auto text-lg font-bold text-gray-900 whitespace-nowrap">
                   {formatCurrency(getOrderTotal(selectedOrder))}
                 </span>
                   </>
