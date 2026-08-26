@@ -1979,7 +1979,7 @@ def posOpening(terminal=None):
 
 
 @frappe.whitelist()
-def _scope_invoices_for_opening_entry(opening_doc):
+def _scope_invoices_for_opening_entry(opening_doc, include_earlier_shifts=False):
     """Return the SQL WHERE clause + params that match POS Invoices
     belonging to the given opening entry's shift.
 
@@ -2003,12 +2003,12 @@ def _scope_invoices_for_opening_entry(opening_doc):
     where = [
         "pi.pos_profile = %s",
         "(pi.consolidated_invoice IS NULL OR pi.consolidated_invoice = '')",
-        "pi.creation >= %s",
     ]
-    params = [
-        opening_doc.pos_profile,
-        opening_doc.creation,
-    ]
+    params = [opening_doc.pos_profile]
+
+    if not include_earlier_shifts:
+        where.append("pi.creation >= %s")
+        params.append(opening_doc.creation)
 
     # NO owner filter and NO terminal filter — deliberately. (2026-07-28)
     #
@@ -2047,6 +2047,24 @@ def _get_shift_invoice_breakdown(opening_doc):
     Entry submission throws `"Row #1: The original Invoice X of return
     invoice Y is not consolidated"` and rolls back the whole close.
     """
+    # Two different scopes on purpose (2026-08-26).
+    #
+    # SUBMITTED invoices use the WIDE scope — every unconsolidated bill on
+    # this profile, including ones rung in an earlier shift. URY's close
+    # used to filter on `creation >= opening.creation`, so a submitted
+    # invoice that missed its own shift's close could NEVER be swept up
+    # again: every later opening entry has a later timestamp. Those bills
+    # were orphaned permanently and their money never reached the books.
+    # Two such invoices were found on the client's data, one of them an
+    # 888.00 receivable.
+    #
+    # DRAFTS keep the NARROW scope. A draft blocks the close until it is
+    # paid, cancelled or transferred, so widening it would let a forgotten
+    # draft from weeks ago hold an outlet hostage tonight. Old drafts stay
+    # this shift's problem only if they were rung this shift.
+    wide_sql, wide_params = _scope_invoices_for_opening_entry(
+        opening_doc, include_earlier_shifts=True
+    )
     where_sql, params = _scope_invoices_for_opening_entry(opening_doc)
 
     paid = frappe.db.sql(
@@ -2058,7 +2076,7 @@ def _get_shift_invoice_breakdown(opening_doc):
             pi.is_return, pi.return_against,
             pi.custom_on_account_amount, pi.outstanding_amount
         FROM `tabPOS Invoice` AS pi
-        WHERE {where_sql}
+        WHERE {wide_sql}
           AND pi.docstatus = 1
           -- Unpaid / Partly Paid / Overdue are here for ON-ACCOUNT bills
           -- (2026-08-24). A submitted POS Invoice that was not fully
@@ -2073,7 +2091,7 @@ def _get_shift_invoice_breakdown(opening_doc):
           )
         ORDER BY pi.creation ASC
         """,
-        tuple(params),
+        tuple(wide_params),
         as_dict=True,
     )
 
@@ -2669,8 +2687,42 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
             pass
         return real
 
+    # Split each customer's merge bucket by POSTING DATE (2026-08-26).
+    #
+    # ERPNext groups invoices for consolidation by customer and then by a
+    # hash of the accounting dimensions — NOT by date. `merge_pos_invoice_into`
+    # then does `invoice.posting_date = getdate(doc.posting_date)` for every
+    # source invoice in turn, so when one bucket spans two days the LAST one
+    # silently wins and the others are booked on a day they did not happen.
+    #
+    # That matters here because an on-account bill can sit unpaid across a
+    # day boundary and be consolidated later: without this split, yesterday's
+    # sale lands in today's revenue. With it, each day gets its own
+    # consolidated Sales Invoice carrying its own date, so the books are right
+    # even though the close ran today — which is what the client actually
+    # wants, and needs no backdating machinery at all.
+    _orig_customer_map = _merge_mod.get_invoice_customer_map
+
+    def _customer_map_split_by_date(pos_invoices):
+        grouped = _orig_customer_map(pos_invoices)
+        for customer, buckets in list(grouped.items()):
+            rebuilt = {}
+            for key, invoices in buckets.items():
+                by_date = {}
+                for inv in invoices:
+                    day = str(inv.get("posting_date") or "")
+                    by_date.setdefault(day, []).append(inv)
+                if len(by_date) <= 1:
+                    rebuilt[key] = invoices
+                    continue
+                for day, rows in by_date.items():
+                    rebuilt[f"{key}|{day}"] = rows
+            grouped[customer] = rebuilt
+        return grouped
+
     _merge_mod.enqueue_job = _run_consolidation_inline
     _merge_mod.get_error_message = _capturing_get_error_message
+    _merge_mod.get_invoice_customer_map = _customer_map_split_by_date
     try:
         closing_doc.insert(ignore_permissions=True)
         closing_doc.submit()
@@ -2697,6 +2749,7 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
     finally:
         _merge_mod.enqueue_job = _orig_enqueue_job
         _merge_mod.get_error_message = _orig_get_error_message
+        _merge_mod.get_invoice_customer_map = _orig_customer_map
         frappe.flags.mute_emails = prev_mute_emails
 
     # Defensive: ERPNext's create_merge_logs catches some errors and marks
