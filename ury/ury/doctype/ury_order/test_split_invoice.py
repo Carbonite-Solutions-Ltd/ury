@@ -140,6 +140,55 @@ class ItemSplitPlanTests(unittest.TestCase):
         self.assertTrue(any(idx == 1 and code == "empty" for (idx, code, _r) in errors))
 
 
+class ManyBillsTests(unittest.TestCase):
+    """A table of fourteen guests each wanting their own receipt.
+
+    The old POS capped the split at 6 bills; the planner never had a limit,
+    so these prove the backend was always ready for it.
+    """
+
+    def test_fourteen_bills_one_item_each(self):
+        item_qtys = {f"r{i}": 1 for i in range(12)}
+        item_qtys["jollof"] = 2
+        rows = [{"source_row": k, "qty": 1} for k in item_qtys if k != "jollof"]
+        rows += [{"source_row": "jollof", "qty": 1}] * 2
+        bills = [{"allocations": [r]} for r in rows]
+        self.assertEqual(len(bills), 14)
+        errors, _remaining, leftover = ury_order._plan_item_split(item_qtys, bills)
+        self.assertEqual(errors, [])
+        self.assertEqual(leftover, [])
+
+    def test_thirty_bills_still_planned(self):
+        item_qtys = {"a": 30}
+        bills = [{"allocations": [{"source_row": "a", "qty": 1}]} for _ in range(30)]
+        errors, _remaining, leftover = ury_order._plan_item_split(item_qtys, bills)
+        self.assertEqual(errors, [])
+        self.assertEqual(leftover, [])
+
+    def test_more_bills_than_items_flags_the_empty_one(self):
+        """13 units across 14 bills leaves one empty - that must be rejected,
+        not silently printed as a blank receipt."""
+        item_qtys = {f"r{i}": 1 for i in range(13)}
+        bills = [
+            {"allocations": [{"source_row": f"r{i}", "qty": 1}]} for i in range(13)
+        ]
+        bills.append({"allocations": []})
+        errors, _remaining, leftover = ury_order._plan_item_split(item_qtys, bills)
+        self.assertEqual(leftover, [])
+        self.assertEqual(errors, [(13, "empty", None)])
+
+    def test_fractional_row_split_across_bills(self):
+        item_qtys = {"kg": 2.5}
+        bills = [
+            {"allocations": [{"source_row": "kg", "qty": 1}]},
+            {"allocations": [{"source_row": "kg", "qty": 1}]},
+            {"allocations": [{"source_row": "kg", "qty": 0.5}]},
+        ]
+        errors, _remaining, leftover = ury_order._plan_item_split(item_qtys, bills)
+        self.assertEqual(errors, [])
+        self.assertEqual(leftover, [])
+
+
 def run_split_invoice_tests(*, verbosity: int = 2) -> str:
     """Invoke via
     `bench --site <site> execute ury.ury.doctype.ury_order.test_split_invoice.run_split_invoice_tests`.
@@ -147,6 +196,7 @@ def run_split_invoice_tests(*, verbosity: int = 2) -> str:
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
     suite.addTests(loader.loadTestsFromTestCase(ItemSplitPlanTests))
+    suite.addTests(loader.loadTestsFromTestCase(ManyBillsTests))
     result = unittest.TextTestRunner(verbosity=verbosity, stream=None).run(suite)
     line = (
         f"[URY split tests] ran={result.testsRun} "
