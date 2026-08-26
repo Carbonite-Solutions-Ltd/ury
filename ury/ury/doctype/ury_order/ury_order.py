@@ -4,7 +4,7 @@
 import json
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import flt, get_time, getdate, nowdate
 from frappe.model.document import Document
 from erpnext.controllers.queries import item_query
 from ury.ury_pos.api import getBranch, _VALID_ORDER_TYPES
@@ -255,6 +255,59 @@ def _apply_pos_profile_taxes(invoice, pos_profile_name):
     # Guarded against double-appending.
     if row.taxes_and_charges and not invoice.get("taxes"):
         invoice.append_taxes_from_master()
+
+
+def preserve_original_order_date(invoice):
+    """Keep a carried-over order on the day it was actually rung.
+
+    ⚠ ERPNext RE-DATES ON EVERY SAVE. `validate_posting_time`
+    (utilities/transaction_base.py) does:
+
+        if not getattr(self, "set_posting_time", None):
+            now = now_datetime()
+            self.posting_date = now.strftime("%Y-%m-%d")
+
+    and `set_posting_time` is 0 on every POS Invoice this app creates. So
+    a draft rung yesterday and settled today is silently stamped TODAY the
+    moment it is saved — which is why an invoice created on 14 Aug was
+    found carrying a 26 Aug posting date having never been deliberately
+    backdated.
+
+    That is wrong for this business. The money was taken at the table
+    yesterday; on a card or on account it left the customer yesterday. The
+    bill only failed to go through because of a system problem (no stock
+    on the item, say), and the cashier already books the cash as an
+    overage that night and reconciles it when the bill is finally settled.
+    So the sale belongs to the day it was served, not the day the
+    blockage was cleared.
+
+    Applies ONLY when the order was opened on an earlier day — an order
+    rung today is left completely alone. `creation` is used rather than
+    `posting_date` because creation is immutable, whereas posting_date is
+    exactly the value that drifts.
+
+    NOTE: this backdates into an already-closed day. That is intended and
+    is what makes the consolidated Sales Invoice land in the right day's
+    revenue. It will be refused if the period is frozen
+    (Stock Settings `stock_frozen_upto` / Accounts Settings
+    `acc_frozen_upto`) — neither is set on this client's site. 2026-08-26.
+    """
+    created = invoice.get("creation")
+    if not created:
+        # Brand-new document — there is nothing to preserve.
+        return False
+
+    order_date = getdate(created)
+    if order_date >= getdate(nowdate()):
+        return False
+
+    invoice.set_posting_time = 1
+    invoice.posting_date = order_date
+    try:
+        invoice.posting_time = get_time(created)
+    except Exception:
+        pass
+    return True
 
 
 def _apply_pos_profile_cost_center(invoice, pos_profile_name):
@@ -669,6 +722,12 @@ def sync_order(
     # prepended a noisy "Error while updating order:" prefix that made
     # the frontend's error-picking logic misbehave. See CLAUDE.md
     # "Fixes log" 2026-04-08.
+    #
+    # Editing a bill that was opened on an earlier day must not silently
+    # re-date it to today — ERPNext would otherwise stamp `posting_date`
+    # with now on this very save. See preserve_original_order_date.
+    preserve_original_order_date(invoice)
+
     invoice.save()
 
 
@@ -1266,6 +1325,10 @@ def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDisc
 
     if not _get_self_waiter_for_user():
         invoice.cashier = _resolve_billing_cashier(cashier)
+
+    # A bill opened on an earlier day keeps that day, even though it is
+    # being settled now. See preserve_original_order_date.
+    preserve_original_order_date(invoice)
 
     invoice.additional_discount_percentage = additionalDiscount
     invoice.calculate_taxes_and_totals()
