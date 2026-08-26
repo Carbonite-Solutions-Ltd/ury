@@ -21,7 +21,6 @@ import {
   AlertTriangle,
   Wallet,
   PauseCircle,
-  PlayCircle,
 } from 'lucide-react';
 import { Badge, Button, Card, CardContent } from '../components/ui';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../components/ui/dialog';
@@ -37,7 +36,6 @@ import PaymentDialog from '../components/PaymentDialog';
 import ReturnDialog from '../components/ReturnDialog';
 import ChangePaymentModeDialog from '../components/ChangePaymentModeDialog';
 import HoldBillDialog from '../components/HoldBillDialog';
-import { resumeOrder } from '../lib/hold-api';
 import { printOrder } from '../lib/print';
 import { firePendingKotsForInvoice } from '../lib/kot-listener';
 import { call } from '../lib/frappe-sdk';
@@ -165,7 +163,6 @@ export default function Orders() {
   const [showReturnDialog, setShowReturnDialog] = React.useState(false);
   const [showPaymentModeDialog, setShowPaymentModeDialog] = React.useState(false);
   const [showHoldDialog, setShowHoldDialog] = React.useState(false);
-  const [holdLoading, setHoldLoading] = React.useState(false);
   const [reverseLoading, setReverseLoading] = React.useState(false);
   // Incoming-transfer approval state (2026-06-05).
   const [transferLoading, setTransferLoading] = React.useState(false);
@@ -235,24 +232,6 @@ export default function Orders() {
   // Reprint gating: captains/managers/admins reprint freely; a cashier may
   // reprint until the bill's print count hits the profile's max (default 3).
   const canHold = useMemo(() => canHoldOrders(user), [user]);
-
-  /** Take a parked bill off hold. The table is NOT taken back — the
-   *  backend says so in its response and we pass that straight on. */
-  const handleResumeOrder = async () => {
-    if (!selectedOrder) return;
-    setHoldLoading(true);
-    try {
-      const res = await resumeOrder(selectedOrder.name);
-      showToast.success({ title: 'Bill resumed', description: res.note });
-      selectOrder({ ...selectedOrder, custom_on_hold: 0, custom_hold_reason: null });
-      await fetchOrders();
-    } catch (err) {
-      const p = extractFrappeServerError(err, 'Could not resume this bill.');
-      showToast.error({ title: p.title || 'Resume failed', description: p.message });
-    } finally {
-      setHoldLoading(false);
-    }
-  };
 
   const canReprintNow = useMemo(() => {
     if (canReprint) return true;
@@ -1636,19 +1615,21 @@ export default function Orders() {
                   selectedOrder.custom_cancel_pending !== 1 &&
                   selectedOrder.custom_charge_to_room !== 1 &&
                   (selectedOrder.custom_on_hold === 1 ? (
+                    // Already parked: a dead, greyed-out marker rather than
+                    // a live control. Holding twice is meaningless and the
+                    // backend refuses it anyway, so offering a button that
+                    // can only fail just teaches people to ignore errors.
+                    // Resuming is done from Waiters -> Held Bills, which is
+                    // where held bills are actually managed.
                     <Button
                       variant="outline"
                       size="sm"
-                      className="flex-1 whitespace-nowrap px-3 border-amber-300 text-amber-700 hover:bg-amber-50"
-                      onClick={handleResumeOrder}
-                      disabled={holdLoading}
+                      className="flex-1 whitespace-nowrap px-3 border-gray-200 text-gray-400 bg-gray-50"
+                      disabled
+                      title="This bill is on hold. Resume it from Waiters → Held Bills."
                     >
-                      {holdLoading ? (
-                        <Spinner className="w-4 h-4 mr-1.5" hideMessage />
-                      ) : (
-                        <PlayCircle className="w-4 h-4 mr-1.5" />
-                      )}
-                      Resume
+                      <PauseCircle className="w-4 h-4 mr-1.5" />
+                      Held
                     </Button>
                   ) : (
                     <Button
