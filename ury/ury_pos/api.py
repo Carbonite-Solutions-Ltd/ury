@@ -1,7 +1,7 @@
 import frappe
 import json
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import flt, now
 from datetime import date, datetime, time as dt_time, timedelta
 
 
@@ -692,6 +692,7 @@ def get_incoming_transfers(terminal=None, posting_date=None):
             pi.owner, pi.is_return, pi.return_against,
             pi.custom_charge_to_room, pi.custom_hotel_room,
             pi.custom_cancel_pending,
+            pi.custom_on_hold, pi.custom_hold_reason,
             pi.custom_order_contact_name, pi.custom_order_contact_mobile,
             pi.custom_ihotel_profile, pi.custom_transfer_status,
             t.name AS transfer_name, t.from_user AS transfer_from_user,
@@ -967,12 +968,14 @@ def getPosInvoice(
         "Draft": (
             "Draft",
             "AND (pi.invoice_printed = 1 OR (pi.invoice_printed = 0 AND COALESCE(pi.restaurant_table, '') = '')) "
-            "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)",
+            "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0) "
+            "AND (pi.custom_on_hold IS NULL OR pi.custom_on_hold = 0)",
         ),
         "Unbilled": (
             "Draft",
             "AND (pi.invoice_printed = 0 AND pi.restaurant_table IS NOT NULL) "
-            "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)",
+            "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0) "
+            "AND (pi.custom_on_hold IS NULL OR pi.custom_on_hold = 0)",
         ),
         "Recently Paid": ("Paid", ""),
         # "Pending" = every unpaid draft (take-away AND dine-in table),
@@ -983,8 +986,12 @@ def getPosInvoice(
         # 2026-07-15.
         "Pending": (
             "Draft",
-            "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)",
+            "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0) "
+            "AND (pi.custom_on_hold IS NULL OR pi.custom_on_hold = 0)",
         ),
+        # Parked bills, kept out of every list above so they don't look
+        # like orders still being built. 2026-08-24.
+        "Held": ("Draft", "AND pi.custom_on_hold = 1"),
         "Room Charges": (
             "Draft",
             "AND pi.custom_charge_to_room = 1",
@@ -992,6 +999,7 @@ def getPosInvoice(
         "Pending KOTs": (
             "Draft",
             "AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0) "
+            "AND (pi.custom_on_hold IS NULL OR pi.custom_on_hold = 0) "
             "AND EXISTS ("
             "  SELECT 1 FROM `tabURY KOT` kot "
             "  WHERE kot.invoice = pi.name "
@@ -1052,6 +1060,7 @@ def getPosInvoice(
             pi.owner, pi.is_return, pi.return_against,
             pi.custom_charge_to_room, pi.custom_hotel_room,
             pi.custom_cancel_pending,
+            pi.custom_on_hold, pi.custom_hold_reason,
             pi.custom_order_contact_name, pi.custom_order_contact_mobile,
             pi.custom_ihotel_profile, pi.custom_print_count, pi.custom_waiter,
             pi.cancel_reason,
@@ -1146,6 +1155,9 @@ def searchPosInvoice(
     # 2026-04-16 print revamp.
     if status == "Pending KOTs":
         db_status = "Draft"
+    # Held bills are drafts too (2026-08-24).
+    if status == "Held":
+        db_status = "Draft"
     where_parts = ["pi.status = %s"]
     params = [db_status]
     if branch and not is_waiter:
@@ -1169,6 +1181,17 @@ def searchPosInvoice(
     else:
         where_parts.append(
             "(pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)"
+        )
+
+    # Held bills surface ONLY under their own bucket, exactly like
+    # charged-to-room drafts above. This mirrors status_map in
+    # getPosInvoice, which search deliberately does not share — the two
+    # must be edited in lockstep. 2026-08-24.
+    if status == "Held":
+        where_parts.append("pi.custom_on_hold = 1")
+    else:
+        where_parts.append(
+            "(pi.custom_on_hold IS NULL OR pi.custom_on_hold = 0)"
         )
 
     # Pending KOTs status: correlated EXISTS clause matching any URY
@@ -1217,6 +1240,7 @@ def searchPosInvoice(
             pi.is_return, pi.return_against,
             pi.custom_charge_to_room, pi.custom_hotel_room,
             pi.custom_cancel_pending,
+            pi.custom_on_hold, pi.custom_hold_reason,
             pi.custom_order_contact_name, pi.custom_order_contact_mobile,
             pi.custom_ihotel_profile,
             u.full_name AS owner_full_name,
@@ -1557,6 +1581,7 @@ def get_waiters_with_pending_orders(include_empty=0):
           AND pi.status = 'Draft'
           AND COALESCE(pi.custom_waiter, '') != ''
           AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)
+          AND (pi.custom_on_hold IS NULL OR pi.custom_on_hold = 0)
           AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
         ORDER BY pi.creation DESC
         """,
@@ -1605,6 +1630,7 @@ def get_waiter_pending_order_count():
           AND pi.status = 'Draft'
           AND COALESCE(pi.custom_waiter, '') != ''
           AND (pi.custom_charge_to_room IS NULL OR pi.custom_charge_to_room = 0)
+          AND (pi.custom_on_hold IS NULL OR pi.custom_on_hold = 0)
           AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')
         """,
         {"branch": branch},
@@ -1692,6 +1718,7 @@ def getPosProfile(terminal=None):
         # = 0) so a fresh / freshly-migrated profile keeps returns hidden
         # everywhere until an admin turns the feature on.
         enable_returns = int(pos_profiles.get("custom_enable_returns") or 0)
+        enable_on_account = int(pos_profiles.get("custom_enable_on_account") or 0)
         # Per-invoice transfer hop cap (2026-06-05). Default 2 when the
         # field isn't set. 0 disables transfers entirely at shift close.
         raw_max_transfers = pos_profiles.get("custom_max_invoice_transfers")
@@ -1798,6 +1825,11 @@ def getPosProfile(terminal=None):
         "custom_restrict_merge_to_captain": restrict_merge_to_captain,
         "custom_restrict_returns_to_captain": restrict_returns_to_captain,
         "custom_enable_returns": enable_returns,
+        # Sell on account (2026-08-24). The walk-in customer is sent
+        # too so the Payment dialog can refuse an on-account sale
+        # against it without another round trip.
+        "custom_enable_on_account": enable_on_account,
+        "default_customer": pos_profiles.get("customer"),
         "custom_max_invoice_transfers": max_invoice_transfers,
         "custom_use_waiter": use_waiter,
         # When the logged-in user is a self-serve waiter (URY Waiter role +
@@ -1947,7 +1979,7 @@ def posOpening(terminal=None):
 
 
 @frappe.whitelist()
-def _scope_invoices_for_opening_entry(opening_doc):
+def _scope_invoices_for_opening_entry(opening_doc, include_earlier_shifts=False):
     """Return the SQL WHERE clause + params that match POS Invoices
     belonging to the given opening entry's shift.
 
@@ -1971,12 +2003,12 @@ def _scope_invoices_for_opening_entry(opening_doc):
     where = [
         "pi.pos_profile = %s",
         "(pi.consolidated_invoice IS NULL OR pi.consolidated_invoice = '')",
-        "pi.creation >= %s",
     ]
-    params = [
-        opening_doc.pos_profile,
-        opening_doc.creation,
-    ]
+    params = [opening_doc.pos_profile]
+
+    if not include_earlier_shifts:
+        where.append("pi.creation >= %s")
+        params.append(opening_doc.creation)
 
     # NO owner filter and NO terminal filter — deliberately. (2026-07-28)
     #
@@ -2015,6 +2047,24 @@ def _get_shift_invoice_breakdown(opening_doc):
     Entry submission throws `"Row #1: The original Invoice X of return
     invoice Y is not consolidated"` and rolls back the whole close.
     """
+    # Two different scopes on purpose (2026-08-26).
+    #
+    # SUBMITTED invoices use the WIDE scope — every unconsolidated bill on
+    # this profile, including ones rung in an earlier shift. URY's close
+    # used to filter on `creation >= opening.creation`, so a submitted
+    # invoice that missed its own shift's close could NEVER be swept up
+    # again: every later opening entry has a later timestamp. Those bills
+    # were orphaned permanently and their money never reached the books.
+    # Two such invoices were found on the client's data, one of them an
+    # 888.00 receivable.
+    #
+    # DRAFTS keep the NARROW scope. A draft blocks the close until it is
+    # paid, cancelled or transferred, so widening it would let a forgotten
+    # draft from weeks ago hold an outlet hostage tonight. Old drafts stay
+    # this shift's problem only if they were rung this shift.
+    wide_sql, wide_params = _scope_invoices_for_opening_entry(
+        opening_doc, include_earlier_shifts=True
+    )
     where_sql, params = _scope_invoices_for_opening_entry(opening_doc)
 
     paid = frappe.db.sql(
@@ -2023,14 +2073,25 @@ def _get_shift_invoice_breakdown(opening_doc):
             pi.name, pi.customer, pi.customer_name,
             pi.posting_date, pi.grand_total, pi.net_total, pi.total_qty,
             pi.total_taxes_and_charges, pi.restaurant_table,
-            pi.is_return, pi.return_against
+            pi.is_return, pi.return_against,
+            pi.custom_on_account_amount, pi.outstanding_amount
         FROM `tabPOS Invoice` AS pi
-        WHERE {where_sql}
+        WHERE {wide_sql}
           AND pi.docstatus = 1
-          AND pi.status IN ('Paid', 'Consolidated', 'Return')
+          -- Unpaid / Partly Paid / Overdue are here for ON-ACCOUNT bills
+          -- (2026-08-24). A submitted POS Invoice that was not fully
+          -- tendered carries those statuses, and excluding them meant it
+          -- was invisible to the close: it never attached to a Closing
+          -- Entry, never consolidated, and rotted as an orphan with the
+          -- receivable never reaching the books. Do NOT narrow this back
+          -- to ('Paid','Consolidated','Return').
+          AND pi.status IN (
+            'Paid', 'Consolidated', 'Return',
+            'Unpaid', 'Partly Paid', 'Overdue'
+          )
         ORDER BY pi.creation ASC
         """,
-        tuple(params),
+        tuple(wide_params),
         as_dict=True,
     )
 
@@ -2067,6 +2128,11 @@ def _get_shift_invoice_breakdown(opening_doc):
         # return — matches ERPNext's expectation in consolidate_pos_invoices.
         paid = list(orphan_rows) + paid
 
+    # NOTE: held bills are deliberately NOT excluded here (2026-08-24).
+    # A held bill is an unpaid draft like any other, so it must still block
+    # the close and be paid, cancelled or transferred. Holding is a way to
+    # park an awkward bill during service, not a way to make it vanish at
+    # the end of the night. Do not add a custom_on_hold filter to this query.
     draft = frappe.db.sql(
         f"""
         SELECT
@@ -2200,6 +2266,12 @@ def preview_pos_closing_entry(opening_entry):
         for row in blocking_draft
     ]
     draft_grand_total = sum(r["grand_total"] for r in draft_list)
+    on_account_total = sum(
+        flt(row.get("custom_on_account_amount")) for row in paid
+    )
+    on_account_count = sum(
+        1 for row in paid if flt(row.get("custom_on_account_amount"))
+    )
 
     # Unpaid drafts always escalate to a CAPTAIN / Manager at shift close,
     # whoever is closing (cashier OR captain). The captain then approves the
@@ -2234,6 +2306,13 @@ def preview_pos_closing_entry(opening_entry):
         "total_taxes_and_charges": total_tax,
         "invoice_count": len(paid),
         "payments": payments,
+        # Money deliberately left on customers' accounts this shift
+        # (2026-08-24). Reported SEPARATELY from the mode-of-payment rows
+        # so the cashier is never asked to count cash that was never
+        # collected -- it would look like a till shortage. It is a
+        # receivable, settled later in the back office.
+        "on_account_total": on_account_total,
+        "on_account_count": on_account_count,
         # Draft-side state drives the transfer-before-close UI.
         "draft_count": len(draft_list),
         "draft_grand_total": draft_grand_total,
@@ -2470,6 +2549,15 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
     # nested consolidation chain throws something opaque. Each check
     # throws with a clear title + message naming the exact document
     # that's misconfigured. See CLAUDE.md "Fixes log" 2026-04-11.
+    # Self-heal any on-account bill whose inert zero payment row was
+    # stripped by ERPNext's clear_unallocated_mode_of_payments on submit
+    # (2026-08-26). Without a row, consolidation re-saves the invoice,
+    # validate throws "At least one mode of payment is required", and the
+    # cashier cannot close the day at all. Invoices created before this
+    # fix shipped are already in that state, so repairing here rather than
+    # in a patch means the next close unblocks itself.
+    _repair_missing_payment_rows(opening_doc.pos_profile)
+
     _validate_close_preflight(paid, opening_doc.company)
     _validate_item_warehouses(paid, opening_doc.pos_profile)
 
@@ -2599,8 +2687,42 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
             pass
         return real
 
+    # Split each customer's merge bucket by POSTING DATE (2026-08-26).
+    #
+    # ERPNext groups invoices for consolidation by customer and then by a
+    # hash of the accounting dimensions — NOT by date. `merge_pos_invoice_into`
+    # then does `invoice.posting_date = getdate(doc.posting_date)` for every
+    # source invoice in turn, so when one bucket spans two days the LAST one
+    # silently wins and the others are booked on a day they did not happen.
+    #
+    # That matters here because an on-account bill can sit unpaid across a
+    # day boundary and be consolidated later: without this split, yesterday's
+    # sale lands in today's revenue. With it, each day gets its own
+    # consolidated Sales Invoice carrying its own date, so the books are right
+    # even though the close ran today — which is what the client actually
+    # wants, and needs no backdating machinery at all.
+    _orig_customer_map = _merge_mod.get_invoice_customer_map
+
+    def _customer_map_split_by_date(pos_invoices):
+        grouped = _orig_customer_map(pos_invoices)
+        for customer, buckets in list(grouped.items()):
+            rebuilt = {}
+            for key, invoices in buckets.items():
+                by_date = {}
+                for inv in invoices:
+                    day = str(inv.get("posting_date") or "")
+                    by_date.setdefault(day, []).append(inv)
+                if len(by_date) <= 1:
+                    rebuilt[key] = invoices
+                    continue
+                for day, rows in by_date.items():
+                    rebuilt[f"{key}|{day}"] = rows
+            grouped[customer] = rebuilt
+        return grouped
+
     _merge_mod.enqueue_job = _run_consolidation_inline
     _merge_mod.get_error_message = _capturing_get_error_message
+    _merge_mod.get_invoice_customer_map = _customer_map_split_by_date
     try:
         closing_doc.insert(ignore_permissions=True)
         closing_doc.submit()
@@ -2627,6 +2749,7 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
     finally:
         _merge_mod.enqueue_job = _orig_enqueue_job
         _merge_mod.get_error_message = _orig_get_error_message
+        _merge_mod.get_invoice_customer_map = _orig_customer_map
         frappe.flags.mute_emails = prev_mute_emails
 
     # Defensive: ERPNext's create_merge_logs catches some errors and marks
@@ -4525,6 +4648,11 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
             SUM(COALESCE(pi.net_total, 0)) AS net_total,
             SUM(CASE WHEN pi.is_return = 1 THEN ABS(COALESCE(pi.grand_total, 0)) ELSE 0 END) AS return_amount,
             SUM(COALESCE(pi.discount_amount, 0)) AS discount_amount,
+            -- Money left on customers' accounts rather than collected
+            -- (2026-08-24). Read from the denormalised field, not from
+            -- grand_total - paid_amount, which would also pick up bills
+            -- that are short for unrelated reasons.
+            SUM(COALESCE(pi.custom_on_account_amount, 0)) AS on_account,
             CASE
                 WHEN SUM(CASE WHEN pi.is_return = 0 THEN 1 ELSE 0 END) > 0
                 THEN SUM(CASE WHEN pi.is_return = 0 THEN COALESCE(pi.grand_total, 0) ELSE 0 END)
@@ -4585,6 +4713,10 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
         "totals": {
             "grand_total": total_grand,
             "invoice_count": total_invoices,
+            # Money left on customers' accounts across the whole report
+            # (2026-08-24). Shown as its own column so a manager can see
+            # at a glance how much of the day's takings was not collected.
+            "on_account": sum(flt(r.get("on_account")) for r in rows),
         },
     }
 
@@ -9393,6 +9525,25 @@ def get_sales_by_payment_method(from_date=None, to_date=None, terminal=None):
         tuple(params),
     )[0][0]
 
+    # Money put on customers' accounts (2026-08-24). This is NOT a tender —
+    # nothing was collected — so it is returned as its own figure rather
+    # than mixed into `modes`, where it would look like cash in a drawer
+    # and inflate the takings. The UI renders it as a clearly-labelled
+    # "not collected" row beneath the real tenders.
+    on_account_row = frappe.db.sql(
+        f"""SELECT COALESCE(SUM(pi.custom_on_account_amount), 0) AS amt,
+                   COUNT(DISTINCT CASE WHEN COALESCE(pi.custom_on_account_amount, 0) > 0
+                                       THEN pi.name END) AS cnt
+            FROM `tabPOS Invoice` AS pi
+            INNER JOIN `tabSales Invoice Payment` AS sip
+                    ON sip.parent = pi.name AND sip.parenttype = 'POS Invoice'
+            WHERE {" AND ".join(where_parts)}""",
+        tuple(params),
+        as_dict=True,
+    )
+    on_account_amount = flt(on_account_row[0]["amt"]) if on_account_row else 0.0
+    on_account_bills = int(on_account_row[0]["cnt"] or 0) if on_account_row else 0
+
     return {
         "from_date": from_date,
         "to_date": to_date,
@@ -9400,6 +9551,10 @@ def get_sales_by_payment_method(from_date=None, to_date=None, terminal=None):
         "terminal": terminal or None,
         "is_admin": 1 if is_admin else 0,
         "modes": rows,
+        "on_account": {
+            "amount": on_account_amount,
+            "bill_count": on_account_bills,
+        },
         "totals": {
             "amount": total,
             # Distinct bills overall — deliberately NOT the sum of the
@@ -10125,3 +10280,327 @@ def get_meal_period_sales(from_date=None, to_date=None, terminal=None):
 		"configured_periods": frappe.db.count("URY Meal Period", {"disabled": 0}),
 		"outside_present": any(p["period"] == OUTSIDE_MEAL_PERIODS for p in out),
 	}
+
+
+# ---------------------------------------------------------------------------
+# Held bills (2026-08-24)
+#
+# A cashier parks a bill with a reason -- the guest stepped out, there is a
+# dispute, a manager is being fetched -- and finds it again from the Waiters
+# page instead of leaving it cluttering the Draft list where it looks like an
+# order still being built.
+#
+# Two deliberate behaviours:
+#
+#   * Holding FREES the table, so it can be reseated. Resuming does NOT
+#     re-claim it -- someone else may be sitting there by now, and silently
+#     stealing an occupied table back would be worse than making the cashier
+#     re-seat the bill.
+#
+#   * A held bill STILL BLOCKS the shift close, exactly like any other unpaid
+#     draft. Holding is not a way to make an awkward bill disappear at the end
+#     of the night; it is unfinished business and must be paid, cancelled or
+#     transferred like everything else.
+# ---------------------------------------------------------------------------
+
+
+def _user_can_hold_orders(user=None):
+	"""Anyone who bills can hold a bill -- everyone except a waiter.
+
+	A waiter places orders and hands off to the cashier (2026-07-14), so
+	parking a bill is not theirs to do. Everyone else on the floor may:
+	holding is reversible and leaves a reason and an audit comment, so it
+	does not need a supervisor.
+	"""
+	user = user or frappe.session.user
+	if user == "Administrator":
+		return True
+	if _get_self_waiter_for_user(user):
+		return False
+	roles = set(frappe.get_roles(user))
+	return bool(
+		roles & {"System Manager", "URY Manager", "URY Captain", "URY Cashier"}
+	)
+
+
+def _assert_can_hold(user=None):
+	if not _user_can_hold_orders(user):
+		frappe.throw(
+			_("You do not have permission to hold a bill."),
+			title=_("Not Permitted"),
+			exc=frappe.PermissionError,
+		)
+
+
+@frappe.whitelist()
+def hold_order(invoice, reason):
+	"""Park a draft bill with a reason, and free its table."""
+	_assert_can_hold()
+
+	reason = (reason or "").strip()
+	if not reason:
+		frappe.throw(
+			_("Give a reason for holding this bill."), title=_("Reason Required")
+		)
+
+	if not invoice or not frappe.db.exists("POS Invoice", invoice):
+		frappe.throw(
+			_("Invoice {0} was not found.").format(invoice or "?"), title=_("Not Found")
+		)
+
+	row = frappe.db.get_value(
+		"POS Invoice",
+		invoice,
+		["docstatus", "status", "restaurant_table", "custom_on_hold",
+		 "custom_cancel_pending"],
+		as_dict=True,
+	)
+	if row.docstatus != 0 or row.status != "Draft":
+		frappe.throw(
+			_("Only an unpaid order can be held."), title=_("Not a Draft")
+		)
+	if row.get("custom_on_hold"):
+		frappe.throw(_("This bill is already on hold."), title=_("Already Held"))
+	if row.get("custom_cancel_pending"):
+		frappe.throw(
+			_("This order is waiting for the kitchen to accept a cancellation. "
+			  "Resolve that first."),
+			title=_("Cancellation Pending"),
+		)
+
+	table = row.get("restaurant_table")
+	frappe.db.set_value(
+		"POS Invoice",
+		invoice,
+		{
+			"custom_on_hold": 1,
+			"custom_hold_reason": reason,
+			"custom_held_by": frappe.session.user,
+			"custom_held_at": now(),
+			# Release the table with the bill, so the floor can reseat it.
+			"restaurant_table": None,
+		},
+	)
+
+	freed = None
+	if table and frappe.db.exists("URY Table", table):
+		frappe.db.set_value(
+			"URY Table", table, {"occupied": 0, "latest_invoice_time": None}
+		)
+		try:
+			auto_unmerge_table_if_active(table)
+		except Exception:
+			# Best effort -- an un-merge hiccup must not strand the hold.
+			frappe.log_error(
+				frappe.get_traceback(), f"URY: unmerge after hold failed for {table}"
+			)
+		freed = table
+
+	try:
+		frappe.get_doc("POS Invoice", invoice).add_comment(
+			"Comment",
+			_("Put on hold by {0}: {1}").format(frappe.session.user, reason),
+		)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), f"URY: hold comment failed for {invoice}")
+
+	frappe.db.commit()
+	return {"invoice": invoice, "held": 1, "table_freed": freed}
+
+
+@frappe.whitelist()
+def resume_order(invoice):
+	"""Take a bill off hold. The table is NOT re-claimed -- see module note."""
+	_assert_can_hold()
+
+	if not invoice or not frappe.db.exists("POS Invoice", invoice):
+		frappe.throw(
+			_("Invoice {0} was not found.").format(invoice or "?"), title=_("Not Found")
+		)
+	if not frappe.db.get_value("POS Invoice", invoice, "custom_on_hold"):
+		frappe.throw(_("This bill is not on hold."), title=_("Nothing to Resume"))
+
+	frappe.db.set_value(
+		"POS Invoice",
+		invoice,
+		{
+			"custom_on_hold": 0,
+			"custom_hold_reason": None,
+			"custom_held_by": None,
+			"custom_held_at": None,
+		},
+	)
+	try:
+		frappe.get_doc("POS Invoice", invoice).add_comment(
+			"Comment", _("Taken off hold by {0}.").format(frappe.session.user)
+		)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), f"URY: resume comment failed for {invoice}")
+	frappe.db.commit()
+
+	return {
+		"invoice": invoice,
+		"held": 0,
+		# Said out loud so the UI can tell the cashier rather than leaving
+		# them to wonder where the table went.
+		"note": _("The table was released when this bill was held. Seat it again if needed."),
+	}
+
+
+def _held_orders_where(branch):
+	return (
+		"pi.branch = %(branch)s AND pi.docstatus = 0 AND pi.status = 'Draft'"
+		" AND pi.custom_on_hold = 1"
+		" AND (pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
+		{"branch": branch},
+	)
+
+
+@frappe.whitelist()
+def get_held_orders():
+	"""Every held bill on the branch, for the Waiters-page section."""
+	_assert_can_hold()
+	branch = getBranch()
+	where, params = _held_orders_where(branch)
+
+	rows = frappe.db.sql(
+		f"""
+		SELECT pi.name, pi.customer, pi.customer_name, pi.grand_total,
+		       pi.order_type, pi.custom_hold_reason AS reason,
+		       pi.custom_held_by AS held_by, pi.custom_held_at AS held_at,
+		       pi.custom_waiter AS waiter, u.full_name AS held_by_name,
+		       w.full_name AS waiter_name
+		FROM `tabPOS Invoice` pi
+		LEFT JOIN `tabUser` u ON u.name = pi.custom_held_by
+		LEFT JOIN `tabURY Waiter` w ON w.name = pi.custom_waiter
+		WHERE {where}
+		ORDER BY pi.custom_held_at DESC
+		""",
+		params,
+		as_dict=True,
+	)
+	for r in rows:
+		r["grand_total"] = flt(r["grand_total"])
+		r["held_at"] = str(r["held_at"] or "")
+	return {"branch": branch, "orders": rows, "count": len(rows)}
+
+
+@frappe.whitelist()
+def get_held_order_count():
+	"""Cheap count for the sidebar / section badge."""
+	if not _user_can_hold_orders():
+		return {"count": 0}
+	try:
+		branch = getBranch()
+	except Exception:
+		return {"count": 0}
+	where, params = _held_orders_where(branch)
+	row = frappe.db.sql(
+		f"SELECT COUNT(pi.name) AS c FROM `tabPOS Invoice` pi WHERE {where}",
+		params,
+		as_dict=True,
+	)
+	return {"count": int(row[0]["c"]) if row else 0}
+
+
+@frappe.whitelist()
+def search_account_customers(query=None, pos_profile=None, limit=10):
+	"""Customers a bill can be put on account for (2026-08-26).
+
+	Feeds the picker inside the Payment dialog's On Account tab, so a
+	cashier who picked the walk-in customer can correct it without
+	closing the dialog and starting the payment again.
+
+	Returns the mobile number with each row on purpose: an on-account
+	sale is REFUSED for a customer with no number (the alert text is the
+	fraud control), so showing that up front stops the cashier picking
+	someone only to be rejected a click later.
+
+	The till's own walk-in customer is excluded outright — a balance owed
+	by "Cash Customer" is owed by nobody.
+	"""
+	walk_in = None
+	if pos_profile:
+		walk_in = frappe.db.get_value("POS Profile", pos_profile, "customer")
+
+	conditions = ["c.disabled = 0"]
+	params = {"limit": int(limit or 10)}
+	if walk_in:
+		conditions.append("c.name != %(walk_in)s")
+		params["walk_in"] = walk_in
+
+	query = (query or "").strip()
+	if query:
+		conditions.append(
+			"(c.name LIKE %(q)s OR c.customer_name LIKE %(q)s"
+			" OR c.mobile_number LIKE %(q)s OR c.mobile_no LIKE %(q)s)"
+		)
+		params["q"] = f"%{query}%"
+
+	rows = frappe.db.sql(
+		f"""
+		SELECT c.name, c.customer_name,
+		       COALESCE(NULLIF(c.mobile_number, ''), c.mobile_no) AS mobile
+		FROM `tabCustomer` c
+		WHERE {" AND ".join(conditions)}
+		ORDER BY c.modified DESC
+		LIMIT %(limit)s
+		""",
+		params,
+		as_dict=True,
+	)
+	for r in rows:
+		r["mobile"] = (r.get("mobile") or "").strip() or None
+	return {"customers": rows, "walk_in": walk_in}
+
+
+def _repair_missing_payment_rows(pos_profile):
+	"""Give every payment-row-less POS Invoice its inert zero row back.
+
+	See `ensure_on_account_payment_row` in ury_order.py for why the row
+	goes missing. Repairing at close time (rather than in a one-off
+	patch) means a bill rung before the fix shipped heals itself the next
+	time someone tries to close, instead of stranding the shift.
+
+	⚠ Scoped to every UNCONSOLIDATED submitted invoice on the profile,
+	deliberately NOT just this shift's. An on-account bill from an
+	earlier shift is still unconsolidated and still gets swept into
+	consolidation, so a bill rung days ago can block today's close —
+	which is exactly what happened on 2026-08-26 with an 888.00 bill from
+	a previous shift.
+	"""
+	from ury.ury.doctype.ury_order.ury_order import ensure_on_account_payment_row
+
+	candidates = frappe.db.sql(
+		"""
+		SELECT pi.name
+		FROM `tabPOS Invoice` pi
+		WHERE pi.pos_profile = %(profile)s
+		  AND pi.docstatus = 1
+		  AND (pi.consolidated_invoice IS NULL OR pi.consolidated_invoice = '')
+		  AND NOT EXISTS (
+		    SELECT 1 FROM `tabSales Invoice Payment` sip
+		    WHERE sip.parent = pi.name AND sip.parenttype = 'POS Invoice'
+		  )
+		""",
+		{"profile": pos_profile},
+		as_dict=True,
+	)
+
+	repaired = []
+	for row in candidates:
+		try:
+			if ensure_on_account_payment_row(row["name"], pos_profile):
+				repaired.append(row["name"])
+		except Exception:
+			frappe.log_error(
+				frappe.get_traceback(),
+				f"URY: could not repair the payment row on {row['name']}",
+			)
+	if repaired:
+		frappe.db.commit()
+		frappe.log_error(
+			"Re-added the inert zero payment row to: " + ", ".join(repaired),
+			"URY: repaired on-account invoices before closing",
+		)
+	return repaired

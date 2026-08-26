@@ -130,11 +130,31 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
     setOrderComment(comment);
   };
 
+  // Deliberately NOT capped at the table's seat count: parties routinely
+  // squeeze an extra chair in, and refusing to record that would just make
+  // the covers figure wrong. The table's capacity is a guide, not a limit.
+  const maxPeople = 100;
+
   const handleNumberOfPeopleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = parseInt(e.target.value) || 0;
-    if (value >= 0 && value <= 100) {
+    const raw = e.target.value;
+    // An empty field is stored as 0 and rendered as '' so the cashier can
+    // clear it and type a fresh number. Previously it was clamped to 1 on
+    // every keystroke, so clearing snapped back to 1 and the next digit
+    // landed after it — typing 2 produced 12. 2026-08-25.
+    if (raw === '') {
+      setNumberOfPeople(0);
+      return;
+    }
+    const value = parseInt(raw, 10);
+    if (Number.isNaN(value)) return;
+    if (value >= 0 && value <= maxPeople) {
       setNumberOfPeople(value);
     }
+  };
+
+  /** Never leave the field empty once focus moves on. */
+  const handleNumberOfPeopleBlur = () => {
+    if (numberOfPeople < 1) setNumberOfPeople(1);
   };
 
   const handleSubmit = async (
@@ -237,7 +257,11 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
           qty: item.quantity,
           comment: item.comment || undefined,
         })),
-        no_of_pax: selectedOrderType === DINE_IN ? numberOfPeople : 1,
+        // Floor at 1: the field can legitimately be 0 mid-edit, and a
+        // submit-time guard above already blocks an empty one, but a
+        // draft must never be saved with zero covers.
+        no_of_pax:
+          selectedOrderType === DINE_IN ? Math.max(1, numberOfPeople) : 1,
         pos_profile: posProfile.name,
         order_type: selectedOrderType,
         table: selectedTable || undefined,
@@ -473,9 +497,11 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
               <input
                 type="number"
                 min="1"
-                max="100"
-                value={numberOfPeople}
+                max={maxPeople}
+                value={numberOfPeople === 0 ? '' : numberOfPeople}
                 onChange={handleNumberOfPeopleChange}
+                onBlur={handleNumberOfPeopleBlur}
+                onFocus={(e) => e.currentTarget.select()}
                 className={cn(
                   "block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md",
                   "focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500",
@@ -491,6 +517,7 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
                 Please enter at least 1 person
               </p>
             )}
+
           </div>
         )}
       </div>

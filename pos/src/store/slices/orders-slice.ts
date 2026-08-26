@@ -19,6 +19,12 @@ import { getSavedTerminal } from '../../lib/terminal-api';
 import { storage } from '../../lib/storage';
 
 export interface POSInvoice {
+  /** Parked bill (2026-08-24). Held bills are hidden from Draft /
+   *  Unbilled / Pending KOTs and appear under the Held filter instead. */
+  custom_on_hold?: number;
+  custom_hold_reason?: string | null;
+  custom_held_by?: string | null;
+  custom_held_at?: string | null;
   /** Covers keyed in on a dine-in order. Data field on POS Invoice
    *  (Int on Sales Invoice — the legacy mismatch), so it can arrive
    *  as a string. NOTE: POSInvoice is declared in BOTH this file and

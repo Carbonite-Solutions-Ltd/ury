@@ -10,7 +10,7 @@ import {
   Trash2,
   BedDouble,
   AlertCircle,
-} from 'lucide-react';
+ Landmark,} from 'lucide-react';
 import { usePOSStore } from '../store/pos-store';
 import {
   cn,
@@ -26,6 +26,10 @@ import {
   SelectItem,
 } from './ui';
 import { showToast } from './ui/toast';
+import {
+  searchAccountCustomers,
+  type AccountCustomer,
+} from '../lib/customer-api';
 import { call } from '../lib/frappe-sdk';
 import {
   displayPaymentOpen,
@@ -65,7 +69,7 @@ interface PaymentDialogProps {
   hotelRoomLabel?: string | null;
 }
 
-type PaymentMode = 'single' | 'split' | 'room';
+type PaymentMode = 'single' | 'split' | 'room' | 'account';
 
 // Cent-safe equal distribution: floor to cents for N-1 payers, last
 // payer absorbs the rounding remainder so the sum matches exactly.
@@ -136,6 +140,47 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
   const ihotelEnabled = storePosProfile?.custom_ihotel_enabled === 1;
   const canChargeToRoom = Boolean(ihotelEnabled && hotelRoom);
 
+  // Sell on account (2026-08-24). On-account is the ABSENCE of a tender,
+  // not a payment method — ERPNext has no credit mode and one pointing at
+  // Debtors breaks the GL. So the cashier says how much is being collected
+  // now, and whatever is left becomes a receivable on the customer.
+  //
+  // The walk-in customer is refused: a balance owed by "Cash Customer" is
+  // owed by nobody, and quietly corrupts the AR ledger.
+  const onAccountEnabled = storePosProfile?.custom_enable_on_account === 1;
+  const walkInCustomer = storePosProfile?.default_customer || null;
+  const [accountPaidNow, setAccountPaidNow] = useState('');
+  const [accountMode, setAccountMode] = useState('');
+  // The cashier can re-point the bill at a different customer from
+  // inside this dialog (2026-08-26). Picking the walk-in and only
+  // finding out at the Payment step used to mean closing the dialog,
+  // changing the customer in the cart and starting the payment again.
+  const [accountCustomer, setAccountCustomer] = useState<string | null>(null);
+  const [accountCustomerName, setAccountCustomerName] = useState<string | null>(null);
+  const [accountCustomerMobile, setAccountCustomerMobile] = useState<string | null>(null);
+  const [customerQuery, setCustomerQuery] = useState('');
+  // Forces the picker open even when the current customer is valid,
+  // so 'Change customer' is not a no-op on a correct selection.
+  const [pickingCustomer, setPickingCustomer] = useState(false);
+  const [customerResults, setCustomerResults] = useState<AccountCustomer[]>([]);
+  const [customerSearching, setCustomerSearching] = useState(false);
+
+
+  // What this bill will actually be billed to: the in-dialog override if
+  // the cashier picked one, otherwise whatever the cart carried in.
+  const effectiveCustomer = accountCustomer || customer;
+  const effectiveCustomerLabel = accountCustomerName || effectiveCustomer;
+  const isWalkInCustomer = Boolean(
+    walkInCustomer && effectiveCustomer && effectiveCustomer === walkInCustomer
+  );
+
+  // Modes beyond the base Single/Split pair. Drives whether the
+  // selector renders as a segmented control or the original switch.
+  const extraModes = [
+    ...(canChargeToRoom ? ['room'] : []),
+    ...(onAccountEnabled ? ['account'] : []),
+  ];
+
   // Which of the three payment paths is currently active. Default to
   // Charge to Room when it's available (cashier explicitly chose a
   // hotel guest in the picker — that's a strong intent signal) and to
@@ -148,6 +193,28 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
   const [paymentMode, setPaymentMode] = useState<PaymentMode>(
     canChargeToRoom ? 'room' : 'single'
   );
+
+  useEffect(() => {
+    if (paymentMode !== 'account') return;
+    let cancelled = false;
+    setCustomerSearching(true);
+    const t = setTimeout(() => {
+      searchAccountCustomers(customerQuery, posProfile)
+        .then((rows) => {
+          if (!cancelled) setCustomerResults(rows);
+        })
+        .catch(() => {
+          if (!cancelled) setCustomerResults([]);
+        })
+        .finally(() => {
+          if (!cancelled) setCustomerSearching(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [customerQuery, paymentMode, posProfile]);
 
   // Derived flags used by the existing render branches. Keep these
   // names so the JSX below stays the same.
@@ -419,6 +486,11 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
     [outgoingPayments]
   );
 
+  // How much of the bill is being left on the customer's account.
+  const accountPaid = Math.max(0, parseFloat(accountPaidNow) || 0);
+  const accountRemainder =
+    Math.round(Math.max(0, finalTotal - accountPaid) * 100) / 100;
+
   // Customer dual-screen: push amount due / collected / change to the display
   // bridge while this dialog is open (no DOM scraping). 2026-06-11.
   const changeDue = Math.max(0, Math.round((outgoingTotal - finalTotal) * 100) / 100);
@@ -432,7 +504,15 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
   }, [finalTotal, outgoingTotal, changeDue]);
 
   const canSubmit =
-    paymentMode === 'room'
+    paymentMode === 'account'
+      ? onAccountEnabled &&
+        !isWalkInCustomer &&
+        !!customer &&
+        accountRemainder > 0 &&
+        accountPaid <= finalTotal + 0.01 &&
+        (accountPaid === 0 || !!accountMode) &&
+        !isProcessing
+      : paymentMode === 'room'
       ? canChargeToRoom && !isProcessing
       : splitEnabled
       ? splitBalanced && payers.every((p) => (parseFloat(p.amount) || 0) > 0)
@@ -484,19 +564,35 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
         await fetchOrders();
         return;
       }
+      const isAccount = paymentMode === 'account';
       await call.post('ury.ury.doctype.ury_order.ury_order.make_invoice', {
         additionalDiscount: discountValue ? parseInt(discountValue) : null,
         cashier: billingCashier || cashier,
-        customer,
+        // On account, the cashier may have re-pointed the bill at a
+        // different customer from inside this dialog; make_invoice sets
+        // invoice.customer from this, so send the effective one.
+        customer: isAccount ? effectiveCustomer : customer,
         invoice,
         owner,
-        payments: outgoingPayments,
+        // On account: send only what is actually being collected now. The
+        // rest is deliberately NOT tendered, so ERPNext leaves it as a
+        // receivable on the customer.
+        payments: isAccount
+          ? accountPaid > 0
+            ? [{ mode_of_payment: accountMode, amount: accountPaid }]
+            : []
+          : outgoingPayments,
+        on_account_amount: isAccount ? accountRemainder : null,
         pos_profile: posProfile,
         table,
         // Only meaningful for non-cash tenders; blank/null otherwise.
         transaction_id: hasNonCashPayment ? transactionId.trim() || null : null,
       });
-      showToast.success('Payment successful');
+      showToast.success(
+        paymentMode === 'account'
+          ? `${formatCurrency(accountRemainder)} put on ${customer}'s account`
+          : 'Payment successful'
+      );
 
       // Value split (2026-06-05): print one itemized receipt per payer,
       // each headed with the grand total + that receipt's portion. A
@@ -616,10 +712,14 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
             </Button>
           </div>
 
-          {/* Mode selector: 2-way toggle when iHotel is off, 3-way
-              segmented control when the draft has a hotel room tagged. */}
-          {canChargeToRoom ? (
-            <div className="mb-5 grid grid-cols-3 gap-1 rounded-lg border border-gray-200 p-1 bg-gray-50 text-xs font-semibold">
+          {/* Mode selector. Renders as a segmented control as soon as
+              there are more than two modes (on-account and/or a tagged
+              hotel room), and as the original switch otherwise. */}
+          {extraModes.length > 0 ? (
+            <div
+              className="mb-5 grid gap-1 rounded-lg border border-gray-200 p-1 bg-gray-50 text-xs font-semibold"
+              style={{ gridTemplateColumns: `repeat(${2 + extraModes.length}, minmax(0, 1fr))` }}
+            >
               <button
                 type="button"
                 onClick={() => setPaymentMode('single')}
@@ -644,18 +744,34 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
               >
                 <Users className="w-3.5 h-3.5" /> Split
               </button>
-              <button
-                type="button"
-                onClick={() => setPaymentMode('room')}
-                className={cn(
-                  'flex items-center justify-center gap-1.5 py-2 rounded-md transition-colors',
-                  paymentMode === 'room'
-                    ? 'bg-white text-amber-700 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700'
-                )}
-              >
-                <BedDouble className="w-3.5 h-3.5" /> Room
-              </button>
+              {canChargeToRoom && (
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('room')}
+                  className={cn(
+                    'flex items-center justify-center gap-1.5 py-2 rounded-md transition-colors',
+                    paymentMode === 'room'
+                      ? 'bg-white text-amber-700 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  )}
+                >
+                  <BedDouble className="w-3.5 h-3.5" /> Room
+                </button>
+              )}
+              {onAccountEnabled && (
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('account')}
+                  className={cn(
+                    'flex items-center justify-center gap-1.5 py-2 rounded-md transition-colors',
+                    paymentMode === 'account'
+                      ? 'bg-white text-purple-700 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  )}
+                >
+                  <Landmark className="w-3.5 h-3.5" /> On Account
+                </button>
+              )}
             </div>
           ) : (
             <div className="mb-5 flex items-center justify-between rounded-lg border border-gray-200 p-3 bg-gray-50">
@@ -693,6 +809,131 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
                   )}
                 />
               </button>
+            </div>
+          )}
+
+          {/* On Account panel (2026-08-24). Mixed tender is the default
+              shape here, not an afterthought: the cashier says what is
+              being collected NOW and the remainder goes on the account.
+              Collecting nothing is simply the all-on-account case. */}
+          {paymentMode === 'account' && (
+            <div className="space-y-4">
+              {isWalkInCustomer || !effectiveCustomer || pickingCustomer ? (
+                <div className="space-y-3">
+                  <div className="rounded-lg border-2 border-red-200 bg-red-50 p-4 text-sm text-red-900">
+                    <div className="font-semibold mb-1">
+                      This bill can&apos;t go on an account
+                    </div>
+                    {effectiveCustomer
+                      ? `"${effectiveCustomer}" is this till's walk-in customer, so the balance would be owed by nobody. Pick the guest's own customer record below.`
+                      : 'Pick the customer whose account this bill should go to.'}
+                  </div>
+                  <AccountCustomerPicker
+                    query={customerQuery}
+                    onQuery={setCustomerQuery}
+                    onCancel={
+                      // Only offer a way out when the current selection is
+                      // actually usable — otherwise there is nothing to go
+                      // back to and a Cancel would be a dead end.
+                      pickingCustomer && !isWalkInCustomer && effectiveCustomer
+                        ? () => setPickingCustomer(false)
+                        : undefined
+                    }
+                    results={customerResults}
+                    searching={customerSearching}
+                    onPick={(c) => {
+                      setAccountCustomer(c.name);
+                      setAccountCustomerName(c.customer_name || c.name);
+                      setAccountCustomerMobile(c.mobile);
+                      setPickingCustomer(false);
+                    }}
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="rounded-lg border-2 border-purple-200 bg-purple-50 p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-purple-200">
+                        <Landmark className="w-5 h-5 text-purple-800" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-purple-900">
+                          On {effectiveCustomerLabel}&apos;s account
+                        </div>
+                        <div className="text-xs text-purple-800 mt-0.5">
+                          {accountCustomerMobile
+                            ? `They'll be texted on ${accountCustomerMobile}. `
+                            : ''}
+                          Whatever isn&apos;t collected now becomes money they owe,
+                          settled later in the back office.
+                        </div>
+                        <button
+                          onClick={() => {
+                            setCustomerQuery('');
+                            setPickingCustomer(true);
+                          }}
+                          className="mt-1.5 text-xs font-medium text-purple-800 underline hover:text-purple-900"
+                        >
+                          Change customer
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1.5">
+                      Collecting now (leave blank for none)
+                    </label>
+                    <div className="flex gap-2">
+                      <select
+                        value={accountMode}
+                        onChange={(e) => setAccountMode(e.target.value)}
+                        className="border border-gray-300 rounded-lg px-2.5 py-2 text-sm w-40"
+                      >
+                        <option value="">Method…</option>
+                        {paymentModes.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        value={accountPaidNow}
+                        onChange={(e) => setAccountPaidNow(e.target.value)}
+                        placeholder="0.00"
+                        className="flex-1 text-right"
+                      />
+                    </div>
+                    {accountPaid > 0 && !accountMode && (
+                      <p className="text-xs text-red-600 mt-1">
+                        Pick the method the money is coming in by.
+                      </p>
+                    )}
+                    {accountPaid > finalTotal + 0.01 && (
+                      <p className="text-xs text-red-600 mt-1">
+                        That is more than the bill total.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="rounded-lg border border-gray-200 p-3 space-y-1.5 text-sm">
+                    <div className="flex justify-between text-gray-600">
+                      <span>Bill total</span>
+                      <span>{formatCurrency(finalTotal)}</span>
+                    </div>
+                    <div className="flex justify-between text-gray-600">
+                      <span>Collected now</span>
+                      <span>{formatCurrency(accountPaid)}</span>
+                    </div>
+                    <div className="flex justify-between font-semibold text-purple-800 pt-1.5 border-t border-gray-200">
+                      <span>To {customer}&apos;s account</span>
+                      <span>{formatCurrency(accountRemainder)}</span>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -1162,11 +1403,17 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
               paymentMode === 'room' &&
                 !isProcessing &&
                 canSubmit &&
-                'bg-amber-600 hover:bg-amber-700 text-white'
+                'bg-amber-600 hover:bg-amber-700 text-white',
+              paymentMode === 'account' &&
+                !isProcessing &&
+                canSubmit &&
+                'bg-purple-600 hover:bg-purple-700 text-white'
             )}
           >
             {isProcessing
               ? 'Processing...'
+              : paymentMode === 'account'
+              ? `Put ${formatCurrency(accountRemainder)} on account`
               : paymentMode === 'room'
               ? `Charge ${formatCurrency(finalTotal)} to Room ${hotelRoom}`
               : `Pay ${formatCurrency(
@@ -1178,5 +1425,93 @@ const PaymentDialog: React.FC<PaymentDialogProps> = ({
     </Dialog>
   );
 };
+
+/**
+ * Pick (or correct) the customer a bill goes on account for, without
+ * leaving the Payment dialog.
+ *
+ * Shows each customer's mobile number because an on-account sale is
+ * REFUSED for a customer without one — the alert text is the fraud
+ * control. Surfacing it here stops the cashier picking someone only to
+ * be rejected on submit.
+ */
+function AccountCustomerPicker({
+  query,
+  onQuery,
+  results,
+  searching,
+  onPick,
+  onCancel,
+}: {
+  query: string;
+  onQuery: (v: string) => void;
+  results: AccountCustomer[];
+  searching: boolean;
+  onPick: (c: AccountCustomer) => void;
+  onCancel?: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-gray-200 overflow-hidden">
+      <div className="px-3 py-2 border-b border-gray-200 bg-gray-50 flex items-center gap-2">
+        <input
+          value={query}
+          onChange={(e) => onQuery(e.target.value)}
+          autoFocus
+          placeholder="Search a customer by name or phone…"
+          className="flex-1 bg-transparent text-sm outline-none"
+        />
+        {onCancel && (
+          <button
+            onClick={onCancel}
+            className="text-xs font-medium text-gray-500 hover:text-gray-700 shrink-0"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+      <div className="max-h-56 overflow-y-auto divide-y divide-gray-100">
+        {searching && results.length === 0 && (
+          <p className="px-3 py-3 text-sm text-gray-500">Searching…</p>
+        )}
+        {!searching && results.length === 0 && (
+          <p className="px-3 py-3 text-sm text-gray-500">
+            No customers match. Create one from the customer picker on the POS.
+          </p>
+        )}
+        {results.map((c) => {
+          const noMobile = !c.mobile;
+          return (
+            <button
+              key={c.name}
+              onClick={() => !noMobile && onPick(c)}
+              disabled={noMobile}
+              className={`w-full text-left px-3 py-2 flex items-center gap-2 ${
+                noMobile ? 'opacity-60 cursor-not-allowed' : 'hover:bg-gray-50'
+              }`}
+              title={
+                noMobile
+                  ? 'This customer has no mobile number, so they cannot be told about the charge.'
+                  : undefined
+              }
+            >
+              <span className="flex-1 min-w-0">
+                <span className="block text-sm font-medium text-gray-900 truncate">
+                  {c.customer_name || c.name}
+                </span>
+                <span
+                  className={`block text-xs ${
+                    noMobile ? 'text-red-600' : 'text-gray-500'
+                  }`}
+                >
+                  {c.mobile || 'No mobile number — add one first'}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 export default PaymentDialog;

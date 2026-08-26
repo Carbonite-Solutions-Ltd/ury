@@ -20,6 +20,7 @@ import {
   Edit,
   AlertTriangle,
   Wallet,
+  PauseCircle,
 } from 'lucide-react';
 import { Badge, Button, Card, CardContent } from '../components/ui';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../components/ui/dialog';
@@ -34,6 +35,7 @@ import { useNavigate } from 'react-router-dom';
 import PaymentDialog from '../components/PaymentDialog';
 import ReturnDialog from '../components/ReturnDialog';
 import ChangePaymentModeDialog from '../components/ChangePaymentModeDialog';
+import HoldBillDialog from '../components/HoldBillDialog';
 import { printOrder } from '../lib/print';
 import { firePendingKotsForInvoice } from '../lib/kot-listener';
 import { call } from '../lib/frappe-sdk';
@@ -44,8 +46,7 @@ import {
   canReturnOrders,
   canSkipPhysicalPrint,
   isCaptainOrAbove,
-  isWaiterOnly,
-} from '../lib/role-utils';
+  isWaiterOnly, canHoldOrders } from '../lib/role-utils';
 import {
   reversePosReturn,
   updatePrintStatus,
@@ -161,6 +162,7 @@ export default function Orders() {
     React.useState(0);
   const [showReturnDialog, setShowReturnDialog] = React.useState(false);
   const [showPaymentModeDialog, setShowPaymentModeDialog] = React.useState(false);
+  const [showHoldDialog, setShowHoldDialog] = React.useState(false);
   const [reverseLoading, setReverseLoading] = React.useState(false);
   // Incoming-transfer approval state (2026-06-05).
   const [transferLoading, setTransferLoading] = React.useState(false);
@@ -229,6 +231,8 @@ export default function Orders() {
 
   // Reprint gating: captains/managers/admins reprint freely; a cashier may
   // reprint until the bill's print count hits the profile's max (default 3).
+  const canHold = useMemo(() => canHoldOrders(user), [user]);
+
   const canReprintNow = useMemo(() => {
     if (canReprint) return true;
     if (!selectedOrder) return false;
@@ -1177,6 +1181,28 @@ export default function Orders() {
                 </div>
               </div>
             )}
+            {/* Parked bill (2026-08-24). Whoever picks this up later needs
+                to know why it is sitting here and that the table is gone. */}
+            {selectedOrder.custom_on_hold === 1 && (
+              <div className="mx-6 mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-amber-800">
+                  <PauseCircle className="w-4 h-4" />
+                  On hold
+                </div>
+                <div className="mt-1 text-sm text-amber-900">
+                  {selectedOrder.custom_hold_reason && (
+                    <div>
+                      <span className="font-medium">Reason:</span>{' '}
+                      {selectedOrder.custom_hold_reason}
+                    </div>
+                  )}
+                  <div className="mt-1 text-xs">
+                    The table was released when this was held. Resume it to
+                    carry on, then seat it again if the guest is back.
+                  </div>
+                </div>
+              </div>
+            )}
             {/* Cancel Order Dialog */}
             <Dialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
               <DialogContent>
@@ -1405,7 +1431,7 @@ export default function Orders() {
                         </span>
                       )}
                     </div>
-                    <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
+                    <span className="ml-auto text-lg font-bold text-gray-900 whitespace-nowrap">
                       {formatCurrency(getOrderTotal(selectedOrder))}
                     </span>
                   </>
@@ -1434,7 +1460,7 @@ export default function Orders() {
                       <X className="w-4 h-4 mr-1.5" />
                       Reject
                     </Button>
-                    <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
+                    <span className="ml-auto text-lg font-bold text-gray-900 whitespace-nowrap">
                       {formatCurrency(getOrderTotal(selectedOrder))}
                     </span>
                   </>
@@ -1460,7 +1486,7 @@ export default function Orders() {
                         </>
                       )}
                     </Button>
-                    <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
+                    <span className="ml-auto text-lg font-bold text-gray-900 whitespace-nowrap">
                       {formatCurrency(getOrderTotal(selectedOrder))}
                     </span>
                   </>
@@ -1496,19 +1522,20 @@ export default function Orders() {
                  selectedOrder.custom_charge_to_room !== 1 &&
                  String(selectedOrder.invoice_printed) === '0' ? (
                   <Button
-                    className="flex-1"
+                    size="sm"
+                    className="flex-1 whitespace-nowrap px-3"
                     onClick={handlePrintOrder}
                     disabled={isPrinting}
                   >
                     {isPrinting ? (
                       <>
-                        <Spinner className="w-5 h-5 mr-2" hideMessage />
+                        <Spinner className="w-4 h-4 mr-1.5" hideMessage />
                         Printing…
                       </>
                     ) : (
                       <>
-                        <Printer className="w-5 h-5 mr-2" />
-                        Print Invoice
+                        <Printer className="w-4 h-4 mr-1.5" />
+                        Print
                       </>
                     )}
                   </Button>
@@ -1579,6 +1606,42 @@ export default function Orders() {
                     Undo Return
                   </Button>
                 )}
+                {/* Park / un-park a bill (2026-08-24). Draft only — once a
+                    bill is paid there is nothing left to hold. Hidden while a
+                    cancellation is with the kitchen, since that already locks
+                    the order. */}
+                {canHold &&
+                  selectedOrder.status === 'Draft' &&
+                  selectedOrder.custom_cancel_pending !== 1 &&
+                  selectedOrder.custom_charge_to_room !== 1 &&
+                  (selectedOrder.custom_on_hold === 1 ? (
+                    // Already parked: a dead, greyed-out marker rather than
+                    // a live control. Holding twice is meaningless and the
+                    // backend refuses it anyway, so offering a button that
+                    // can only fail just teaches people to ignore errors.
+                    // Resuming is done from Waiters -> Held Bills, which is
+                    // where held bills are actually managed.
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 whitespace-nowrap px-3 border-gray-200 text-gray-400 bg-gray-50"
+                      disabled
+                      title="This bill is on hold. Resume it from Waiters → Held Bills."
+                    >
+                      <PauseCircle className="w-4 h-4 mr-1.5" />
+                      Held
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 whitespace-nowrap px-3 border-amber-300 text-amber-700 hover:bg-amber-50"
+                      onClick={() => setShowHoldDialog(true)}
+                    >
+                      <PauseCircle className="w-4 h-4 mr-1.5" />
+                      Hold
+                    </Button>
+                  ))}
                 {/* Change the tender on a settled bill. Shown for paid
                     invoices only — a draft has no payment yet, and a
                     return's refund mode belongs to the return flow. The
@@ -1598,7 +1661,7 @@ export default function Orders() {
                     </Button>
                   )}
                 {/* Total */}
-                <span className="ml-auto text-xl font-bold text-gray-900 whitespace-nowrap">
+                <span className="ml-auto text-lg font-bold text-gray-900 whitespace-nowrap">
                   {formatCurrency(getOrderTotal(selectedOrder))}
                 </span>
                   </>
@@ -1623,6 +1686,19 @@ export default function Orders() {
           clearSelectedOrder={clearSelectedOrder}
           hotelRoom={selectedOrder.custom_hotel_room || null}
           hotelRoomLabel={selectedOrder.customer_name || null}
+        />
+      )}
+      {showHoldDialog && selectedOrder && (
+        <HoldBillDialog
+          invoice={selectedOrder.name}
+          total={getOrderTotal(selectedOrder)}
+          table={selectedOrder.restaurant_table}
+          onClose={() => setShowHoldDialog(false)}
+          onHeld={() => {
+            setShowHoldDialog(false);
+            clearSelectedOrder();
+            fetchOrders();
+          }}
         />
       )}
       {showPaymentModeDialog && selectedOrder && (

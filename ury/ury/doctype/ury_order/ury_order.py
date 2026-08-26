@@ -4,6 +4,7 @@
 import json
 import frappe
 from frappe import _
+from frappe.utils import flt, get_time, getdate, nowdate
 from frappe.model.document import Document
 from erpnext.controllers.queries import item_query
 from ury.ury_pos.api import getBranch, _VALID_ORDER_TYPES
@@ -254,6 +255,59 @@ def _apply_pos_profile_taxes(invoice, pos_profile_name):
     # Guarded against double-appending.
     if row.taxes_and_charges and not invoice.get("taxes"):
         invoice.append_taxes_from_master()
+
+
+def preserve_original_order_date(invoice):
+    """Keep a carried-over order on the day it was actually rung.
+
+    ⚠ ERPNext RE-DATES ON EVERY SAVE. `validate_posting_time`
+    (utilities/transaction_base.py) does:
+
+        if not getattr(self, "set_posting_time", None):
+            now = now_datetime()
+            self.posting_date = now.strftime("%Y-%m-%d")
+
+    and `set_posting_time` is 0 on every POS Invoice this app creates. So
+    a draft rung yesterday and settled today is silently stamped TODAY the
+    moment it is saved — which is why an invoice created on 14 Aug was
+    found carrying a 26 Aug posting date having never been deliberately
+    backdated.
+
+    That is wrong for this business. The money was taken at the table
+    yesterday; on a card or on account it left the customer yesterday. The
+    bill only failed to go through because of a system problem (no stock
+    on the item, say), and the cashier already books the cash as an
+    overage that night and reconciles it when the bill is finally settled.
+    So the sale belongs to the day it was served, not the day the
+    blockage was cleared.
+
+    Applies ONLY when the order was opened on an earlier day — an order
+    rung today is left completely alone. `creation` is used rather than
+    `posting_date` because creation is immutable, whereas posting_date is
+    exactly the value that drifts.
+
+    NOTE: this backdates into an already-closed day. That is intended and
+    is what makes the consolidated Sales Invoice land in the right day's
+    revenue. It will be refused if the period is frozen
+    (Stock Settings `stock_frozen_upto` / Accounts Settings
+    `acc_frozen_upto`) — neither is set on this client's site. 2026-08-26.
+    """
+    created = invoice.get("creation")
+    if not created:
+        # Brand-new document — there is nothing to preserve.
+        return False
+
+    order_date = getdate(created)
+    if order_date >= getdate(nowdate()):
+        return False
+
+    invoice.set_posting_time = 1
+    invoice.posting_date = order_date
+    try:
+        invoice.posting_time = get_time(created)
+    except Exception:
+        pass
+    return True
 
 
 def _apply_pos_profile_cost_center(invoice, pos_profile_name):
@@ -668,6 +722,12 @@ def sync_order(
     # prepended a noisy "Error while updating order:" prefix that made
     # the frontend's error-picking logic misbehave. See CLAUDE.md
     # "Fixes log" 2026-04-08.
+    #
+    # Editing a bill that was opened on an earlier day must not silently
+    # re-date it to today — ERPNext would otherwise stamp `posting_date`
+    # with now on this very save. See preserve_original_order_date.
+    preserve_original_order_date(invoice)
+
     invoice.save()
 
 
@@ -953,8 +1013,285 @@ def _resolve_billing_cashier(requested):
     return requested
 
 
+def _default_payment_mode(pos_profile):
+    """A mode of payment to hang the inert zero-amount row on.
+
+    Prefers the profile's own default, then its first configured mode,
+    then plain Cash. Only ever used for a 100%-on-account bill, where the
+    row exists solely to satisfy ERPNext's "at least one mode of payment"
+    rule and posts nothing.
+    """
+    rows = frappe.get_all(
+        "POS Payment Method",
+        filters={"parent": pos_profile, "parenttype": "POS Profile"},
+        fields=["mode_of_payment", "`default`"],
+        order_by="idx asc",
+    )
+    for r in rows:
+        if r.get("default"):
+            return r["mode_of_payment"]
+    if rows:
+        return rows[0]["mode_of_payment"]
+    return "Cash"
+
+
+def _customer_mobile(customer):
+    """The number to text about an on-account charge, or None.
+
+    Prefers URY's own `mobile_number` (which ury_customer.py already
+    makes mandatory when a customer is created from the POS) and falls
+    back to ERPNext's `mobile_no` for customers created in the desk.
+    """
+    if not customer:
+        return None
+    row = frappe.db.get_value(
+        "Customer", customer, ["mobile_number", "mobile_no"], as_dict=True
+    ) or {}
+    for key in ("mobile_number", "mobile_no"):
+        value = (row.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _send_on_account_sms(invoice_doc, customer, amount):
+    """Tell the customer their account was charged (2026-08-25).
+
+    THIS IS A FRAUD CONTROL, not a courtesy. Without it a waiter can put
+    food on a real customer's account and nobody finds out until the
+    statement. The customer getting a text the moment it happens is what
+    makes that visible.
+
+    Best-effort ON PURPOSE: an SMS gateway outage must not strand a guest
+    at the till mid-service, so a failure never blocks the sale. But it is
+    never silent either -- the outcome is stamped on the invoice
+    (`custom_on_account_sms_sent`) and failures reach the Error Log, so
+    "which charges was nobody told about?" is a desk filter rather than an
+    unanswerable question.
+
+    ⚠ WHY THIS DOESN'T JUST `try: send_sms(); return True`. Frappe's
+    `send_sms` does NOT raise when the gateway is unconfigured -- it
+    msgprints "Please Update SMS Settings" and returns normally. Its
+    `send_via_gateway` also swallows per-recipient HTTP failures, only
+    collecting the 2xx ones. So "no exception" proves nothing, and the
+    naive version reported every charge as alerted on a site with no
+    gateway at all. The gateway is therefore checked up front, and the
+    SMS Log row Frappe writes on success is used as confirmation where
+    that doctype still exists (it has been removed in newer Frappe).
+
+    Returns True only when the message was actually handed to a gateway.
+    """
+    mobile = _customer_mobile(customer)
+    if not mobile:
+        return False
+
+    if not frappe.db.get_single_value("SMS Settings", "sms_gateway_url"):
+        # The commonest failure by far: nobody ever set the gateway up.
+        # Say so once, loudly, rather than recording a phantom "sent".
+        frappe.log_error(
+            f"No SMS gateway is configured, so the customer was NOT told about "
+            f"the on-account charge on {invoice_doc.name}. Set it up in SMS "
+            f"Settings, or on-account charges go out unannounced.",
+            "URY: on-account SMS not configured",
+        )
+        return False
+
+    company = invoice_doc.get("company") or ""
+    outlet = invoice_doc.get("branch") or company or "our restaurant"
+    message = _(
+        "{0}: {1} has been charged to your account on {2} (bill {3}). "
+        "If this was not you, please contact us."
+    ).format(
+        outlet,
+        frappe.utils.fmt_money(amount, currency=invoice_doc.get("currency")),
+        frappe.utils.formatdate(invoice_doc.get("posting_date")),
+        invoice_doc.name,
+    )
+
+    can_confirm = bool(frappe.db.exists("DocType", "SMS Log"))
+    before = frappe.db.count("SMS Log") if can_confirm else 0
+
+    try:
+        from frappe.core.doctype.sms_settings.sms_settings import send_sms
+
+        # success_msg=False: this runs inside the payment request, and a
+        # green "SMS sent" toast on the cashier's screen is noise -- the
+        # alert is for the CUSTOMER, not for them.
+        send_sms([mobile], message, success_msg=False)
+    except Exception:
+        frappe.log_error(
+            frappe.get_traceback(),
+            f"URY: on-account SMS failed for {invoice_doc.name} -> {mobile}",
+        )
+        return False
+
+    if can_confirm:
+        # Frappe only writes an SMS Log when the gateway returned 2xx, so
+        # a new row is the one trustworthy "it actually went" signal.
+        if frappe.db.count("SMS Log") > before:
+            return True
+        frappe.log_error(
+            f"The SMS gateway did not accept the on-account alert for "
+            f"{invoice_doc.name} ({mobile}). The customer was NOT told.",
+            "URY: on-account SMS rejected by gateway",
+        )
+        return False
+
+    # No SMS Log on this Frappe version: the best that can be claimed is
+    # that a configured gateway accepted the call without raising.
+    return True
+
+
+def ensure_on_account_payment_row(invoice_name, pos_profile=None):
+    """Put back the inert zero-amount payment row after submit.
+
+    ⚠ WHY THIS EXISTS. ERPNext demands at least one payment row on a POS
+    Invoice (`validate_mode_of_payment`, pos_invoice.py) — but
+    `clear_unallocated_mode_of_payments`, which runs in `on_submit`,
+    DELETES every row with amount 0 straight from the database:
+
+        frappe.qb.from_(sip).delete().where(sip.parent == self.name)
+                                     .where(sip.amount == 0).run()
+
+    So a 100%-on-account bill submits happily and is then left with NO
+    payment rows. Nothing notices until the shift close, where
+    consolidation re-saves each POS Invoice, `validate` runs again, and
+    the whole close dies on "At least one mode of payment is required
+    for POS invoice." The bill is fine, the money is fine, and the
+    cashier simply cannot close the day.
+
+    Re-inserting the row directly (bypassing the document lifecycle, so
+    `clear_unallocated_mode_of_payments` does not fire again) satisfies
+    every later validation. It stays inert: `make_pos_gl_entries` skips
+    rows with a falsy `base_amount`, so it posts nothing. 2026-08-26.
+    """
+    if frappe.db.exists(
+        "Sales Invoice Payment",
+        {"parent": invoice_name, "parenttype": "POS Invoice"},
+    ):
+        return False
+
+    if not pos_profile:
+        pos_profile = frappe.db.get_value("POS Invoice", invoice_name, "pos_profile")
+    mode = _default_payment_mode(pos_profile)
+    company = frappe.db.get_value("POS Invoice", invoice_name, "company")
+    account = frappe.db.get_value(
+        "Mode of Payment Account",
+        {"parent": mode, "company": company},
+        "default_account",
+    )
+
+    row = frappe.new_doc("Sales Invoice Payment")
+    row.parent = invoice_name
+    row.parenttype = "POS Invoice"
+    row.parentfield = "payments"
+    row.idx = 1
+    row.mode_of_payment = mode
+    row.account = account
+    row.amount = 0
+    row.base_amount = 0
+    # The parent is already SUBMITTED, so the child must be too. A row
+    # left at docstatus 0 under a submitted parent is malformed, and it
+    # is silently skipped when the merge log re-reads the invoice during
+    # consolidation — which put the consolidated Sales Invoice back at
+    # zero payment rows and threw all over again.
+    row.docstatus = frappe.db.get_value("POS Invoice", invoice_name, "docstatus") or 0
+    row.db_insert()
+
+    # ⚠ MUST invalidate the document cache. `db_insert` bypasses the
+    # document lifecycle, so the cached copy of this invoice still has no
+    # payment rows — and consolidation reads it with
+    # `frappe.get_cached_doc` (pos_invoice_merge_log.py:117), not from the
+    # database. Without this the row is genuinely in the DB, loads fine
+    # via get_doc, and the merge still builds a consolidated Sales Invoice
+    # with zero payments that throws on submit. That is exactly what made
+    # this look unfixable on 2026-08-26.
+    frappe.clear_document_cache("POS Invoice", invoice_name)
+    return True
+
+
+def _assert_can_sell_on_account(invoice, pos_profile, customer, amount):
+    """Guard the on-account path (2026-08-24).
+
+    The load-bearing check is the walk-in one. Putting a bill on the
+    profile's default "Cash Customer" creates a receivable against a
+    shared placeholder that nobody can ever collect from, and quietly
+    corrupts the AR ledger. Everything else here is arithmetic.
+    """
+    profile = frappe.db.get_value(
+        "POS Profile",
+        pos_profile,
+        ["custom_enable_on_account", "customer", "allow_partial_payment"],
+        as_dict=True,
+    ) or {}
+
+    if not profile.get("custom_enable_on_account"):
+        frappe.throw(
+            _("Selling on account is not enabled for this POS Profile."),
+            title=_("Not Enabled"),
+        )
+
+    if not customer:
+        frappe.throw(
+            _("Pick the customer whose account this bill goes to."),
+            title=_("Customer Required"),
+        )
+
+    # The walk-in placeholder is not a real debtor.
+    default_customer = (profile.get("customer") or "").strip()
+    if default_customer and customer == default_customer:
+        frappe.throw(
+            _(
+                "'{0}' is this till's walk-in customer, so a bill cannot be put on "
+                "its account — the balance would be owed by nobody. Pick the guest's "
+                "own customer record first."
+            ).format(customer),
+            title=_("Walk-in Customer"),
+        )
+
+    # A number is REQUIRED, and this is the point of the whole feature.
+    # The customer's text is what stops a waiter quietly putting food on
+    # someone's account, so an account with no way to reach its owner is
+    # not one we will charge. Blocking here is deliberate: it is a data
+    # problem the cashier can fix in seconds, unlike a silent charge
+    # nobody ever hears about.
+    if not _customer_mobile(customer):
+        frappe.throw(
+            _(
+                "{0} has no mobile number, so they cannot be told about this charge. "
+                "Add one to the customer record before putting a bill on their account."
+            ).format(customer),
+            title=_("No Mobile Number"),
+        )
+
+    total = flt(invoice.rounded_total) or flt(invoice.grand_total)
+    if amount < 0:
+        frappe.throw(_("The on-account amount cannot be negative."), title=_("Invalid Amount"))
+    if amount - total > 0.01:
+        frappe.throw(
+            _("The on-account amount ({0}) is more than the bill total ({1}).").format(
+                amount, total
+            ),
+            title=_("Invalid Amount"),
+        )
+
+    # ERPNext refuses an under-tendered POS Invoice without this. It is
+    # ticked automatically on migrate for profiles that enable on-account
+    # selling (see install.py `_sync_allow_partial_payment`), so reaching
+    # here means someone un-ticked it by hand.
+    if not profile.get("allow_partial_payment"):
+        frappe.throw(
+            _(
+                "'Allow Partial Payment' is switched off on POS Profile {0}, so a bill "
+                "cannot be left partly unpaid. Tick it on the profile, or run "
+                "bench migrate to have it set automatically."
+            ).format(pos_profile),
+            title=_("Partial Payment Disabled"),
+        )
+
+
 @frappe.whitelist()
-def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDiscount=None, table=None, invoice=None, transaction_id=None):
+def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDiscount=None, table=None, invoice=None, transaction_id=None, on_account_amount=None):
     _assert_not_pending_cancellation(invoice)
     order_type = invoice_name = frappe.get_value("POS Invoice", invoice, "order_type")
     invoice = get_order_invoice(table, invoice, order_type, "Payments")
@@ -989,16 +1326,66 @@ def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDisc
     if not _get_self_waiter_for_user():
         invoice.cashier = _resolve_billing_cashier(cashier)
 
+    # A bill opened on an earlier day keeps that day, even though it is
+    # being settled now. See preserve_original_order_date.
+    preserve_original_order_date(invoice)
+
     invoice.additional_discount_percentage = additionalDiscount
     invoice.calculate_taxes_and_totals()
 
-    for pay in invoice.payments:
-        pay.delete(pay.mode_of_payment)
+    # Clear any existing tender before rebuilding it.
+    #
+    # This used to be `for pay in invoice.payments: pay.delete(...)`, which
+    # was wrong twice over: `Document.delete()`'s first positional is
+    # `ignore_permissions`, so the mode name was being passed as that; and
+    # deleting the row from the DB does NOT remove it from the in-memory
+    # `invoice.payments` list. The stale row therefore survived into
+    # calculate_paid_amount and was counted AGAIN alongside the new one.
+    #
+    # Invisible in the normal flow, because a draft has no payment rows and
+    # the loop is a no-op. It only bites on a RETRY after a failed payment
+    # attempt (out of stock, stale opening entry...), where the second try
+    # silently recorded double the tender. Found 2026-08-24 while testing
+    # on-account sales: a 20.00 cash tender came out as paid_amount 40.00.
+    invoice.set("payments", [])
 
     for d in payments:
         invoice.append(
             "payments", dict(mode_of_payment=d["mode_of_payment"], amount=d["amount"])
         )
+
+    # ------------------------------------------------------------------
+    # Sell on account (2026-08-24)
+    #
+    # On-account is the ABSENCE of a tender, never a Mode of Payment.
+    # ERPNext has no credit payment type, the GL never reads
+    # `Mode of Payment.type`, and a mode pointing at Debtors throws
+    # "Customer is required against Receivable account" because the
+    # payment leg carries no party — the exact misconfiguration behind
+    # the 2026-04-10 incident. URY's own close pre-flight rejects it too.
+    #
+    # So we simply tender less than the total and let ERPNext leave the
+    # residual on the customer: make_customer_gl_entry debits the FULL
+    # grand total to the receivable, make_pos_gl_entries credits back
+    # only what was actually paid, and set_outstanding_amount records the
+    # difference. No new GL code.
+    # ------------------------------------------------------------------
+    on_account = flt(on_account_amount)
+    if on_account:
+        _assert_can_sell_on_account(invoice, pos_profile, customer, on_account)
+        invoice.custom_on_account_amount = on_account
+        # ERPNext demands at least one payment row on a POS Invoice
+        # (validate_mode_of_payment). A bill that is 100% on account has
+        # nothing tendered, so give it a single ZERO row: make_pos_gl_entries
+        # skips rows with a falsy base_amount, so it posts nothing and is
+        # inert — it exists purely to satisfy that validation.
+        if not invoice.get("payments"):
+            invoice.append(
+                "payments",
+                dict(mode_of_payment=_default_payment_mode(pos_profile), amount=0),
+            )
+    else:
+        invoice.custom_on_account_amount = 0
 
     # Optional transaction / reference id for non-cash payments (2026-07-16).
     if transaction_id:
@@ -1018,6 +1405,26 @@ def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDisc
     # render an actionable rich toast. Same surgery already done
     # on sync_order — see CLAUDE.md "Fixes log" 2026-04-08.
     invoice.submit()
+
+    # Tell the customer their account was charged (2026-08-25).
+    #
+    # AFTER submit, never before: texting someone about a bill that then
+    # fails to submit would be worse than not texting at all. The send is
+    # best-effort and its outcome is recorded, so a gateway outage costs
+    # the alert but not the sale -- see _send_on_account_sms.
+    if on_account:
+        # ERPNext strips the inert zero row during on_submit; put it back
+        # or the shift close dies on this invoice. See the docstring.
+        ensure_on_account_payment_row(invoice.name, pos_profile)
+        sent = _send_on_account_sms(invoice, customer, on_account)
+        frappe.db.set_value(
+            "POS Invoice",
+            invoice.name,
+            "custom_on_account_sms_sent",
+            1 if sent else 0,
+            update_modified=False,
+        )
+        frappe.db.commit()
 
 
 def _user_can_split_orders():

@@ -127,6 +127,91 @@ def get_custom_fields():
 					"translatable": 0,
 				},
 				{
+					# Held bills (2026-08-24). A cashier parks a bill with a reason --
+					# guest stepped out, dispute, waiting on a manager -- and finds it
+					# again from the Waiters page. Holding FREES the table so it can be
+					# reseated; resuming does NOT re-claim it, because someone else may
+					# be sitting there by then.
+					"fieldname": "custom_on_hold",
+					"fieldtype": "Check",
+					"label": "On Hold",
+					"insert_after": "custom_cancel_pending",
+					"default": "0",
+					"no_copy": 1,
+					"read_only": 1,
+					"print_hide": 1,
+					"in_standard_filter": 1,
+					"description": "1 while this bill is parked. A held bill is hidden from the normal Draft / Unbilled lists and appears under Held instead. It still blocks the shift close, because it is unfinished business.",
+					"translatable": 0,
+				},
+				{
+					"fieldname": "custom_hold_reason",
+					"fieldtype": "Small Text",
+					"label": "Hold Reason",
+					"insert_after": "custom_on_hold",
+					"no_copy": 1,
+					"read_only": 1,
+					"print_hide": 1,
+					"description": "Why the bill was put on hold. Required when holding -- a hold with no reason is the thing this feature exists to prevent.",
+					"translatable": 0,
+				},
+				{
+					"fieldname": "custom_held_by",
+					"fieldtype": "Link",
+					"options": "User",
+					"label": "Held By",
+					"insert_after": "custom_hold_reason",
+					"no_copy": 1,
+					"read_only": 1,
+					"print_hide": 1,
+					"translatable": 0,
+				},
+				{
+					"fieldname": "custom_held_at",
+					"fieldtype": "Datetime",
+					"label": "Held At",
+					"insert_after": "custom_held_by",
+					"no_copy": 1,
+					"read_only": 1,
+					"print_hide": 1,
+					"translatable": 0,
+				},
+				{
+					# The portion of this bill deliberately left on the customer's
+					# account (2026-08-24). Denormalised so no report has to infer it
+					# from grand_total - paid_amount, which would also catch bills
+					# that are short for unrelated reasons.
+					"fieldname": "custom_on_account_amount",
+					"fieldtype": "Currency",
+					"label": "On Account Amount",
+					"insert_after": "custom_held_at",
+					"no_copy": 1,
+					"read_only": 1,
+					"in_standard_filter": 1,
+					"description": "How much of this bill was put on the customer's account rather than collected. The balance is a receivable, settled later in the back office.",
+					"translatable": 0,
+				},
+				{
+					# Did the customer actually get told? (2026-08-25)
+					#
+					# The on-account SMS is a FRAUD CONTROL, not a courtesy: without it
+					# a waiter could put food on a real customer's account and nobody
+					# would know. So the outcome is recorded per bill, and this field is
+					# filterable in the desk -- on_account > 0 with sms_sent = 0 is
+					# exactly the list of charges nobody was told about.
+					"fieldname": "custom_on_account_sms_sent",
+					"fieldtype": "Check",
+					"label": "On Account SMS Sent",
+					"insert_after": "custom_on_account_amount",
+					"default": "0",
+					"no_copy": 1,
+					"read_only": 1,
+					"print_hide": 1,
+					"in_standard_filter": 1,
+					"description": "1 when the customer was texted about this on-account charge. Filter for on-account bills where this is 0 to find charges the customer was never told about.",
+					"translatable": 0,
+				},
+				{
 					"fieldname": "waiter",
 					"fieldtype": "Data",
 					"label": "Waiter",
@@ -664,6 +749,19 @@ def get_custom_fields():
 				"label": "Enable Returns",
 				"default": "0",
 				"description": "Master switch for the Return Orders feature on the Orders page. OFF by default - returns are hidden everywhere and the backend rejects return requests. Turn ON to allow returns (still subject to 'Restrict Returns to Captain').",
+			},
+			{
+				# Sell on account (2026-08-24). Master switch for putting a bill
+				# on a customer's account instead of taking payment. OFF by
+				# default. When ON, install.py also ticks ERPNext's own
+				# POS Profile.allow_partial_payment, without which a bill that is
+				# not fully tendered is rejected outright.
+				"fieldname": "custom_enable_on_account",
+				"fieldtype": "Check",
+				"insert_after": "custom_enable_returns",
+				"label": "Enable Sell On Account",
+				"default": "0",
+				"description": "Master switch for on-account (credit) sales. OFF by default. When ON, a cashier can leave part or all of a bill on a real customer's account instead of collecting it; the balance becomes a receivable settled later in the back office. Not related to the Credit Card payment method.",
 			},
 			# Per-invoice transfer hop cap (2026-06-05). How many times a
 			# single unpaid order may be transferred between cashiers at

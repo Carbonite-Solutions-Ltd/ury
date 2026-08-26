@@ -20,6 +20,7 @@ def after_install():
     _fix_sales_invoice_order_type_fetch()
     ensure_pos_settings_configured()
     _ensure_pos_warehouse_optional()
+    _sync_allow_partial_payment()
     _safe_ensure_role_permissions()
     _check_cups_dependency()
 
@@ -40,6 +41,7 @@ def after_migrate():
     _fix_sales_invoice_order_type_fetch()
     ensure_pos_settings_configured()
     _ensure_pos_warehouse_optional()
+    _sync_allow_partial_payment()
     _safe_ensure_role_permissions()
     _check_cups_dependency()
 
@@ -367,3 +369,47 @@ def _check_cups_dependency():
         + "=" * 72 + "\n",
         fg="cyan",
     )
+
+
+def _sync_allow_partial_payment():
+	"""Tick ERPNext's POS Profile.allow_partial_payment for profiles that
+	have opted into on-account selling (2026-08-24).
+
+	Without that ERPNext field, `validate_full_payment`
+	(erpnext/.../sales_invoice.py) throws "Partial Payment in POS
+	Transactions are not allowed" and a bill that is not fully tendered is
+	rejected outright — so the whole feature is dead in the water.
+
+	Deliberately ONE-WAY: it is only ever set to 1, and only for profiles
+	whose `custom_enable_on_account` is on. Turning URY's switch off does
+	not clear it, because a site may have ticked ERPNext's field for its
+	own reasons and silently un-ticking someone's accounting setting is
+	not ours to do. It is logged whenever it changes so the flip is never
+	invisible.
+	"""
+	if not frappe.db.has_column("POS Profile", "custom_enable_on_account"):
+		return
+	try:
+		rows = frappe.get_all(
+			"POS Profile",
+			filters={"custom_enable_on_account": 1},
+			fields=["name", "allow_partial_payment"],
+		)
+	except Exception:
+		return
+
+	changed = []
+	for row in rows:
+		if not row.get("allow_partial_payment"):
+			frappe.db.set_value(
+				"POS Profile", row["name"], "allow_partial_payment", 1
+			)
+			changed.append(row["name"])
+
+	if changed:
+		frappe.db.commit()
+		click.secho(
+			"[URY] Sell-on-account is enabled, so ERPNext's 'Allow Partial "
+			"Payment' was turned on for: " + ", ".join(changed),
+			fg="yellow",
+		)

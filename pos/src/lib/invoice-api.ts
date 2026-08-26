@@ -80,6 +80,12 @@ export interface POSInvoice {
    *  (Int on Sales Invoice — the legacy mismatch), so it can arrive
    *  as a string. */
   no_of_pax?: number | string | null;
+  /** Parked bill (2026-08-24). Held bills are hidden from Draft /
+   *  Unbilled / Pending KOTs and appear under the Held filter instead. */
+  custom_on_hold?: number;
+  custom_hold_reason?: string | null;
+  custom_held_by?: string | null;
+  custom_held_at?: string | null;
   /** Reason captured when the order was cancelled (Cancelled filter). */
   cancel_reason?: string | null;
 }
