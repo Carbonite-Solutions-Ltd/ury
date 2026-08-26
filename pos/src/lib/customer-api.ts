@@ -90,3 +90,31 @@ export async function searchCustomers(search: string, limit = 5) {
     throw error;
   }
 }
+/**
+ * Customers a bill can be put on an account for (2026-08-26).
+ *
+ * Distinct from `searchCustomers`, which goes through global search and
+ * returns HTML that has to be scraped. This returns the mobile number
+ * with each row, because an on-account sale is REFUSED for a customer
+ * without one — showing it up front stops the cashier picking someone
+ * only to be rejected a click later. The till's own walk-in customer is
+ * excluded server-side.
+ */
+export interface AccountCustomer {
+  name: string;
+  customer_name: string | null;
+  mobile: string | null;
+}
+
+export async function searchAccountCustomers(
+  query: string,
+  posProfile: string
+): Promise<AccountCustomer[]> {
+  const res = await call.get<{
+    message: { customers: AccountCustomer[]; walk_in: string | null };
+  }>('ury.ury_pos.api.search_account_customers', {
+    query: query || '',
+    pos_profile: posProfile,
+  });
+  return res.message?.customers ?? [];
+}

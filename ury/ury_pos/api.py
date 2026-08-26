@@ -10439,3 +10439,54 @@ def get_held_order_count():
 		as_dict=True,
 	)
 	return {"count": int(row[0]["c"]) if row else 0}
+
+
+@frappe.whitelist()
+def search_account_customers(query=None, pos_profile=None, limit=10):
+	"""Customers a bill can be put on account for (2026-08-26).
+
+	Feeds the picker inside the Payment dialog's On Account tab, so a
+	cashier who picked the walk-in customer can correct it without
+	closing the dialog and starting the payment again.
+
+	Returns the mobile number with each row on purpose: an on-account
+	sale is REFUSED for a customer with no number (the alert text is the
+	fraud control), so showing that up front stops the cashier picking
+	someone only to be rejected a click later.
+
+	The till's own walk-in customer is excluded outright — a balance owed
+	by "Cash Customer" is owed by nobody.
+	"""
+	walk_in = None
+	if pos_profile:
+		walk_in = frappe.db.get_value("POS Profile", pos_profile, "customer")
+
+	conditions = ["c.disabled = 0"]
+	params = {"limit": int(limit or 10)}
+	if walk_in:
+		conditions.append("c.name != %(walk_in)s")
+		params["walk_in"] = walk_in
+
+	query = (query or "").strip()
+	if query:
+		conditions.append(
+			"(c.name LIKE %(q)s OR c.customer_name LIKE %(q)s"
+			" OR c.mobile_number LIKE %(q)s OR c.mobile_no LIKE %(q)s)"
+		)
+		params["q"] = f"%{query}%"
+
+	rows = frappe.db.sql(
+		f"""
+		SELECT c.name, c.customer_name,
+		       COALESCE(NULLIF(c.mobile_number, ''), c.mobile_no) AS mobile
+		FROM `tabCustomer` c
+		WHERE {" AND ".join(conditions)}
+		ORDER BY c.modified DESC
+		LIMIT %(limit)s
+		""",
+		params,
+		as_dict=True,
+	)
+	for r in rows:
+		r["mobile"] = (r.get("mobile") or "").strip() or None
+	return {"customers": rows, "walk_in": walk_in}
