@@ -111,5 +111,22 @@ export interface SyncOrderRequest {
 }
 
 export const syncOrder = async (data: SyncOrderRequest) => {
-  return call.post( 'ury.ury.doctype.ury_order.ury_order.sync_order',data);
+  const res = await call.post(
+    'ury.ury.doctype.ury_order.ury_order.sync_order',
+    data
+  );
+  // `sync_order` used to refuse an edit by returning {status: "Failure"}
+  // instead of raising. The caller discarded the response and toasted
+  // "Order updated successfully" while nothing had been saved — the worst
+  // possible failure mode, because the cashier walks away believing the
+  // kitchen has the order. The backend now throws instead, but keep this
+  // as a backstop so a soft-failure shape can never silently pass again.
+  const payload = (res as { message?: { status?: string } } | undefined)
+    ?.message;
+  if (payload?.status === 'Failure') {
+    throw new Error(
+      'The order was not saved. Reload the page and try again.'
+    );
+  }
+  return res;
 }; 

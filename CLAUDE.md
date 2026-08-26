@@ -454,6 +454,27 @@ Three unrelated reports, three different causes.
 - **NOT seen in a browser** — the dev web server isn't running, so the tab strip and the compacted buttons have not been eyeballed at tablet width.
 - **Frontend-only → redeploy the `pos/` build. No migrate, no restart.**
 
+### 2026-08-26 — "Order updated successfully" while the edit was silently discarded
+- **Symptom (user):** a waiter added items to an existing table order, the POS said **"Order updated successfully"**, and nothing changed. *"it happened to me even the administrator too."*
+- **⚠ TWO BUGS STACKED, and the second is what made the first invisible.**
+- **Bug 1 — an empty `role_allowed_for_billing` meant NOBODY may bill.** `sync_order` computed `billing_user = any(role.role in user_role for role in posprofile.role_allowed_for_billing)`. That table is an **opt-in restriction**, and it is **empty on this client's profile** — so `any(...)` over an empty list is `False` for **every user, Administrator included**. Two guards that were written to restrict only *non-billing* users were therefore armed against everyone. Verified on the live data: `_is_billing_user` was False for both the waiter and Administrator.
+  - **This is the exact trap already fixed on the frontend on 2026-04-08** (`checkAccess` treated an empty allowed-roles list as deny-all). Same shape, other side of the wire. Fixed with `_is_billing_user()`: Administrator / System Manager always pass, an **empty table means "no restriction configured"**, otherwise intersect.
+- **Bug 2 — the refusal was silent, and the POS reported success.** All three guards did `frappe.msgprint(...)` then **`return {"status": "Failure"}`**. `syncOrder` in [order-api.ts](pos/src/lib/order-api.ts) discarded the response entirely (`await syncOrder(orderData);`) and [OrderPanel.tsx](pos/src/components/OrderPanel.tsx) then toasted `'Order updated successfully'` unconditionally. **The worst possible failure mode — the cashier walks away believing the kitchen has the order.**
+  - All three now **`frappe.throw`** with a branded title and an actionable sentence, so the existing `extractFrappeServerError` pipeline surfaces them. **Zero `return {"status": "Failure"}` remain in the file.**
+  - `syncOrder` also gained a **backstop** that rejects on a `Failure` status, so a soft-failure shape can never silently pass again.
+- **⚠ The comment at the third guard already described this exact bug being fixed once before** (a `{"status": "Failure"}` that "showed Order updated successfully while the items never persisted"). It was fixed for *one* branch; the other two kept the pattern. **Rule: a whitelisted method must never report refusal by return value — throw.**
+- **Reproduced and verified on dev against the client's real drafts**, before and after:
+  | Scenario | Before | After |
+  |---|---|---|
+  | Update **with** `last_invoice` | persisted ✅ | persisted ✅ |
+  | Update **without** `last_invoice` (waiter *and* Administrator) | **silently discarded** | persisted ✅ |
+  | Update an **already-printed** order (even Administrator) | **silently discarded** | persisted ✅ |
+- **The restriction still works when a site actually configures it** — with `role_allowed_for_billing = ['URY Cashier']` temporarily set, `_is_billing_user` returned False for the waiter and True for Administrator; the waiter was refused on both the printed-order and occupied-table paths **with a visible thrown error**, and Administrator went through. Profile restored to `[]` afterwards.
+- **All dev mutations reversed** — `M-0230` back to its exact original four lines, profile restored, and the test opening entry `POS-OPE-2026-00006` cancelled and deleted (0 open entries). `py_compile` clean; `tsc` 0 errors; `eslint` unchanged against baseline; `yarn build` clean.
+- **NOT seen in a browser** — the dev web server isn't running.
+- **Deploy: `bench restart` (changed `sync_order`) + redeploy the `pos/` build. No migrate.**
+- **Config note for the client:** `role_allowed_for_billing` being empty is now harmless, but if they ever populate it, only listed roles (plus Administrator / System Manager) may edit a printed bill or claim an occupied table.
+
 ### 2026-08-26 — Split by Item: capped at 6 bills, and a column-per-bill grid nobody could use
 - **Ask (user, urgent):** *"some people ate and they need a bill and they are 14 and the payment the item split only gives a maximum of 6... we have to make the ui more efficient and simple to use."*
 - **The cap was purely a frontend number.** `_plan_item_split` ([ury_order.py](ury/ury/doctype/ury_order/ury_order.py)) just iterates the bill list — it has never had a limit, and `split_invoice_by_item` is thin glue over it. The whole refusal was `if (bills.length >= 6) return;` in [ItemSplitFlow.tsx](pos/src/components/ItemSplitFlow.tsx). Raised to **30** (`MAX_BILLS`) — proven with a 30-bill planner test.

@@ -358,6 +358,28 @@ def _apply_pos_profile_cost_center(invoice, pos_profile_name):
         invoice.write_off_cost_center = row.write_off_cost_center
 
 
+def _is_billing_user(pos_profile_doc):
+    """Is the session user allowed to bill on this POS Profile?
+
+    ``role_allowed_for_billing`` is an OPT-IN restriction, so an EMPTY table
+    means "no restriction configured", NOT "nobody may bill". The previous
+    `any(...)` over an empty list evaluated to False for *every* user —
+    Administrator included — which silently armed the two guards below
+    against everyone. On a profile with no billing roles set (the default),
+    that made an already-printed order impossible to edit and reported
+    success while discarding the change. See CLAUDE.md "Fixes log"
+    2026-08-26. This is the same empty-list-means-deny-all trap already
+    fixed on the frontend's `checkAccess` on 2026-04-08.
+    """
+    roles = frappe.get_roles()
+    if frappe.session.user == "Administrator" or "System Manager" in roles:
+        return True
+    allowed = [r.role for r in (pos_profile_doc.role_allowed_for_billing or []) if r.role]
+    if not allowed:
+        return True
+    return any(role in roles for role in allowed)
+
+
 @frappe.whitelist()
 def sync_order(
     items,
@@ -412,12 +434,8 @@ def sync_order(
 
     _assert_not_pending_cancellation(invoice)
 
-    user_role = frappe.get_roles()
     posprofile = frappe.get_doc("POS Profile", pos_profile)
-
-    billing_user = any(
-        role.role in user_role for role in posprofile.role_allowed_for_billing
-    )
+    billing_user = _is_billing_user(posprofile)
 
     # Check if the last invoice was already billed
     if (
@@ -425,12 +443,18 @@ def sync_order(
         and frappe.db.get_value("POS Invoice", last_invoice, "invoice_printed") == 1
         and (not billing_user)
     ):
-        frappe.msgprint(
-            title="Invoice Already Billed",
-            indicator="red",
-            msg=("This order has already been billed. Please reload the page."),
+        # THROW, never msgprint+return. A `{"status": "Failure"}` return is
+        # indistinguishable from success to the caller — the POS discarded it
+        # and toasted "Order updated successfully" while the edit was dropped
+        # on the floor. See CLAUDE.md "Fixes log" 2026-08-26.
+        frappe.throw(
+            _(
+                "This order's bill has already been printed, so it can no "
+                "longer be changed here. Ask a cashier to reprint it, or "
+                "reload the page to see the current order."
+            ),
+            title=_("Invoice Already Billed"),
         )
-        return {"status": "Failure"}
 
     invoice = get_order_invoice(table, invoice,order_type)
 
@@ -457,14 +481,13 @@ def sync_order(
                     lastModifiedTime, "%Y-%m-%d %H:%M:%S"
                 )
         if lastModifiedTime != last_modified_time:
-            frappe.msgprint(
-                title="Order has been modified",
-                indicator="red",
-                msg=(
-                    "This order has been modified. Please reload the page to retrieve the latest edits."
+            frappe.throw(
+                _(
+                    "Someone else changed this order while you had it open. "
+                    "Reload the page to pick up their edits, then try again."
                 ),
+                title=_("Order Has Been Modified"),
             )
-            return {"status": "Failure"}
     else:
         # Only block when this is a brand-new order (no last_invoice).
         # Updates to an existing draft (last_invoice set) must be
@@ -480,14 +503,13 @@ def sync_order(
             and invoice.invoice_printed == 0
             and not billing_user
         ):
-            frappe.msgprint(
-                title="Table occupied ",
-                indicator="red",
-                msg=("{0} is already occupied . Please refresh the page.").format(
-                    table
-                ),
+            frappe.throw(
+                _(
+                    "{0} already has an open order. Reload the page and open "
+                    "that order to add to it."
+                ).format(table),
+                title=_("Table Occupied"),
             )
-            return {"status": "Failure"}
 
     if not customer:
         frappe.throw("Please enter valid customer details")
