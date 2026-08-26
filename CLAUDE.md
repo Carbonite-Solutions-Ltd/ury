@@ -393,6 +393,23 @@ Three unrelated reports, three different causes.
 - **Verified overall:** `py_compile` clean; `tsc` 0 errors; `eslint` shows the **same 12 problems before and after** across all eight touched files (checked by stashing); `yarn build` clean. All dev mutations reversed.
 - **Deploy: `bench restart` (changed `reinstate_kot` + `getTable`) + redeploy the `pos/` build. No migrate** — no schema change; `no_of_pax` and `custom_waiter` already exist.
 
+### 2026-08-26 (round 3) — The shift close was blocked by on-account bills (NOT by email)
+- **Symptom (user):** "when I was ending the shift it didn't go through because it wants to send an email and I have not set an email yet."
+- **It was not email.** `_has_outgoing_email_account()` already returns False on that site, so the close already mutes emails. The `frappe.sendmail` failures in the Error Log come from **`gh_erp` auto-replenishment** (`notify_purchase_users`, `now=True`), and they are caught and logged there, so they cannot roll a close back. Reproduced the close on dev and got the real error: **"At least one mode of payment is required for POS invoice."**
+- **⚠ THE ROOT CAUSE IS MY OWN ON-ACCOUNT DESIGN, and it only ever surfaces at shift close.** The sequence:
+  1. `make_invoice` appends an inert zero-amount payment row so a 100%-on-account bill satisfies `validate_mode_of_payment`.
+  2. **`POSInvoice.on_submit` → `clear_unallocated_mode_of_payments` DELETES it** — `frappe.qb...delete().where(sip.amount == 0)`, straight out of the database.
+  3. The bill submits happily with **zero** payment rows.
+  4. At consolidation the customer's Sales Invoice inherits no payments and `SalesInvoice.validate_pos_paid_amount` (`sales_invoice.py:567`) throws — **so the cashier cannot close the day at all**, and the message names "POS invoice", pointing at the wrong document.
+- **⚠ AND THE PART THAT MADE IT LOOK UNFIXABLE — `frappe.get_cached_doc`.** Re-inserting the row with `db_insert` put it in the database, and `frappe.get_doc` returned it correctly — but consolidation reads the invoice with **`frappe.get_cached_doc`** (`pos_invoice_merge_log.py:117`), and `db_insert` bypasses the document lifecycle so the **redis document cache was never invalidated**. The merge kept reading the pre-submit copy with no payments and threw again. Three fixes were tried and "failed" before instrumenting `frappe.throw` to print the stack, which showed the throw was on the **consolidated Sales Invoice**, not the POS Invoice — and a probe on `validate_pos_paid_amount` showed `customer='Mana' payments=0` while Cash Customer's had 1. **`frappe.clear_document_cache` after the insert is the fix.**
+- **Two layers, so this cannot strand a shift again:**
+  - `ensure_on_account_payment_row(invoice, profile)` runs right after submit, restoring the row (with the parent's `docstatus`) and clearing the cache.
+  - `_repair_missing_payment_rows(pos_profile)` runs at the **start of every close** and repairs any unconsolidated invoice missing its row. **Scoped to the whole profile, not just this shift** — an on-account bill from an EARLIER shift is still unconsolidated and still gets swept in, and that is exactly what happened here: an 888.00 bill from a previous shift blocked today's close. Invoices created before this fix heal themselves on the next close attempt rather than needing a patch.
+- **The row stays inert:** `make_pos_gl_entries` skips rows with a falsy `base_amount`, so it posts nothing.
+- **VERIFIED END TO END on dev with the client's restored data — the first proof of the whole on-account chain through consolidation.** The close succeeded and produced **`ACC-SINV-2026-00004` for customer Mana: grand_total 100.01, paid 0.00, outstanding 100.01, status Unpaid** — her receivable on her OWN consolidated invoice, separate from `ACC-SINV-2026-00003` (Cash Customer, 349.99, Paid). Opening entry `POS-OPE-2026-00003` is now `Closed`. `py_compile` clean.
+- **NOTE — dev state deliberately left changed:** that shift is genuinely closed and those consolidated invoices exist. Reversing it would have undone the very thing being fixed.
+- **Deploy: `bench restart`. No migrate, no frontend rebuild.**
+
 ### 2026-08-26 (round 2) — Change the on-account customer inside the Payment dialog
 - **Ask (user):** let the cashier change the customer from the dialog, and keep blocking the walk-in — "warn and let him change it".
 - **The refusal was a dead end.** Picking the walk-in and only finding out at the Payment step meant closing the dialog, changing the customer in the cart, and starting the payment over. The warning now comes with a **customer picker right underneath it**, and there is a **Change customer** link on the confirmed panel so a valid selection can be corrected too.

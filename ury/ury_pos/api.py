@@ -2531,6 +2531,15 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
     # nested consolidation chain throws something opaque. Each check
     # throws with a clear title + message naming the exact document
     # that's misconfigured. See CLAUDE.md "Fixes log" 2026-04-11.
+    # Self-heal any on-account bill whose inert zero payment row was
+    # stripped by ERPNext's clear_unallocated_mode_of_payments on submit
+    # (2026-08-26). Without a row, consolidation re-saves the invoice,
+    # validate throws "At least one mode of payment is required", and the
+    # cashier cannot close the day at all. Invoices created before this
+    # fix shipped are already in that state, so repairing here rather than
+    # in a patch means the next close unblocks itself.
+    _repair_missing_payment_rows(opening_doc.pos_profile)
+
     _validate_close_preflight(paid, opening_doc.company)
     _validate_item_warehouses(paid, opening_doc.pos_profile)
 
@@ -10490,3 +10499,55 @@ def search_account_customers(query=None, pos_profile=None, limit=10):
 	for r in rows:
 		r["mobile"] = (r.get("mobile") or "").strip() or None
 	return {"customers": rows, "walk_in": walk_in}
+
+
+def _repair_missing_payment_rows(pos_profile):
+	"""Give every payment-row-less POS Invoice its inert zero row back.
+
+	See `ensure_on_account_payment_row` in ury_order.py for why the row
+	goes missing. Repairing at close time (rather than in a one-off
+	patch) means a bill rung before the fix shipped heals itself the next
+	time someone tries to close, instead of stranding the shift.
+
+	⚠ Scoped to every UNCONSOLIDATED submitted invoice on the profile,
+	deliberately NOT just this shift's. An on-account bill from an
+	earlier shift is still unconsolidated and still gets swept into
+	consolidation, so a bill rung days ago can block today's close —
+	which is exactly what happened on 2026-08-26 with an 888.00 bill from
+	a previous shift.
+	"""
+	from ury.ury.doctype.ury_order.ury_order import ensure_on_account_payment_row
+
+	candidates = frappe.db.sql(
+		"""
+		SELECT pi.name
+		FROM `tabPOS Invoice` pi
+		WHERE pi.pos_profile = %(profile)s
+		  AND pi.docstatus = 1
+		  AND (pi.consolidated_invoice IS NULL OR pi.consolidated_invoice = '')
+		  AND NOT EXISTS (
+		    SELECT 1 FROM `tabSales Invoice Payment` sip
+		    WHERE sip.parent = pi.name AND sip.parenttype = 'POS Invoice'
+		  )
+		""",
+		{"profile": pos_profile},
+		as_dict=True,
+	)
+
+	repaired = []
+	for row in candidates:
+		try:
+			if ensure_on_account_payment_row(row["name"], pos_profile):
+				repaired.append(row["name"])
+		except Exception:
+			frappe.log_error(
+				frappe.get_traceback(),
+				f"URY: could not repair the payment row on {row['name']}",
+			)
+	if repaired:
+		frappe.db.commit()
+		frappe.log_error(
+			"Re-added the inert zero payment row to: " + ", ".join(repaired),
+			"URY: repaired on-account invoices before closing",
+		)
+	return repaired

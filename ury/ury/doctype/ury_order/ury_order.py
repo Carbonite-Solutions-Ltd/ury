@@ -1083,6 +1083,74 @@ def _send_on_account_sms(invoice_doc, customer, amount):
     return True
 
 
+def ensure_on_account_payment_row(invoice_name, pos_profile=None):
+    """Put back the inert zero-amount payment row after submit.
+
+    ⚠ WHY THIS EXISTS. ERPNext demands at least one payment row on a POS
+    Invoice (`validate_mode_of_payment`, pos_invoice.py) — but
+    `clear_unallocated_mode_of_payments`, which runs in `on_submit`,
+    DELETES every row with amount 0 straight from the database:
+
+        frappe.qb.from_(sip).delete().where(sip.parent == self.name)
+                                     .where(sip.amount == 0).run()
+
+    So a 100%-on-account bill submits happily and is then left with NO
+    payment rows. Nothing notices until the shift close, where
+    consolidation re-saves each POS Invoice, `validate` runs again, and
+    the whole close dies on "At least one mode of payment is required
+    for POS invoice." The bill is fine, the money is fine, and the
+    cashier simply cannot close the day.
+
+    Re-inserting the row directly (bypassing the document lifecycle, so
+    `clear_unallocated_mode_of_payments` does not fire again) satisfies
+    every later validation. It stays inert: `make_pos_gl_entries` skips
+    rows with a falsy `base_amount`, so it posts nothing. 2026-08-26.
+    """
+    if frappe.db.exists(
+        "Sales Invoice Payment",
+        {"parent": invoice_name, "parenttype": "POS Invoice"},
+    ):
+        return False
+
+    if not pos_profile:
+        pos_profile = frappe.db.get_value("POS Invoice", invoice_name, "pos_profile")
+    mode = _default_payment_mode(pos_profile)
+    company = frappe.db.get_value("POS Invoice", invoice_name, "company")
+    account = frappe.db.get_value(
+        "Mode of Payment Account",
+        {"parent": mode, "company": company},
+        "default_account",
+    )
+
+    row = frappe.new_doc("Sales Invoice Payment")
+    row.parent = invoice_name
+    row.parenttype = "POS Invoice"
+    row.parentfield = "payments"
+    row.idx = 1
+    row.mode_of_payment = mode
+    row.account = account
+    row.amount = 0
+    row.base_amount = 0
+    # The parent is already SUBMITTED, so the child must be too. A row
+    # left at docstatus 0 under a submitted parent is malformed, and it
+    # is silently skipped when the merge log re-reads the invoice during
+    # consolidation — which put the consolidated Sales Invoice back at
+    # zero payment rows and threw all over again.
+    row.docstatus = frappe.db.get_value("POS Invoice", invoice_name, "docstatus") or 0
+    row.db_insert()
+
+    # ⚠ MUST invalidate the document cache. `db_insert` bypasses the
+    # document lifecycle, so the cached copy of this invoice still has no
+    # payment rows — and consolidation reads it with
+    # `frappe.get_cached_doc` (pos_invoice_merge_log.py:117), not from the
+    # database. Without this the row is genuinely in the DB, loads fine
+    # via get_doc, and the merge still builds a consolidated Sales Invoice
+    # with zero payments that throws on submit. That is exactly what made
+    # this look unfixable on 2026-08-26.
+    frappe.clear_document_cache("POS Invoice", invoice_name)
+    return True
+
+
 def _assert_can_sell_on_account(invoice, pos_profile, customer, amount):
     """Guard the on-account path (2026-08-24).
 
@@ -1282,6 +1350,9 @@ def make_invoice(customer, payments, cashier, pos_profile, owner, additionalDisc
     # best-effort and its outcome is recorded, so a gateway outage costs
     # the alert but not the sale -- see _send_on_account_sms.
     if on_account:
+        # ERPNext strips the inert zero row during on_submit; put it back
+        # or the shift close dies on this invoice. See the docstring.
+        ensure_on_account_payment_row(invoice.name, pos_profile)
         sent = _send_on_account_sms(invoice, customer, on_account)
         frappe.db.set_value(
             "POS Invoice",
