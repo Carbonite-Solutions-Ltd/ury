@@ -100,6 +100,12 @@ READ_ONLY_DOCTYPES = [
 # perm flags appropriate for "regular cashier operation".
 WRITE_DOCTYPES = [
     (
+        # The barman opens/closes his own bar session from the KDS, so every
+        # URY role that can sign in to a KDS screen needs to create one.
+        "URY Bar Session",
+        {"read": 1, "write": 1, "create": 1, "select": 1, "print": 1, "report": 1},
+    ),
+    (
         "Customer",
         {"read": 1, "write": 1, "create": 1, "select": 1, "report": 1},
     ),
