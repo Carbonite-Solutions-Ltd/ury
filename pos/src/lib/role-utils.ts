@@ -219,6 +219,27 @@ export const isWaiterOnly = (user: User | null): boolean => {
 };
 
 /**
+ * Kitchen / bar staff with no POS job (2026-09-18).
+ *
+ * True when the user has the URY Production User role and none of the POS
+ * or elevated roles. They work only the kitchen screen (/Mosaic), so App
+ * sends them there instead of the terminal setup. A user who is ALSO a
+ * cashier or waiter keeps the POS.
+ */
+export const isProductionOnly = (roles: string[] | null | undefined): boolean => {
+  if (!roles || !roles.includes('URY Production User')) return false;
+  const posRoles = [
+    'Administrator',
+    'System Manager',
+    'URY Manager',
+    'URY Captain',
+    'URY Cashier',
+    'URY Waiter',
+  ];
+  return !roles.some((role) => posRoles.includes(role));
+};
+
+/**
  * Who may park a bill (2026-08-24).
  *
  * Everyone who bills — cashier, captain, manager, admin — but NOT a waiter.

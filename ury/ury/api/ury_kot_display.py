@@ -3,6 +3,11 @@ import json
 import frappe
 from frappe import _
 from ury.ury_pos.api import getBranch, _get_self_waiter_for_user
+from ury.ury.api.ury_kds_access import (
+    kds_branch,
+    require_unit_access,
+    unit_access_denied,
+)
 from frappe.utils import get_datetime
 
 
@@ -490,9 +495,25 @@ def kot_list(target=None):
     If the target is not valid for the active mode, returns
     ``{"error": "...", "KOT": []}`` so the frontend can render a
     clear "not found" message instead of a blank board.
+
+    A production unit with users on its Screen Access table only opens for
+    those users (plus captains/managers/admins); anyone else gets
+    ``access_denied: 1`` so the screen can offer the units they do have.
     """
+    if unit_access_denied(target):
+        return {
+            "error": _(
+                "You don't have access to the {0} screen. Ask a manager to add "
+                "you to its Screen Access table."
+            ).format(target),
+            "access_denied": 1,
+            "KOT": [],
+        }
+
     today = frappe.utils.now()
-    branch = getBranch()
+    # A production unit carries its own branch, so a kitchen user doesn't
+    # need a URY User row on the Branch just to see their screen.
+    branch = kds_branch(target)
     pos_profile_name = frappe.db.get_value("POS Profile", {"branch": branch}, "name")
     kot_alert_time = frappe.db.get_value(
         "POS Profile", pos_profile_name, "custom_kot_warning_time"
@@ -718,8 +739,9 @@ def get_late_orders():
 
 @frappe.whitelist()
 def served_kot_list(production=None):
+    require_unit_access(production)
     today = frappe.utils.now()
-    branch = getBranch()
+    branch = kds_branch(production)
     kot_alert_time = frappe.db.get_value(
         "POS Profile", {"branch": branch}, "custom_kot_warning_time"
     )
@@ -860,7 +882,8 @@ def get_served_summary(production=None, date=None):
     to avoid double/over-counting. `URY KOT Items.quantity` is a Data string,
     so it's CAST to a number.
     """
-    branch = getBranch()
+    require_unit_access(production)
+    branch = kds_branch(production)
     if not date:
         date = frappe.utils.nowdate()
 

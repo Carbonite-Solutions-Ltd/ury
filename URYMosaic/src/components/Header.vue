@@ -4,9 +4,38 @@
   <header
     class="bg-white px-3 py-1.5 flex items-center justify-between gap-3 shadow-sm"
   >
-    <img :src="imagePath" alt="Logo" class="w-24 h-auto shrink-0" />
+    <div class="flex items-center gap-2 min-w-0">
+      <img :src="imagePath" alt="Logo" class="w-24 h-auto shrink-0" />
+      <!-- Which screen this is, and a way to move to another one when the
+           user has more than one (2026-09-18). -->
+      <button
+        v-if="unitLabel && canSwitch"
+        type="button"
+        class="flex items-center gap-1 min-w-0 rounded-md border border-gray-300 px-2 py-1 text-sm font-semibold text-gray-800 hover:bg-gray-100"
+        title="Switch to another screen"
+        @click="$emit('switch')"
+      >
+        <span class="truncate max-w-[10rem]">{{ unitLabel }}</span>
+        <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M7 16l-4-4 4-4M3 12h14M17 8l4 4-4 4"
+          />
+        </svg>
+        <span class="hidden md:inline text-gray-500 font-normal">Switch</span>
+      </button>
+      <span
+        v-else-if="unitLabel"
+        class="truncate max-w-[10rem] text-sm font-semibold text-gray-800"
+      >
+        {{ unitLabel }}
+      </span>
+    </div>
 
-    <div class="flex items-center gap-1 rounded-full bg-gray-100 p-1">
+    <div v-if="!pickerMode" class="flex items-center gap-1 rounded-full bg-gray-100 p-1">
       <button
         type="button"
         @click="$emit('set-view', 'active')"
@@ -37,6 +66,7 @@
          centered in the justify-between header. -->
     <div class="flex items-center gap-1 shrink-0">
       <button
+        v-if="!pickerMode"
         class="hover:bg-slate-200 text-blue font-semibold px-3 py-1 rounded-md shrink-0"
         title="Refresh"
         @click="reloadKOT"
@@ -94,8 +124,23 @@ export default {
       type: String,
       default: "active",
     },
+    /** Name of the screen being shown (production unit or department). */
+    unitLabel: {
+      type: String,
+      default: "",
+    },
+    /** True when the user has more than one screen to move between. */
+    canSwitch: {
+      type: Boolean,
+      default: false,
+    },
+    /** No board behind the header (picker / no-access screen). */
+    pickerMode: {
+      type: Boolean,
+      default: false,
+    },
   },
-  emits: ["set-view", "logout"],
+  emits: ["set-view", "logout", "switch"],
   data() {
     return {
       imagePath: uriMosaicImage,

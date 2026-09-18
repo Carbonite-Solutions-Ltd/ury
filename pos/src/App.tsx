@@ -33,7 +33,8 @@ import {
   getTerminals,
   TerminalConfig,
 } from './lib/terminal-api';
-import { getLoggedUser, logout } from './lib/auth-api';
+import { getLoggedUser, getUserRoles, logout } from './lib/auth-api';
+import { isProductionOnly } from './lib/role-utils';
 import {
   getBrowserPosition,
   getGeofenceConfig,
@@ -66,14 +67,25 @@ function App() {
   // screen. The redirect brings the user back to /pos after login.
   useEffect(() => {
     (async () => {
+      let guest = true;
       try {
         const u = await getLoggedUser();
-        setIsGuest(!u || u === 'Guest');
+        guest = !u || u === 'Guest';
       } catch {
-        setIsGuest(true);
-      } finally {
-        setAuthChecked(true);
+        guest = true;
       }
+      if (!guest) {
+        // Kitchen / bar staff have no POS: send them to their kitchen
+        // screen before any POS endpoint runs (2026-09-18). /Mosaic picks
+        // their unit, or shows a picker when they have several.
+        const { roles } = await getUserRoles();
+        if (isProductionOnly(roles)) {
+          window.location.replace('/Mosaic');
+          return;
+        }
+      }
+      setIsGuest(guest);
+      setAuthChecked(true);
     })();
   }, []);
 

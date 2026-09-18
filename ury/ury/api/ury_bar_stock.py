@@ -46,6 +46,8 @@ import frappe
 from frappe import _
 from frappe.utils import flt, now_datetime
 
+from ury.ury.api.ury_kds_access import require_unit_access
+
 from ury.ury.doctype.ury_order.ury_order import (
     _get_warehouse_tree,
     _pick_outlet_warehouse,
@@ -67,6 +69,7 @@ def _get_unit(production):
             _("Production unit {0} was not found.").format(production),
             title=_("Unit Not Found"),
         )
+    require_unit_access(production)
     return frappe.get_doc("URY Production Unit", production)
 
 

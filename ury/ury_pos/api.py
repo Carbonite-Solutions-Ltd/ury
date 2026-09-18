@@ -226,6 +226,14 @@ def getBranch():
         """
         branch_array = frappe.db.sql(sql_query, user, as_dict=True)
         if not branch_array:
+            # A kitchen user listed on a production unit's Screen Access
+            # table belongs to that unit's branch, with no URY User row
+            # needed (2026-09-18).
+            from ury.ury.api.ury_kds_access import branch_from_assigned_units
+
+            unit_branch = branch_from_assigned_units(user)
+            if unit_branch:
+                return unit_branch
             frappe.throw(
                 _(
                     "Your user is not linked to any Branch. "

@@ -2,7 +2,30 @@
   <!-- Single root on purpose: masonryLoading() uses this.$el.querySelector,
        and a multi-root (fragment) component would make $el a comment node. -->
   <div>
-    <Header :view-mode="viewMode" @set-view="onSetView" @logout="logout" />
+    <Header
+      :view-mode="viewMode"
+      :unit-label="boardActive ? production : ''"
+      :can-switch="canSwitchUnit"
+      :picker-mode="!boardActive"
+      @set-view="onSetView"
+      @logout="logout"
+      @switch="unitPickerMode = 'modal'"
+    />
+
+    <!-- Screen picker (2026-09-18): /Mosaic landing, the Switch button, and
+         the "not your screen" case. Only once the user's units are loaded,
+         so a signed-out visitor still gets the Not Permitted modal. -->
+    <UnitPicker
+      v-if="unitsLoaded && unitPickerMode"
+      :mode="unitPickerMode"
+      :units="myUnits"
+      :departments="myDepartments"
+      :current="production"
+      :full-name="myFullName"
+      @pick="openScreen"
+      @close="unitPickerMode = ''"
+      @logout="logout"
+    />
 
     <!-- mb-16 keeps the kitchen board clear of the bottom edge; the stock
          sheet sizes itself to the window instead, so it drops the margin
@@ -1007,6 +1030,7 @@ import { FrappeApp } from "frappe-js-sdk";
 import Masonry from "masonry-layout";
 import io from "socket.io-client";
 import Header from "./Header.vue";
+import UnitPicker from "./UnitPicker.vue";
 
 let host = window.location.hostname;
 let port = window.location.port;
@@ -1055,7 +1079,7 @@ initializeSocket(); // Initialize the socket after fetching the site name
 const frappe = new FrappeApp(url);
 export default {
   // inject: ["$auth", "$socket"],
-  components: { Header },
+  components: { Header, UnitPicker },
   data() {
     return {
       kot: [],
@@ -1127,6 +1151,15 @@ export default {
       statusMessage: "",
       daily_order_number:0,
       targetError: "",
+      // Screen access (2026-09-18). boardActive stays false on the /Mosaic
+      // picker and on a screen the user may not open, so nothing is
+      // fetched or subscribed behind the picker.
+      myUnits: [],
+      myDepartments: [],
+      myFullName: "",
+      unitsLoaded: false,
+      unitPickerMode: "",
+      boardActive: false,
       service_policy_time: 0,
       _tickHandle: null,
       _refreshHandle: null,
@@ -1193,6 +1226,13 @@ export default {
             })
             .then((result) => {
               const msg = result.message || {};
+              if (msg.access_denied) {
+                this.boardActive = false;
+                this.kot = [];
+                this.unitPickerMode = this.screenCount ? "denied" : "none";
+                resolve();
+                return;
+              }
               if (msg.error) {
                 this.targetError = msg.error;
                 this.kot = [];
@@ -2063,10 +2103,65 @@ export default {
         this.masonryLoading();
       });
     },
+    /** The screens this user may open, from their Screen Access rows. */
+    async loadMyUnits() {
+      const res = await this.call.get(
+        "ury.ury.api.ury_kds_access.get_my_production_units",
+        { current: this.production || "" }
+      );
+      const data = res.message || {};
+      this.myUnits = data.units || [];
+      this.myDepartments = data.departments || [];
+      this.myFullName = data.full_name || "";
+      this.unitsLoaded = true;
+      return data;
+    },
+    openScreen(name) {
+      if (!name) return;
+      window.location.href = "/Mosaic/" + encodeURIComponent(name);
+    },
+    /** Decide what this page shows. Resolves true to start the board.
+     *
+     *  /Mosaic (no screen): one screen -> go straight to it; several -> the
+     *  picker; none -> "not assigned". A screen the user isn't on -> the
+     *  picker with their own screens instead. */
+    async routeToScreen() {
+      let data;
+      try {
+        data = await this.loadMyUnits();
+      } catch (error) {
+        console.error(error);
+        if (!this.production) {
+          this.targetError = "Couldn't load your screens. Refresh to try again.";
+          return false;
+        }
+        // The board endpoints still enforce access; don't block on this.
+        return true;
+      }
+      const count = this.screenCount;
+      if (!this.production) {
+        if (count === 1) {
+          const only = this.myUnits.length
+            ? this.myUnits[0].name
+            : this.myDepartments[0];
+          window.location.replace("/Mosaic/" + encodeURIComponent(only));
+          return false;
+        }
+        this.unitPickerMode = count ? "page" : "none";
+        return false;
+      }
+      if (!data.current_allowed) {
+        this.unitPickerMode = count ? "denied" : "none";
+        return false;
+      }
+      return true;
+    },
     redirectToLogin() {
       var currentDomain = window.location.origin;
-      window.location.href =
-        currentDomain + "/login?redirect-to=Mosaic/" + this.production;
+      const target = this.production
+        ? "Mosaic/" + encodeURIComponent(this.production)
+        : "Mosaic";
+      window.location.href = currentDomain + "/login?redirect-to=" + target;
     },
     masonryLoading() {
       this.$nextTick(() => {
@@ -2103,6 +2198,7 @@ export default {
       this.isOnline = true;
       this.setStatusMessage("You are online");
       this.hideStatusMessageAfterDelay();
+      if (!this.boardActive) return;
       this.fetchKOT().then(() => {
         this.masonryLoading();
       });
@@ -2131,17 +2227,20 @@ export default {
     window.addEventListener("offline", this.handleOffline);
     window.addEventListener("resize", this.measureStockPanel);
     document.addEventListener("click", this.hideAudioAlertMessage);
-    const currentUrl = window.location.href;
-    const parts = currentUrl.split("/");
-    const production = parts[parts.length - 1];
-    const decodedProduction = decodeURIComponent(production);
-    this.production = decodedProduction;
+    // The screen is the last path segment: /Mosaic/<unit or department>.
+    // Plain /Mosaic (where a kitchen user lands after login) has none.
+    const parts = window.location.pathname.split("/").filter(Boolean);
+    const last = decodeURIComponent(parts[parts.length - 1] || "");
+    this.production = last.toLowerCase() === "mosaic" ? "" : last;
     const self = this;
     window.addEventListener("resize", this.masonryLoading());
     this.masonryLoading();
 
     this.auth()
-      .then(() => {
+      .then(() => this.routeToScreen())
+      .then((startBoard) => {
+        if (!startBoard) return;
+        self.boardActive = true;
         self.fetchBarState();
         self.fetchKOT().then(() => {
           if (this.audio_alert === 1) {
@@ -2216,6 +2315,7 @@ export default {
     // tickets already sitting on the board.
     this._refreshHandle = setInterval(() => {
       if (document.hidden) return; // don't poll a backgrounded screen
+      if (!this.boardActive) return; // picker / no-access screen
       this.fetchKOT()
         .then(() => this.masonryLoading())
         .catch(() => {
@@ -2258,6 +2358,17 @@ export default {
     },
   },
   computed: {
+    screenCount() {
+      return this.myUnits.length + this.myDepartments.length;
+    },
+    /** Offer Switch only when there is somewhere else to go. */
+    canSwitchUnit() {
+      if (!this.boardActive) return false;
+      const names = this.myUnits
+        .map((u) => u.name)
+        .concat(this.myDepartments);
+      return names.some((n) => n !== this.production);
+    },
     stockPageSize() {
       return this.stockRowsSetting === "fit"
         ? this.stockFitRows

@@ -222,6 +222,62 @@ Facts from that pack that affect URY code today:
 
 Running record of bugs fixed and non-obvious traps discovered. Add new entries at the top. Each entry should answer: what went wrong, why, where it was fixed, how it was verified.
 
+### 2026-09-18 — Kitchen staff role + per-unit Screen Access + screen picker
+- **Ask (user):** kitchen and bar staff had no role of their own, so they were being given **URY Cashier** just to open the KDS. The user wanted a proper production role, a table on each production unit listing who can use it, and a login flow: tagged on one unit → go straight to it; tagged on several → a page to pick one, plus a way to switch later.
+- **New role `URY Production User`** ("ExPOS Production User"). It has `desk_access=1`, because untargeted realtime publishes only reach System Users and the board's socket needs them. It has **`home_page = "Mosaic"`**, which is how the login lands on the KDS with no desk flash. Frappe's `get_home_page()` checks each role's `Role.home_page` first, so `/api/method/login` returns `home_page: "Mosaic"`.
+  - The role is created by `_ensure_role_exists(role, home_page=...)` in [permissions.py](ury/permissions.py) on every migrate, and also appended to [role.json](ury/fixtures/role.json) as text.
+  - The home page is set when the role is created, and afterwards only while it is still blank, so an admin who repoints it keeps their choice.
+  - **Deliberately NOT in `ROLES`.** That list carries the whole POS baseline (create POS Invoice and so on). The kitchen gets only `PRODUCTION_DOCTYPES`: read, select and report on URY KOT and URY Bar Session, and read and select on URY Production Unit.
+  - Why so little is needed: `kot_list` is the only permission-checked read (`frappe.get_list("URY KOT")`). Every other KDS action writes through `db.set_value` or `ignore_permissions`.
+- **New child doctype `URY Production Unit User`** (`user`, plus `full_name` fetched from the user). It sits on URY Production Unit as `users`, under a "Screen Access" section, with `modified` bumped so it re-imports.
+  - The unit controller drops blank and duplicate rows on save.
+- **The rules** live in [ury_kds_access.py](ury/ury/api/ury_kds_access.py) as pure functions (`can_open_unit`, `units_for_user`, `screen_groups`):
+  - **An EMPTY table means open to anyone signed in.** Every existing screen keeps working the day this ships; nothing locks until an admin lists users.
+  - A table with users is open to those users plus Administrator, System Manager, URY Manager and URY Captain.
+  - A user listed on some unit sees only their own units in the picker, not every open unit as well.
+- **Enforcement:**
+  - `kot_list` returns `access_denied: 1` rather than throwing, so the screen can offer the user's own units instead of a dead end.
+  - `served_kot_list`, `get_served_summary` and every bar-stock endpoint (through `_get_unit`) throw PermissionError.
+  - Department targets (Food, Drinks and so on) are never gated, because the table only exists on production units.
+- **Loosenings, per working rule 4:**
+  - `kot_list`, the served list and the summary now take the branch from the **unit itself** (`kds_branch(target)`) instead of the viewer's URY User row.
+  - `getBranch()` falls back to the branch of a unit the user is tagged on before throwing "Branch Not Linked".
+  - Together these mean a kitchen user needs **no URY User row on the Branch at all**, only a Screen Access row.
+- **`get_my_production_units(current)`** returns the picker list. It also returns department screens when any enabled POS Profile runs Menu Course mode, and hides the units when none run Production Unit mode.
+- **KDS frontend:**
+  - New [UnitPicker.vue](URYMosaic/src/components/UnitPicker.vue) with four modes: `page` (the `/Mosaic` landing), `modal` (Switch), `denied` (a unit that isn't theirs, offering their own units) and `none`.
+  - [kot.vue](URYMosaic/src/components/kot.vue) `routeToScreen()` runs after auth and before anything else:
+    - A single screen → `location.replace` straight to it.
+    - The board only starts when `boardActive` is true. The 30s poll and the online handler are gated on it, so nothing polls behind the picker.
+  - [Header.vue](URYMosaic/src/components/Header.vue) shows the current screen and a **Switch** button, but only when there is somewhere else to go.
+  - The production segment is now read from `location.pathname` (a query string used to leak into it). `/Mosaic` itself becomes `""`.
+  - `redirectToLogin` copes with an empty production, where it used to produce `redirect-to=Mosaic/Mosaic`.
+- **⚠ `kot.vue` has a global, unscoped `.bg-gray-100 { background-color: rgba(0,0,0,.2) }`** that overrides Tailwind across the whole KDS. It is why the old "Not Permitted" modal is a grey tint. The picker uses `bg-slate-100` to get round it. Don't "fix" the global rule casually, because other KDS pieces may rely on it.
+- **Other entry points:**
+  - A production-only user who reaches `/pos` is sent to `/Mosaic`. [App.tsx](pos/src/App.tsx) does this before any POS endpoint runs, using `isProductionOnly(roles)` from [role-utils.ts](pos/src/lib/role-utils.ts).
+  - The desk sends them to `/Mosaic` via [cashier_desk_redirect.js](ury/public/js/cashier_desk_redirect.js). That check runs before the cashier check, so a user who still has URY Cashier as well also lands on the kitchen, matching the login landing.
+  - The role was added to `URY_LOGIN_ROLES` and `URY_LOGIN_SEARCH_ROLES`, so kitchen staff can use the /pos PIN and fingerprint sign-in and can have PINs set.
+- **Verified:**
+  - **30/30 unit tests** (`bench --site <site> execute ury.ury.api.test_ury_kds_access.run_kds_access_tests`):
+    - pure rules;
+    - live: one-unit and two-unit users; duplicate rows dropped; current-unit checks; Administrator sees all;
+    - `kot_list` denies another unit but opens the user's own **with no URY User row**;
+    - the served and bar endpoints refuse another unit;
+    - the `getBranch` fallback.
+  - The bar-stock suite still passes, **26/26**.
+  - **Headless Chromium, through the real login form:**
+    - The one-unit user lands on `/Mosaic/MainKitchen` with no Switch button.
+    - `/Mosaic/Bar` shows "This screen isn't yours" and offers MainKitchen.
+    - `/pos` and `/app` both end on `/Mosaic/MainKitchen`.
+    - The two-unit user lands on the picker with Bar and MainKitchen. Picking Bar opens it, and Switch opens the modal with Bar marked "Open now".
+    - A guest still gets Not Permitted.
+    - 0 page errors.
+  - `tsc` clean. ESLint shows the same 2 pre-existing errors as before. Both frontends built. All test users and rows removed.
+- **Deploy:** `bench migrate` (new child doctype, table field, role and permissions), then `bench restart` (new whitelisted method and changed endpoints), then redeploy **both** the `URYMosaic/` and `pos/` builds, then `bench build --app ury` (desk JS changed).
+- **Config the client must do:**
+  - Give kitchen and bar staff the **ExPOS Production User** role and **remove URY Cashier** from them. A user with both still lands on the kitchen screen but keeps POS access.
+  - List each person on their unit's **Screen Access** table.
+
 ### 2026-09-18 — WHOLE SITE 500'd (`/pos` included) — and the cause was in `cs_hrms`, not URY
 - **Symptom:** `http://127.0.0.1:8003/pos` returned **500: Uncaught Exception** with `AttributeError: module 'frappe.boot' has no attribute 'get_user_pages_or_reports'`. It looked like a POS bug; it was not. `/app` 500'd too — **every request on the site was failing**.
 - **Cause:** [apps/cs_hrms/cs_hrms/perf.py](../cs_hrms/cs_hrms/perf.py) registers `patch_workspace_boot` as a **`before_request` hook** (cs_hrms/hooks.py), and it did `getattr(boot.get_user_pages_or_reports, ...)` — an **unguarded attribute access that runs on every single request**. `cs_hrms` is on branch `version-15` while this bench runs frappe 16.33, and in v16 that function is no longer a module-level function in `frappe.boot`: it moved to a classmethod on `frappe.desk.desk_views.DeskViews`. One missing attribute in a `before_request` hook = total outage.

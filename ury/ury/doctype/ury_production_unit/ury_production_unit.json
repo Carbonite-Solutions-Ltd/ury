@@ -14,6 +14,8 @@
   "branch",
   "warehouse",
   "item_groups",
+  "access_section",
+  "users",
   "reinstate_section",
   "enable_reinstate",
   "reinstate_window_hours",
@@ -68,6 +70,18 @@
    "options": "URY Production Item Groups"
   },
   {
+   "fieldname": "access_section",
+   "fieldtype": "Section Break",
+   "label": "Screen Access"
+  },
+  {
+   "description": "Who can open this unit's kitchen screen. Leave empty to let anyone signed in open it. A user listed on one unit goes straight to it after login; a user listed on several gets a picker and can switch between them. Captains, Managers and Administrators can open every unit.",
+   "fieldname": "users",
+   "fieldtype": "Table",
+   "label": "Users",
+   "options": "URY Production Unit User"
+  },
+  {
    "fieldname": "reinstate_section",
    "fieldtype": "Section Break",
    "label": "Served List / Reinstate"
@@ -115,7 +129,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-18 10:00:00.000000",
+ "modified": "2026-09-18 14:00:00.000000",
  "modified_by": "Administrator",
  "module": "URY",
  "name": "URY Production Unit",
