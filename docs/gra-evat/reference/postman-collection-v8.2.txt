@@ -1,0 +1,2099 @@
+GRA E-VAT API v8.2 — flattened text of the official Postman collection
+Source: https://documenter.getpostman.com/view/29809098/2sBXVeGCzK  (fetched 2026-09-17)
+Generated from postman-collection-v8.2.json in this folder. Do not edit by hand.
+
+####################################################################################################
+COLLECTION DESCRIPTION
+####################################################################################################
+This document (GRA E-VAT API Documentation or E-VAT API Documentation or VCIS/VSDC API Documentation) describes the API specification for the integration of Taxpayer systems to the Commissioner-General's Electronic Invoicing Systems (E-VAT).
+
+OVERVIEW
+The following specific requirements are for the systems to communicate with E-VAT VCIS, the Certified Invoicing System to be used together with a Virtual Sales Data Controller (VSDC).
+
+Data Flow Diagram
+
+AUTHENTICATION
+This API requires an Authentication in the Request Header
+Example: "security_key": "1234567890987UIEGRTEIIIWOWPPWOOW"
+
+The security key is a static value that will be expected across all endpoints that data is sent, whenever a request is made.
+
+DATA FORMAT
+E-VAT API Receives accepts payloads in any of the formats below:
+
+JSON
+
+XML
+
+DEPLOYMENT TYPE
+Taxpayers are allowed to choose between the cloud deployment and the On-Prem deployment.
+Cloud Deployment is where GRA hosts the software that stamps your E-VAT invoices
+On-Prem Deployment is where the taxpayer provides a server, either within their network (preferably) or a dedicated private cloud server.
+The EVAT Team recommends for taxpayers that issue huge number of invoices within a day to opt for the On-Prem Deployment
+
+ON-PREM DEPLOYMENT MINIMUM HARDWARE SPECIFICATION
+
+HDD: 500GB
+
+RAM: 8GB
+
+OS: Windows Server 2019 + / Windows 10 +
+
+LEVY MAPPING
+
+levyAmountA : NHIL 2.5 %
+
+levyAmountB: GETFL 2.5 %
+
+levyAmountC : COVID 1% (Applies to invoice dates before 1st January 2026)
+
+levyAmountD : CST 5%
+
+levyAmountE : TOURISM LEVY 1%
+
+EXCEL TEMPLATE OF TAX CALCULATION
+https://docs.google.com/spreadsheets/d/1PHctBuGkW6KG_O4id_1PYLPnirfC6ouo/edit?invite=CP_MgMsB&gid=262008697#gid=262008697
+
+STAGING ENVIRONMENT SECURITY KEYS
+{
+"security_key": " Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=",
+"reference": "CXX000000YY-001",
+}
+{
+"security_key": "xbPeYDaPFG7bqnNO7WThWRDrBhKggz+ls/6rV38zyA1iqe7dPg8Pc2EElmrUq+2v",
+"reference": "CXX000000YY-006",
+}
+{
+"security_key": "49BvCVhgjRxx3kbE4hiCLZrq8VKjKpKt0zfW1pJg9wClpcXOttM6cV83UtitMAx3",
+"reference": "CXX000000YY-007",
+}
+{
+"security_key": "Yqu34/kLbewAY1NCH3lKjUEaZFFNtoxpiLzKGI8JrcdrUmxO9ud8dZO2Nx/mQPAE",
+"reference": "CXX000000YY-008",
+
+}
+
+SAMPLE INVOICE
+
+Sample Invoice - ERP/A4:
+
+[IMAGE: https://content.pstmn.io/2c4e828a-22ec-411e-8ee0-ab34849d1f86/U2FtcGxlIGludm9pY2UucG5n]
+
+Sample Invoice - POS:
+
+[IMAGE: https://content.pstmn.io/36f82f30-62d8-4de4-88bc-019379a496e5/cG9zIHNhbXBsZS5wbmc=]
+
+CURRENCIES SUPPORTED
+
+https://docs.google.com/spreadsheets/d/1geCW7gk-LvHiAXQsigNDObDsFYCXS-pSGGBKQx78JkI/edit?usp=sharing
+
+TAG DESCRIPTION
+
+TAG NAME | 
+TAG VALUE EXAMPLE | 
+TAG DESCRIPTION | 
+LENGTH AND TYPE | 
+MANDATORY | 
+
+"currency" | 
+"GHS" | 
+Currency: GHS, USD, EUR or GBP | 
+VARCHAR(20) | 
+YES | 
+
+"exchangeRate" | 
+1.00 | 
+Current exchange rate: default 1 for GHS | 
+NUMERIC | 
+YES | 
+
+"invoiceNumber" | 
+"INV_26_001" | 
+Software unique transaction identifier | 
+VARCHAR(100) | 
+YES | 
+
+"totalLevy" | 
+30.00 | 
+Total levy amount (summation of levies a, b, c, d, e) | 
+NUMERIC | 
+YES | 
+
+"userName" | 
+"happy" | 
+User name | 
+VARCHAR(100) | 
+YES | 
+
+"flag" | 
+"INVOICE" | 
+This determines the type of transaction about to be sent. Examples: "INVOICE", "PURCHASE", "REFUND" (full cancellation), "PARTIAL_REFUND" (partial cancellation), "PURCHASE_RETURN", "REFUND_CANCELLATION". This is a case sensitive field. | 
+VARCHAR(20) | 
+YES | 
+
+"calculationType" | 
+"INCLUSIVE" | 
+"INCLUSIVE" or "EXCLUSIVE". Where unit price has tax embedded (INCLUSIVE) or tax not included (EXCLUSIVE). Case sensitive. | 
+VARCHAR(20) | 
+YES | 
+
+"totalVat" | 
+13.04 | 
+Total VAT of the invoice: Summation of 15% value for all taxable items | 
+NUMERIC | 
+YES | 
+
+"transactionDate" | 
+"2026-02-28" | 
+Invoice date (posted date is the one used) | 
+VARCHAR(50) | 
+YES | 
+
+"totalAmount" | 
+100.0 | 
+Total amount on the invoice. Strictly the summation of unit price × quantity regardless of calculation type. | 
+NUMERIC | 
+YES | 
+
+"voucherAmount" | 
+0.0 | 
+Voucher amount | 
+NUMERIC | 
+NO | 
+
+"totalExciseAmount" | 
+600 | 
+Total excise amount on the invoice | 
+NUMERIC | 
+YES if excise duty is applicable | 
+
+"businessPartnerName" | 
+"James Kofi" | 
+Customer / Supplier name | 
+VARCHAR(100) | 
+YES | 
+
+"businessPartnerTin" | 
+"C00000009055" | 
+Client's TIN or Ghana card number | 
+VARCHAR(15) | 
+YES | 
+
+"saleType" | 
+"NORMAL" | 
+"NORMAL" for general case, "EXPORT" for export invoice. Case sensitive. | 
+VARCHAR(20) | 
+YES | 
+
+"discountType" | 
+"GENERAL" | 
+"SELECTIVE" (discount on total amount, taxable) or "GENERAL" (discount per line, tax exempt). Case sensitive. | 
+VARCHAR(300) | 
+NO | 
+
+"discountAmount" | 
+0.0 | 
+Total discounted amount on invoice | 
+NUMERIC | 
+NO | 
+
+"groupReferenceId" | 
+"" | 
+Reference ID to group invoices together under one main identifier | 
+VARCHAR(50) | 
+NO | 
+
+"reference" | 
+"RF_INV_26_001" | 
+Refund ID for full or partial refunds. Identifies the refund transaction. | 
+VARCHAR(50) | 
+YES – For Refunds and Returns Only | 
+
+"itemCode" | 
+"TXC005918138" | 
+Item code: unique value identifying an item | 
+VARCHAR(50) | 
+YES | 
+
+"itemCategory" | 
+"" | 
+"" (standard 20%), "CST" (5% comms tax), "TRSM" (1% tourism), "EXM" (zero rated/exempt), "RNT" (rent), "EXC_PLASTIC" (plastic with excise duty). Case sensitive. | 
+VARCHAR(50) | 
+YES | 
+
+"expireDate" | 
+"" | 
+Expiry date of an item if applicable | 
+VARCHAR(45) | 
+NO | 
+
+"description" | 
+"Bowl" | 
+Name of the item | 
+VARCHAR(100) | 
+YES | 
+
+"quantity" | 
+10.0 | 
+Quantity of the item | 
+NUMERIC | 
+YES | 
+
+"levyAmountA" | 
+2.05 | 
+Levy amount on NHIL (2.5%) | 
+NUMERIC | 
+YES | 
+
+"levyAmountB" | 
+2.05 | 
+Levy amount on GETFUND (2.5%) | 
+NUMERIC | 
+YES | 
+
+"levyAmountC" | 
+0.8 | 
+Levy amount on COVID (1%) – Only for invoices created before 1st January 2026 | 
+NUMERIC | 
+YES | 
+
+"levyAmountD" | 
+0.0 | 
+Levy amount on CST (5%) | 
+NUMERIC | 
+YES | 
+
+"levyAmountE" | 
+0.0 | 
+Levy amount on tourism (1%) | 
+NUMERIC | 
+YES | 
+
+"discountAmount" | 
+0.0 | 
+Discount amount on item | 
+NUMERIC | 
+NO | 
+
+"exciseAmount" | 
+10 | 
+Excise duty amount on item | 
+NUMERIC | 
+(Not specified) | 
+
+"batchCode" | 
+"5MAKD1" | 
+Batch number if applicable | 
+VARCHAR(100) | 
+NO | 
+
+"unitPrice" | 
+10.0 | 
+Unit selling price of item (inclusive or exclusive of tax) | 
+NUMERIC | 
+YES | 
+
+SUCCESS RESPONSE DESCRIPTION:
+
+FIELD | 
+LABEL | 
+DESCRIPTION | 
+
+"distributor_tin" | 
+TIN | 
+TIN of Taxpayer issuing the invoice | 
+
+"num" | 
+Invoice Number | 
+ERP/PoS Invoice Number as sent to the VSDC | 
+
+"ysdcid" | 
+SDC ID | 
+The unique identifier of the SDC (Sales Data Controller) issuing the E-VAT Signature | 
+
+"ysdcrecnum" | 
+Receipt Number | 
+The Receipt Number issued by the SDC | 
+
+"ysdcintdata" | 
+Internal Data | 
+References the Internal Data of the Invoice | 
+
+"ysdcregsig" | 
+Signature | 
+Invoice Signature | 
+
+"ysdcmrc" | 
+MRC | 
+Machine Registration Code | 
+
+"ysdcmrctime" | 
+MRC Date & Time | 
+Date/Time invoice is received at the backend | 
+
+"ysdctime" | 
+Date & Time | 
+Date/Time invoice is stamped | 
+
+"flag" | 
+(empty) | 
+Type of Invoice | 
+
+"ysdcitems" | 
+Line-Item Count | 
+Number of Line-Items on the invoice | 
+
+"qr_code" | 
+URL link to be converted to QR Code Image | 
+The QR code must be clear and readable, with a minimum size of 2.5 cm × 2.5 cm. GRA may require a larger size in some cases. | 
+
+"status" | 
+(empty) | 
+Status of invoice request |
+
+####################################################################################################
+COLLECTION VARIABLES
+####################################################################################################
+Host = https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer
+security_key = Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+Company_Reference = CXX000000YY-001
+VSDC_ID = EV-260623-001
+Vault_Host = *******
+Company_Tin = CXX000000YY
+Branch_Code = 001
+Inventory_Base_Url = https://evat-inventory.persolqa.com
+FlatTaxpayerReference = CXX0000XXXY-001
+FlatRateTaxpayer_Sec_Key = OcXp9FnGEqOXpuJ3/ID2e1iVRGk1PIbF7iOWTNo69FH5Hf3Lj+5Z2aPccMsG6Fvb
+
+====================================================================================================
+FOLDER /INVOICE
+====================================================================================================
+--- DESCRIPTION ---
+An Invoice (Normal Sale) refers to a receipt that shall be produced and offered to the client. It is any receipt produced while the Electronic Billing Machine is in its normal registration mode, used to register sales of goods and/or services, including corrections and discounts.
+
+====================================================================================================
+REQUEST /INVOICE/INVOICE
+====================================================================================================
+--- DESCRIPTION ---
+Invoice Invoce (Normal Sale) refers to a receipt that shall be produced and offered to the client. It is any receipt produced while the Electronic Billing Machine is in its normal registration mode, used to register sales of goods and/or services, including corrections and discounts.
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/invoice
+    HEADER security_key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- REQUEST BODY (raw) ---
+{
+    "currency": "GHS",
+    "exchangeRate": "1.0",
+    "invoiceNumber": "SAMP-INV-00000006",
+    "totalLevy": 225,
+    "userName": "Kofi Ghana",
+    "flag": "INVOICE",
+    "calculationType": "EXCLUSIVE",
+    "totalVat": 675,
+    "transactionDate": "2026-01-01",
+    "totalAmount": 4500,
+    "totalExciseAmount": 0.00,
+    "businessPartnerName": "Ama Ghana (Cash Customer)",
+    "businessPartnerTin": "C0000000000",
+    "saleType": "NORMAL",
+    "discountType": "GENERAL",
+    "taxType": "STANDARD",
+    "discountAmount": 0,
+    "reference": "",
+    "groupReferenceId": "",
+    "purchaseOrderReference": "",
+    "items": [
+        {
+            "itemCode": "ABT301",
+            "itemCategory": "",
+            "expireDate": "",
+            "description": "Abrokyire Ntomah",
+            "quantity": "45",
+            "levyAmountA": 112.50,
+            "levyAmountB": 112.50,
+            "levyAmountD": 0,
+            "levyAmountE": 0,
+            "discountAmount": 0,
+            "exciseAmount": 0,
+            "batchCode": "",
+            "unitPrice": "100"
+        }
+    ]
+}
+--- SAMPLE RESPONSE 'JSON SUCCESS' [200 OK] ---
+{
+    "response": {
+        "distributor_tin": "CXX000000YY",
+        "message": {
+            "num": "SAMP-INV-00000001",
+            "ysdcid": "E000001001",
+            "ysdcrecnum": "1001-6239-NS8",
+            "ysdcintdata": "YKPV-HVY6-CUI3-WUL6-T3LX-UNTD-DM",
+            "ysdcregsig": "5HOF-XUUK-AH7I-BJQQ",
+            "ysdcmrc": "00:0C:29:0D:90:D0",
+            "ysdcmrctim": "2026/01/08 10:38:33",
+            "ysdctime": "2026/01/08 10:38:33",
+            "flag": "INVOICE",
+            "ysdcitems": "1"
+        },
+        "qr_code": "https://verification.vat-gh.com?data=1hScUHYZXqsiETdXYH0B/u8tNOL63njwRTzKj/KcDXum3psBaQ5M77YsnjGgPwUbh4eVo7vlBAps+zNprxEP7cYZIJWqFB2gZE0lu8sMazs7wSXWWMFmuL8saWd99BIHQLKpK0bOXU2IYkBJb4CjLDXcw6CpJeh+Cd5m0KmH4uUuR+jFGWRVlcDDbVDHcGJiQS2a2lIhxVE1iKZk0GXM63cstU+UvlPD+oDM4Bu6iZvie+dVCqhMK9F69gcFSaa7x2uthZSAfO/N5tCUkG+rAVX1097N4vEjqzyZWTRyd+v/p9exfL2cNrq5Su4ni49C&v=1.1&t=i",
+        "status": "SUCCESS"
+    }
+}
+--- SAMPLE RESPONSE 'XML SUCCESS' [200 OK] ---
+{
+    "response": {
+        "distributor_tin": "CXX000000YY",
+        "message": {
+            "num": "SAMP-INV-00000003",
+            "ysdcid": "E000001001",
+            "ysdcrecnum": "1001-6239-NS11",
+            "ysdcintdata": "YKPV-HVY6-CUI3-WUL6-T3LX-UNTD-DM",
+            "ysdcregsig": "MUFR-YHIS-MZC5-XJSV",
+            "ysdcmrc": "00:0C:29:0D:90:D0",
+            "ysdcmrctim": "2026/01/08 10:48:54",
+            "ysdctime": "2026/01/08 10:48:54",
+            "flag": "INVOICE",
+            "ysdcitems": "1"
+        },
+        "qr_code": "https://verification.vat-gh.com?data=1hScUHYZXqsiETdXYH0B/u8tNOL63njwRTzKj/KcDXum3psBaQ5M77YsnjGgPwUbh4eVo7vlBAps+zNprxEP7SilQf7C4gXmQdxAaNOBcYVYaLKhKSdipTqwoK2Th+UWwH1Jyit/cErD2eQlVAiw8WnDo3Iwn84Kvudbi2HVWPulerNWFHdaprv1HtfaFgJ7Vp0ez6W96+yJ2q4SfFsWAtAi96jOHkLRtlMGYQPg2a8xACFiQbYhkihQMkaGZmjq9n5x5QhRjQzIJyGumZdS75hKi9Htf5xwPEeaYNbX5BRQ1emeuVbR5t2hBhyCnD7N&v=1.1&t=i",
+        "status": "SUCCESS"
+    }
+}
+
+====================================================================================================
+FOLDER /INVOICE REFUNDS
+====================================================================================================
+--- DESCRIPTION ---
+This includes Partial and Full Refunds
+
+FULL REFUND
+
+A Full Refund refers to a situation where a customer receives complete reimbursement of the total amount they paid for a product or service. It means that the seller or service provider returns the entire purchase price to the customer.
+
+PARTIAL REFUND
+A Partial Refund refers to a situation where a customer receives a refund for only a portion of the total amount they paid for a product or service.
+
+====================================================================================================
+REQUEST /INVOICE REFUNDS/FULL REFUND
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/invoice
+    HEADER security_key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- REQUEST BODY (raw) ---
+{
+    "currency": "GHS",
+    "exchangeRate": 1.0,
+    "invoiceNumber": "NS230818-P9X00001",
+    "totalLevy": 63.99,
+    "userName": "Kofi Ghana",
+    "flag": "REFUND",
+    "calculationType": "INCLUSIVE",
+    "totalVat": 169.57,
+    "transactionDate": "2023-07-24T08:43:28Z",
+    "totalAmount": 1300.0,
+    "totalExciseAmount": 0.00,
+    "voucherAmount": 0.0,
+    "businessPartnerName": "fred(cash customer)",
+    "businessPartnerTin": "C0000000000",
+    "saleType": "NORMAL",
+    "discountType": "GENERAL",
+    "discountAmount": 0.0,
+    "reference": "",
+    "groupReferenceId": "",
+    "purchaseOrderReference": "",
+    "items": [
+        {
+            "itemCode": "TXC00389165855",
+            "itemCategory": "",
+            "expireDate": "2025-01-01",
+            "description": "1SFA611130R1101",
+            "quantity": 10.0,
+            "levyAmountA": 26.66,
+            "levyAmountB": 26.66,
+            "levyAmountC": 10.66,
+            "levyAmountD": 0.0,
+            "levyAmountE": 0.0,
+            "discountAmount": 0.0,
+            "exciseAmount": 0.00,           
+            "batchCode": "",
+            "unitPrice": 130.0
+        }
+    ]
+}
+--- SAMPLE RESPONSE 'JSON SUCCESS' [200 OK] ---
+{
+    "response": {
+        "distributor_tin": "CXX000000YY",
+        "message": {
+            "num": "REF-0096",
+            "ysdcid": "E000001001",
+            "ysdcrecnum": "1001-6239-NR4",
+            "ysdcintdata": "YKPV-HVY6-CUI3-WUL6-T3LX-UNTD-DM",
+            "ysdcregsig": "5UZG-7CVN-HI75-Y7ZZ",
+            "ysdcmrc": "00:0C:29:0D:90:D0",
+            "ysdcmrctim": "2026/01/08 11:18:00",
+            "ysdctime": "2026/01/08 11:18:00",
+            "flag": "REFUND",
+            "ysdcitems": "1"
+        },
+        "qr_code": "https://verification.vat-gh.com?data=1hScUHYZXqsiETdXYH0B/u8tNOL63njwRTzKj/KcDXum3psBaQ5M77YsnjGgPwUbh4eVo7vlBAps+zNprxEP7bWGbAsraiRGbbAEkfi4yKg4WLYchOH8tartzaDnCQl/ZNGqN5WEZXs80Jy2nyibOtUajubtbqaAaeRMbebXCRASKDtsc2GcNT9z4JwJweCb1LwS/H2GmFr106vf9Q0oxUwQh25PtWtPh1sg7NXdgQOGvD8YUdRiIHkCzUikPf717kVKBIbQOHqW3KM4W6d7Ua5+SzJfGp1D4WjwI4et+L0=&v=1.1&t=i",
+        "status": "SUCCESS"
+    }
+}
+--- SAMPLE RESPONSE 'XML SUCCESS' [200 OK] ---
+{
+    "response": {
+        "distributor_tin": "CXX000000YY",
+        "message": {
+            "num": "REF-004",
+            "ysdcid": "E000001001",
+            "ysdcrecnum": "1001-6239-NR1",
+            "ysdcintdata": "YKPV-HVY6-CUI3-WUL6-T3LX-UNTD-DM",
+            "ysdcregsig": "AFN5-SKBL-PBNC-PSSK",
+            "ysdcmrc": "00:0C:29:0D:90:D0",
+            "ysdcmrctim": "2026/01/08 10:52:58",
+            "ysdctime": "2026/01/08 10:52:58",
+            "flag": "REFUND",
+            "ysdcitems": "1"
+        },
+        "qr_code": "https://verification.vat-gh.com?data=1hScUHYZXqsiETdXYH0B/u8tNOL63njwRTzKj/KcDXum3psBaQ5M77YsnjGgPwUbh4eVo7vlBAps+zNprxEP7RwMZT2h1Kwy0/YzyoyjMWd0PEanitEId92rz6rDnV5TK6EtmCHyrTJ95JCuwD6TOclH5lduvRHZHAFPgCcq9+mqiRbY2fbmFrPdJ2tPlWLtiXb4Y6mvp21rIyUTfR+zH4GNvOQyMVYK2pgdJvxRIPnITP5rQFqbT7zuWJpMnJke6akdLwhJ7PAZRkw8Ty68dmvY4qd/dqXJW7y0DcOeepY=&v=1.1&t=i",
+        "status": "SUCCESS"
+    }
+}
+
+====================================================================================================
+REQUEST /INVOICE REFUNDS/PARTIAL REFUND
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/invoice
+    HEADER security_key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- REQUEST BODY (raw) ---
+{
+    "currency": "GHS",
+    "exchangeRate": "1.0",
+    "invoiceNumber": "SAMP-INV-00000002",
+    "totalLevy": 112.5,
+    "userName": "Kofi Ghana",
+    "flag": "PARTIAL_REFUND",
+    "calculationType": "EXCLUSIVE",
+    "totalVat": 337.50,
+    "transactionDate": "2026-01-01",
+    "totalAmount": 2250,
+    "totalExciseAmount": 0.00,
+    "businessPartnerName": "Ama Ghana(cash customer)",
+    "businessPartnerTin": "C0000000000",
+    "saleType": "NORMAL",
+    "discountType": "GENERAL",
+    "taxType": "STANDARD",
+    "discountAmount": 0,
+    "reference": "REF-0094",
+    "groupReferenceId": "",
+    "purchaseOrderReference": "",
+    "items": [
+        {
+            "itemCode": "ABT301",
+            "itemCategory": "",
+            "expireDate": "",
+            "description": "Abrokyire Ntomah",
+            "quantity": "22.50",
+            "levyAmountA": 56.25,
+            "levyAmountB": 56.25,
+            "levyAmountD": 0,
+            "levyAmountE": 0,
+            "discountAmount": 0,
+            "exciseAmount": 0,
+            "batchCode": "",
+            "unitPrice": "100"
+        }
+    ]
+}
+--- SAMPLE RESPONSE 'JSON SUCCESS' [200 OK] ---
+{
+    "response": {
+        "distributor_tin": "CXX000000YY",
+        "message": {
+            "num": "REF-0094",
+            "ysdcid": "E000001001",
+            "ysdcrecnum": "1001-6239-NR3",
+            "ysdcintdata": "U7D5-Z7UB-67ZX-JL4B-FCFR-56JC-TA",
+            "ysdcregsig": "7XPI-C45O-L2GX-WMWA",
+            "ysdcmrc": "00:0C:29:0D:90:D0",
+            "ysdcmrctim": "2026/01/08 11:12:47",
+            "ysdctime": "2026/01/08 11:12:47",
+            "flag": "REFUND",
+            "ysdcitems": "1"
+        },
+        "qr_code": "https://verification.vat-gh.com?data=deTzEWyr9Ph9CcJQ9ouYzzAaaJtckKZ761L6LiG5PsGJ+mpT4zcT+u8X+HM+wsRYn5cJ2/EX1Gsv0e7AqgIDxQvM4d2m0RzEkra6NvN3//qx6Aws3ovNYJFdFPPhbaS9SjcbO64hvM3bTZBqrGUkO7lS4wkW7Tlg5NjPmNVqAhPbIi9BpnMVAGthy9dHq94CHJkiBRzJngVSDGCze0Bz8m1cfgCNJiq5bcj6N7oTP9U2SE+mtWdyC4Np93YzeeR1WSHoBg/s2IOwbvaABlEpyjODGFSMHpKSvlRtImXISKk=&v=1.1&t=i",
+        "status": "SUCCESS"
+    }
+}
+--- SAMPLE RESPONSE 'XML SUCCESS' [200 OK] ---
+{
+    "response": {
+        "distributor_tin": "CXX000000YY",
+        "message": {
+            "num": "REF-00923",
+            "ysdcid": "E000001001",
+            "ysdcrecnum": "1001-6239-NR2",
+            "ysdcintdata": "U7D5-Z7UB-67ZX-JL4B-FCFR-56JC-TA",
+            "ysdcregsig": "O4DC-TNXS-OVJC-O6A6",
+            "ysdcmrc": "00:0C:29:0D:90:D0",
+            "ysdcmrctim": "2026/01/08 11:00:05",
+            "ysdctime": "2026/01/08 11:00:05",
+            "flag": "REFUND",
+            "ysdcitems": "1"
+        },
+        "qr_code": "https://verification.vat-gh.com?data=deTzEWyr9Ph9CcJQ9ouYzzAaaJtckKZ761L6LiG5PsGJ+mpT4zcT+u8X+HM+wsRYn5cJ2/EX1Gsv0e7AqgIDxTLFvu5HaVxOSGYLCCqfcEl491ytwm8Yw0KhXsfq8pGDpenCqf5ErxnnRKUUruM+Nt4H1ui197zKidmFOnIhEzOA4gZ0pk73aXOVnnb6j9qC4Qvqt98QWCZ5n/BU5cBe9U23ZD8k642aWEQ36XaZ9KOHNX11zv0P6I0rwyNq9Co/OnokWJEzLFB0VDZqRd+QnHgjL2AP/37Irct3WNYiQdk=&v=1.1&t=i",
+        "status": "SUCCESS"
+    }
+}
+
+====================================================================================================
+FOLDER /REFUND CANCELLATION
+====================================================================================================
+--- DESCRIPTION ---
+REFUND CANCELLATION
+
+A Refund Cancellation typically refers to the reversal or annulment of a previously issued refund. It occurs when a seller or service provider decides to nullify or revoke a refund that was previously processed and returned to the customer.
+
+====================================================================================================
+REQUEST /REFUND CANCELLATION/JSON
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/cancellation
+    HEADER security_key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- REQUEST BODY (raw) ---
+{
+  "invoiceNumber": "NS230724-X000002",
+  "reference": "RF230724-X00002",
+  "userName": "kofi ghana",
+  "flag": "REFUND_CANCELATION",
+  "transactionDate": "2023-08-22T11:25:19.121Z",
+  "totalAmount": 609.50
+}
+
+====================================================================================================
+REQUEST /REFUND CANCELLATION/XML
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/cancellation
+    HEADER Accept: application/xml
+--- REQUEST BODY (raw) ---
+<?xml version="1.0" encoding="UTF-8" ?>
+<refundcancellation>
+	<invoiceNumber>NS230724-X000002</invoiceNumber>
+	<reference>RF230724-X00002</reference>
+	<userName>kofi ghana</userName>
+	<flag>REFUND_CANCELATION</flag>
+	<transactionDate>2023-08-22T11:25:19.121Z</transactionDate>
+	<totalAmount>609.5</totalAmount>
+</refundcancellation>
+
+====================================================================================================
+FOLDER /PURCHASE
+====================================================================================================
+--- DESCRIPTION ---
+PURCHASE
+
+A Purchase refers to the act of acquiring or obtaining goods or services in exchange for payment. You are required to record all purchases that you make revenue from, (including raw
+materials). For record purposes, this may also include other non-revenue purchases.
+
+====================================================================================================
+REQUEST /PURCHASE/PURCHASE
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/invoice
+    HEADER security_key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- REQUEST BODY (raw) ---
+{
+    "currency": "GHS",
+    "exchangeRate": "1.0",
+    "invoiceNumber": "SAMP-BILL-00000001",
+    "totalLevy": 225,
+    "userName": "Kofi Ghana",
+    "flag": "PURCHASE",
+    "calculationType": "EXCLUSIVE",
+    "totalVat": 675,
+    "transactionDate": "2026-01-01",
+    "totalAmount": 4500,
+    "totalExciseAmount": 0.00,
+    "businessPartnerName": "Ama Ghana(cash customer)",
+    "businessPartnerTin": "C0000000000",
+    "saleType": "NORMAL",
+    "discountType": "GENERAL",
+    "taxType": "STANDARD",
+    "discountAmount": 0,
+    "reference": "",
+    "groupReferenceId": "",
+    "purchaseOrderReference": "",
+    "items": [
+        {
+            "itemCode": "ABT301",
+            "itemCategory": "",
+            "expireDate": "",
+            "description": "Abrokyire Ntomah",
+            "quantity": "45",
+            "levyAmountA": 112.50,
+            "levyAmountB": 112.50,
+            "levyAmountD": 0,
+            "levyAmountE": 0,
+            "discountAmount": 0,
+            "exciseAmount": 0,
+            "batchCode": "",
+            "unitPrice": "100"
+        }
+    ]
+}
+--- SAMPLE RESPONSE 'JSON SUCCESS' [200 OK] ---
+{
+    "response": {
+        "distributor_tin": "CXX000000YY",
+        "message": {
+            "num": "SAMP-BILL-00000001",
+            "ysdcid": "E000001001",
+            "ysdcrecnum": "1001-6239-NP6",
+            "ysdcintdata": "",
+            "ysdcregsig": "",
+            "ysdcmrc": "00:0C:29:0D:90:D0",
+            "ysdcmrctim": "2026/01/08 11:33:19",
+            "ysdctime": "2026/01/08 11:33:19",
+            "flag": "PURCHASE",
+            "ysdcitems": "1"
+        },
+        "qr_code": "",
+        "status": "SUCCESS"
+    }
+}
+--- SAMPLE RESPONSE 'XML SUCCESS' [200 OK] ---
+{
+    "response": {
+        "distributor_tin": "CXX000000YY",
+        "message": {
+            "num": "SAMP-BILL-00000002",
+            "ysdcid": "E000001001",
+            "ysdcrecnum": "1001-6239-NP7",
+            "ysdcintdata": "",
+            "ysdcregsig": "",
+            "ysdcmrc": "00:0C:29:0D:90:D0",
+            "ysdcmrctim": "2026/01/08 11:39:38",
+            "ysdctime": "2026/01/08 11:39:38",
+            "flag": "PURCHASE",
+            "ysdcitems": "1"
+        },
+        "qr_code": "",
+        "status": "SUCCESS"
+    }
+}
+
+====================================================================================================
+FOLDER /PURCHASE RETURN
+====================================================================================================
+--- DESCRIPTION ---
+PURCHASE RETURN
+
+A Purchase Return refers to the act of reversing or nullifying a previously made purchase. It occurs when a buyer or customer decides to cancel their order or transaction.
+
+====================================================================================================
+REQUEST /PURCHASE RETURN/PURCHASE RETURN
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/invoice
+    HEADER security_key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- REQUEST BODY (raw) ---
+{
+    "currency": "GHS",
+    "exchangeRate": "1.0",
+    "invoiceNumber": "SAMP-BILL-00000001",
+    "totalLevy": 225,
+    "userName": "Kofi Ghana",
+    "flag": "PURCHASE_RETURN",
+    "calculationType": "EXCLUSIVE",
+    "totalVat": 675,
+    "transactionDate": "2026-01-01",
+    "totalAmount": 4500,
+    "totalExciseAmount": 0.00,
+    "businessPartnerName": "Ama Ghana(cash customer)",
+    "businessPartnerTin": "C0000000000",
+    "saleType": "NORMAL",
+    "discountType": "GENERAL",
+    "taxType": "STANDARD",
+    "discountAmount": 0,
+    "reference": "PREF-034",
+    "groupReferenceId": "",
+    "purchaseOrderReference": "",
+    "items": [
+        {
+            "itemCode": "ABT301",
+            "itemCategory": "",
+            "expireDate": "",
+            "description": "Abrokyire Ntomah",
+            "quantity": "45",
+            "levyAmountA": 112.50,
+            "levyAmountB": 112.50,
+            "levyAmountD": 0,
+            "levyAmountE": 0,
+            "discountAmount": 0,
+            "exciseAmount": 0,
+            "batchCode": "",
+            "unitPrice": "100"
+        }
+    ]
+}
+--- SAMPLE RESPONSE 'JSON SUCCESS' [200 OK] ---
+{
+    "response": {
+        "distributor_tin": "CXX000000YY",
+        "message": {
+            "num": "SAMP-BILL-00000001",
+            "ysdcid": "E000001001",
+            "ysdcrecnum": "1001-6239-NT3",
+            "ysdcintdata": "",
+            "ysdcregsig": "",
+            "ysdcmrc": "00:0C:29:0D:90:D0",
+            "ysdcmrctim": "2026/01/08 11:47:59",
+            "ysdctime": "2026/01/08 11:47:59",
+            "flag": "PURCHASE_RETURN",
+            "ysdcitems": "1"
+        },
+        "qr_code": "",
+        "status": "SUCCESS"
+    }
+}
+--- SAMPLE RESPONSE 'XML SUCCESS' [200 OK] ---
+{
+    "response": {
+        "distributor_tin": "CXX000000YY",
+        "message": {
+            "num": "SAMP-BILL-00000002",
+            "ysdcid": "E000001001",
+            "ysdcrecnum": "1001-6239-NT2",
+            "ysdcintdata": "",
+            "ysdcregsig": "",
+            "ysdcmrc": "00:0C:29:0D:90:D0",
+            "ysdcmrctim": "2026/01/08 11:42:04",
+            "ysdctime": "2026/01/08 11:42:04",
+            "flag": "PURCHASE_RETURN",
+            "ysdcitems": "1"
+        },
+        "qr_code": "",
+        "status": "SUCCESS"
+    }
+}
+
+====================================================================================================
+FOLDER /PURCHASE RETURN CANCELLATION
+====================================================================================================
+--- DESCRIPTION ---
+PURCHASE RETURN CANCELLATION
+
+A Purchase Return Cancellation refers to the reversal or nullification of a previously initiated return of goods or services. It occurs when a buyer or customer decides to cancel their request to return a purchased item or cancel a return process that was already initiated.
+
+====================================================================================================
+REQUEST /PURCHASE RETURN CANCELLATION/JSON
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/cancellation
+    HEADER Security_Key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- REQUEST BODY (raw) ---
+{
+  "invoiceNumber": "NS230818-9X060001",
+  "reference": "PR-0003",
+  "userName": "kofi ghana",
+  "flag": "PURCHASE_RETURN_CANCELATION",
+  "transactionDate": "2023-08-22T11:25:19.121Z",
+  "totalAmount": 1300.0
+}
+
+====================================================================================================
+REQUEST /PURCHASE RETURN CANCELLATION/XML
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/cancellation
+    HEADER Accept: application/xml
+--- REQUEST BODY (raw) ---
+<?xml version="1.0" encoding="UTF-8" ?>
+<root>
+	<invoiceNumber>NS230818-9X00001</invoiceNumber>
+	<reference>RF230724-X00002</reference>
+	<userName>kofi ghana</userName>
+	<flag>PURCHASE_RETURN_CANCELATION</flag>
+	<transactionDate>2023-08-22T11:25:19.121Z</transactionDate>
+	<totalAmount>609.5</totalAmount>
+</root>
+
+====================================================================================================
+FOLDER /CREDIT NOTE/DEBIT NOTE
+====================================================================================================
+--- DESCRIPTION ---
+CREDIT/DEBIT NOTE
+
+A Credit Note, also known as a Credit Memo, is a document issued by a seller or service provider to a customer as a form of credit or refund. It is typically provided when there is a need to rectify a previous transaction, such as returning goods, resolving a billing error, or providing compensation for a service issue. Whereas Refunds (Partial & Full) can only be done on a single invoice, Credit/Debit Notes are used in situations where the said refund/credit applies to multiple invoices.
+
+TAG DESCRIPTIONS
+
+TAG NAME | 
+TAG VALUE EXAMPLE | 
+TAG DESCRIPTION | 
+LENGTH AND TYPE | 
+MANDATORY | 
+
+"noteNumber" | 
+"0948468491" | 
+UNIQUE IDENTIFIER FOR CREDIT/DEBIT NOTE TRANSACTION | 
+VARCHAR(50) | 
+YES | 
+
+"currency" | 
+"GHS" | 
+CURRENCY | 
+VARCHAR(20) | 
+YES | 
+
+"exchangeRate" | 
+1 | 
+CURRENT EXCHANGE RATE: DEFAULT VALUE is 1.00 FOR GHS | 
+10 | 
+YES | 
+
+"noteAmount" | 
+200.0 | 
+TOTAL AMOUNT ON CREDIT/DEBIT NOTE | 
+NUMERIC | 
+YES | 
+
+"userName" | 
+"happy" | 
+USER NAME | 
+VARCHAR(100) | 
+YES | 
+
+"calculationType" | 
+"EXCLUSIVE" | 
+"EXCLUSIVE", "INCLUSIVE". A Case Sensitive Field. When omitted or left empty, "INCLUSIVE" is applied by default. | 
+VARCHAR(20) | 
+NO | 
+
+"flag" | 
+"CREDIT_NOTE" | 
+TRANSACTION TYPE: "CREDIT_NOTE", "DEBIT_NOTE". A Case Sensitive Field. | 
+VARCHAR(20) | 
+YES | 
+
+"noteLineFlag" | 
+"INVOICE" | 
+"INVOICE" or "PURCHASE". A Case Sensitive Field. When omitted or left empty, "INVOICE" is applied by default. | 
+VARCHAR(20) | 
+NO | 
+
+"businessPartnerName" | 
+"James Kofi" | 
+CLIENT NAME | 
+VARCHAR(100) | 
+YES | 
+
+"businessPartnerTin" | 
+"VC00000009055" | 
+CLIENT TIN OR GHANA CARD NUMBER | 
+VARCHAR(15) | 
+YES B2B, NO B2C | 
+
+"groupReferenceId" | 
+"2390957437" | 
+REFERENCE ID TO A GROUP OF INVOICES | 
+VARCHAR(50) | 
+NO | 
+
+"transactionDate" | 
+"2023-06-14" | 
+DATE OF TRANSACTION | 
+VARCHAR(50) | 
+YES | 
+
+"remarks" | 
+"" | 
+REMARKS | 
+VARCHAR(100) | 
+NO | 
+
+"noteLines" | 
+ | 
+LIST OF INVOICES DATA (Nested Object/Array) | 
+- | 
+YES | 
+
+"invoiceNumber" | 
+"2306219003" | 
+INVOICE NUMBER - UNIQUE TRANSACTION IDENTIFIER | 
+VARCHAR(100) | 
+YES | 
+
+"invoiceAmount" | 
+100.0 | 
+TOTAL AMOUNT ON THE INVOICE | 
+NUMERIC | 
+YES | 
+
+"invoiceDate" | 
+"2023-06-14" | 
+INVOICE DATE (POSTED DATE IS THE ONE USED) | 
+VARCHAR(50) | 
+YES |
+
+====================================================================================================
+REQUEST /CREDIT NOTE/DEBIT NOTE/JSON
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/note
+    HEADER security_key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- REQUEST BODY (raw) ---
+{
+    "noteNumber": "SAMP-CD-0001",
+    "currency": "GHS",
+    "exchangeRate": 1.0,
+    "noteAmount": 1200.0,
+    "calculationType": "EXCLUSIVE",
+    "businessPartnerName": "Ama Ghana(cash customer)",
+    "businessPartnerTin": "C0000000000",
+    "userName": "Kofi Ghana",
+    "flag": "CREDIT_NOTE",
+    "groupReferenceId": "2390957437",
+    "transactionDate": "2026-01-01",
+    "remarks": "CN",
+    "noteLineFlag": "INVOICE",
+    "noteLines": [
+        {
+            "invoiceNumber": "SAMP-INV-00000006",
+            "invoiceDate": "2026-01-01",
+            "invoiceAmount": 4500.0
+        }
+    ]
+}
+
+====================================================================================================
+REQUEST /CREDIT NOTE/DEBIT NOTE/XML
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/note
+    HEADER Accept: application/xml
+    HEADER security_key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- REQUEST BODY (raw) ---
+<?xml version="1.0" encoding="UTF-8" ?>
+<Note>
+    <noteNumber>SAMP-CD-0002-</noteNumber>
+    <currency>GHS</currency>
+    <exchangeRate>1.0</exchangeRate>
+    <noteAmount>1300.0</noteAmount>
+    <calculationType>EXCLUSIVE</calculationType>
+    <businessPartnerName>Ama Ghana(cash customer)</businessPartnerName>
+    <businessPartnerTin>C0000000000</businessPartnerTin>
+    <userName>Kofi Ghana</userName>
+    <flag>CREDIT_NOTE</flag>
+    <groupReferenceId></groupReferenceId>
+    <transactionDate>2026-01-01</transactionDate>
+    <remarks>CN</remarks>
+    <noteLineFlag>INVOICE</noteLineFlag>
+    <noteLines>
+        <noteLine>
+            <invoiceNumber>SAMP-INV-00000006</invoiceNumber>
+            <invoiceDate>2026-01-01</invoiceDate>
+            <invoiceAmount>1300.0</invoiceAmount>
+        </noteLine>
+    </noteLines>
+</Note>
+
+====================================================================================================
+FOLDER /STATEMENT OF ACCOUNT
+====================================================================================================
+--- DESCRIPTION ---
+STATEMENT OF ACCOUNT
+
+A Statement of Account is a summary of financial transactions and activity between a seller or service provider and a customer over a specific period. It is used to track the folio of a particular customer. IMPLEMENTED FOR THE HOSPITALITY INDUSTRIES, this allows for a single invoice (i.e.: a combination of all invoices from the PMS & PoS) to be printed at the end of a stay.
+
+TAG DESCRIPTIONS
+
+TAG NAME | 
+TAG VALUE EXAMPLE | 
+TAG DESCRIPTION | 
+LENGTH AND TYPE | 
+MANDATORY | 
+
+"currency" | 
+"GHS" | 
+CURRENCY. A Case Sensitive Field. | 
+VARCHAR(20) | 
+YES | 
+
+"exchangeRate" | 
+1 | 
+CURRENT EXCHANGE RATE: DEFAULT VALUE IS 1.00 FOR GHS | 
+10 | 
+YES | 
+
+"totalVat" | 
+13.04 | 
+TOTAL VAT | 
+NUMERIC | 
+YES | 
+
+"totalAmount" | 
+100.0 | 
+TOTAL AMOUNT | 
+NUMERIC | 
+YES | 
+
+"totalLevies" | 
+30 | 
+TOTAL LEVY AMOUNT | 
+NUMERIC | 
+YES | 
+
+"userName" | 
+"happy" | 
+USER NAME | 
+VARCHAR(100) | 
+YES | 
+
+"businessPartnerName" | 
+"James Kofi" | 
+CLIENT NAME | 
+VARCHAR(100) | 
+YES | 
+
+"businessPartnerTin" | 
+"VC00000009055" | 
+CLIENT TIN OR GHANA CARD NUMBER | 
+VARCHAR(15) | 
+YES B2B, NO B2C | 
+
+"groupReferenceId" | 
+"2390957437" | 
+REFERENCE ID TO A GROUP OF INVOICES | 
+VARCHAR(50) | 
+YES | 
+
+"transactionDate" | 
+"2023-06-14" | 
+DATE OF TRANSACTION | 
+VARCHAR(50) | 
+YES | 
+
+"groupInvoiceLines" | 
+ | 
+LIST OF INVOICES DATA (Nested Object/Array) | 
+- | 
+- | 
+
+"transactionId" | 
+"2306219003" | 
+INVOICE NUMBER - UNIQUE TRANSACTION IDENTIFIER | 
+VARCHAR(100) | 
+YES | 
+
+"flag" | 
+"INVOICE" | 
+TRANSACTION TYPE: "INVOICE", "REFUND", "PARTIAL_REFUND", "CREDIT_NOTE", "DEBIT_NOTE", "REFUND_CANCELATION" | 
+VARCHAR(20) | 
+YES | 
+
+"invoiceVat" | 
+13.04 | 
+TOTAL VAT OF THE INVOICE | 
+NUMERIC | 
+YES | 
+
+"invoiceAmount" | 
+100.0 | 
+TOTAL AMOUNT ON THE INVOICE | 
+NUMERIC | 
+YES | 
+
+"invoiceLevies" | 
+25 | 
+TOTAL LEVY AMOUNT ON THE INVOICE | 
+NUMERIC | 
+YES | 
+
+"transactionDate" | 
+"2023-06-14" | 
+INVOICE DATE (POSTED DATE IS THE ONE USED) | 
+VARCHAR(50) | 
+YES |
+
+====================================================================================================
+REQUEST /STATEMENT OF ACCOUNT/JSON
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/statment_of_account
+    HEADER security_key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- REQUEST BODY (raw) ---
+{
+    "currency": "GHS",
+    "exchangeRate": 1,
+    "totalVat": 658.9565217391304,
+    "totalAmount": 5099,
+    "totalLevies": 248.66283839212469,
+    "userName": "Kofi Ghana",
+    "businessPartnerName": "fred(cash customer)",
+    "businessPartnerTin": "C0000000000",
+    "groupReferenceId": "GRP_REF_9154",
+    "transactionDate": "2024-01-06T08:49:08.879Z",
+    "calculationType":"INCLUSIVE",
+    "groupInvoiceLines": [
+        {
+            "currency": "GHS",
+            "exchangeRate": 1,
+            "calculationType":"INCLUSIVE",
+            "invoiceNumber": "QA_INV_7833474375",
+            "reference":"",        
+            "flag": "INVOICE",
+            "invoiceVat": 235.82608695652173,
+            "invoiceAmount": 1836,
+            "invoiceLevies": 88.9909762100082,
+            "transactionDate": "2024-01-06T08:49:08.879Z"
+        },
+        {
+            "currency": "GHS",
+            "exchangeRate": 1,
+            "calculationType":"INCLUSIVE",
+            "invoiceNumber": "QA_INV_8153543791",
+            "flag": "INVOICE",
+            "invoiceVat": 175.43478260869564,
+            "invoiceAmount": 1354,
+            "invoiceLevies": 66.20180475799836,
+            "transactionDate": "2024-01-06T08:49:08.879Z"
+        },
+        {
+            "currency": "GHS",
+            "exchangeRate": 1,
+            "calculationType":"INCLUSIVE",
+            "invoiceNumber": "QA_INV_5589117822",
+            "reference":"",
+            "flag": "INVOICE",
+            "invoiceVat": 247.695652173913,
+            "invoiceAmount": 1909,
+            "invoiceLevies": 93.47005742411813,
+            "transactionDate": "2024-01-06T08:49:08.879Z"
+        }
+        ,
+        {
+            "currency": "GHS",
+            "exchangeRate": 1,
+            "calculationType":"INCLUSIVE",
+            "invoiceNumber": "QA_INV_5589117823",
+            "reference":"",
+            "flag": "INVOICE",
+            "invoiceVat": 247.695652173913,
+            "invoiceAmount": 1909,
+            "invoiceLevies": 93.47005742411813,
+            "transactionDate": "2024-01-06T08:49:08.879Z"
+        }
+        ,
+        {
+            "currency": "GHS",
+            "exchangeRate": 1,
+            "calculationType":"INCLUSIVE",
+            "invoiceNumber": "QA_INV_5589117823",
+            "reference":"00000001",
+            "flag": "REFUND",
+            "invoiceVat": 247.695652173913,
+            "invoiceAmount": 1909,
+            "invoiceLevies": 93.47005742411813,
+            "transactionDate": "2024-01-06T08:49:08.879Z"
+        }
+    ]
+}
+
+====================================================================================================
+REQUEST /STATEMENT OF ACCOUNT/XML
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/statment_of_account
+    HEADER Accept: application/xml
+    HEADER security_key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- REQUEST BODY (raw) ---
+<?xml version="1.0" encoding="UTF-8" ?>
+<root>
+    <currency>GHS</currency>
+    <exchangeRate>1</exchangeRate>
+    <totalVat>658.9565217391304</totalVat>
+    <totalAmount>5099</totalAmount>
+    <totalLevies>248.66283839212468</totalLevies>
+    <userName>Kofi Ghana</userName>
+    <businessPartnerName>fred(cash customer)</businessPartnerName>
+    <businessPartnerTin>C0000000000</businessPartnerTin>
+    <groupReferenceId>GRP_REF_9154</groupReferenceId>
+    <transactionDate>2024-01-06T08:49:08.879Z</transactionDate>
+    <calculationType>INCLUSIVE</calculationType>
+    <groupInvoiceLines>
+        <currency>GHS</currency>
+        <exchangeRate>1</exchangeRate>
+        <calculationType>INCLUSIVE</calculationType>
+        <invoiceNumber>QA_INV_7833474375</invoiceNumber>
+        <reference></reference>
+        <flag>INVOICE</flag>
+        <invoiceVat>235.82608695652172</invoiceVat>
+        <invoiceAmount>1836</invoiceAmount>
+        <invoiceLevies>88.9909762100082</invoiceLevies>
+        <transactionDate>2024-01-06T08:49:08.879Z</transactionDate>
+    </groupInvoiceLines>
+    <groupInvoiceLines>
+        <currency>GHS</currency>
+        <exchangeRate>1</exchangeRate>
+        <calculationType>INCLUSIVE</calculationType>
+        <invoiceNumber>QA_INV_8153543791</invoiceNumber>
+        <flag>INVOICE</flag>
+        <invoiceVat>175.43478260869563</invoiceVat>
+        <invoiceAmount>1354</invoiceAmount>
+        <invoiceLevies>66.20180475799836</invoiceLevies>
+        <transactionDate>2024-01-06T08:49:08.879Z</transactionDate>
+    </groupInvoiceLines>
+    <groupInvoiceLines>
+        <currency>GHS</currency>
+        <exchangeRate>1</exchangeRate>
+        <calculationType>INCLUSIVE</calculationType>
+        <invoiceNumber>QA_INV_5589117822</invoiceNumber>
+        <reference></reference>
+        <flag>INVOICE</flag>
+        <invoiceVat>247.695652173913</invoiceVat>
+        <invoiceAmount>1909</invoiceAmount>
+        <invoiceLevies>93.47005742411812</invoiceLevies>
+        <transactionDate>2024-01-06T08:49:08.879Z</transactionDate>
+    </groupInvoiceLines>
+    <groupInvoiceLines>
+        <currency>GHS</currency>
+        <exchangeRate>1</exchangeRate>
+        <calculationType>INCLUSIVE</calculationType>
+        <invoiceNumber>QA_INV_5589117823</invoiceNumber>
+        <reference></reference>
+        <flag>INVOICE</flag>
+        <invoiceVat>247.695652173913</invoiceVat>
+        <invoiceAmount>1909</invoiceAmount>
+        <invoiceLevies>93.47005742411812</invoiceLevies>
+        <transactionDate>2024-01-06T08:49:08.879Z</transactionDate>
+    </groupInvoiceLines>
+    <groupInvoiceLines>
+        <currency>GHS</currency>
+        <exchangeRate>1</exchangeRate>
+        <calculationType>INCLUSIVE</calculationType>
+        <invoiceNumber>QA_INV_5589117823</invoiceNumber>
+        <reference>00000001</reference>
+        <flag>REFUND</flag>
+        <invoiceVat>247.695652173913</invoiceVat>
+        <invoiceAmount>1909</invoiceAmount>
+        <invoiceLevies>93.47005742411812</invoiceLevies>
+        <transactionDate>2024-01-06T08:49:08.879Z</transactionDate>
+    </groupInvoiceLines>
+</root>
+
+====================================================================================================
+FOLDER /HEALTH CHECK
+====================================================================================================
+--- DESCRIPTION ---
+A Get Request used to check the status of the API
+
+====================================================================================================
+REQUEST /HEALTH CHECK/HEALTH CHECK
+====================================================================================================
+--- GET https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/health
+    HEADER security_key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- SAMPLE RESPONSE 'JSON_SUCCESS' [200 OK] ---
+{
+    "status": "UP"
+}
+--- SAMPLE RESPONSE 'XML_SUCCESS' [None None] ---
+<ResponseDto>
+    <status>UP</status>
+</ResponseDto>
+
+====================================================================================================
+FOLDER /ERRORS
+====================================================================================================
+--- DESCRIPTION ---
+STATUS CODE | 
+ERROR CODE | 
+ERROR MESSAGE | 
+SOLUTION | 
+
+200 | 
+- | 
+- | 
+- | 
+
+403 | 
+- | 
+FORBIDDEN | 
+Ensure Company Reference in the URL is accompanied by its matching security_key in the Header | 
+
+400 | 
+- | 
+BAD REQUEST | 
+Ensure you do not have a broken URL / Endpoint | 
+
+400 | 
+E600 | 
+Something went wrong | 
+Contact tech support team | 
+
+400 | 
+E601 | 
+Unable to generate internal data | 
+Contact tech support team | 
+
+400 | 
+E602 | 
+Unable to generate a signature | 
+Contact tech support team | 
+
+400 | 
+E603 | 
+TLS version not supported | 
+Contact tech support team | 
+
+400 | 
+E700 | 
+The invoice has already been signed | 
+Ensure that you are sending an invoice number that has not already been sent to EVAT (Rely on callback endpoint to get a copy of success response) | 
+
+400 | 
+E701 | 
+The invoice was not found | 
+Ensure that the invoice number in question has been sent to evat and returned with a success response | 
+
+400 | 
+E702 | 
+Invalid data, invoices already exist | 
+Ensure you insert an invoice number that has not been sent to EVAT | 
+
+400 | 
+E703 | 
+Invalid number of items for statement of account reference | 
+Ensure all transactions tied to the group reference ID are present in the payload | 
+
+400 | 
+E704 | 
+The transaction was not found | 
+Resend Invoice/Purchase transaction bearing that invoice number first | 
+
+400 | 
+E705 | 
+Invalid transaction flag | 
+Ensure you are using the accepted values for Flag (case sensitive) | 
+
+400 | 
+E706 | 
+Invalid transaction currency | 
+Ensure you are using the accepted values for Currency (case sensitive) | 
+
+400 | 
+E707 | 
+Invalid total amount | 
+Item Amount Value is strictly summation of Unit Price × Quantity | 
+
+400 | 
+E708 | 
+Invalid total VAT | 
+Ensure you have summed up 15% of all taxable items in the payload | 
+
+400 | 
+E709 | 
+Invalid total levies | 
+Ensure you have summed up 15% of Levies A, B, C, D, E of items in the payload | 
+
+400 | 
+E710 | 
+Purchase already exist | 
+Invoice Number for the purchase transaction already exists on EVAT, use a new number | 
+
+400 | 
+E711 | 
+Purchase was not found | 
+Ensure the invoice number for the purchase has already been sent to evat | 
+
+400 | 
+E712 | 
+The purchase is already returned | 
+Purchase has already been returned | 
+
+400 | 
+E713 | 
+Purchase order not found | 
+Ensure you have entered a valid purchase order number | 
+
+400 | 
+E714 | 
+Purchase order in use | 
+The purchase order number has already been sent to evat, use a new one | 
+
+400 | 
+E715 | 
+Invalid purchase order reference | 
+Ensure you entered a valid purchase order number | 
+
+400 | 
+E716 | 
+Purchase amount exceeded | 
+Ensure the purchase amount in the return transaction is equal to purchase amount when it was sent as a purchase | 
+
+400 | 
+E720 | 
+The invoice has already been refunded | 
+Issue a refund callback to see response | 
+
+400 | 
+E721 | 
+Invoice credited or debited cannot be refund | 
+You can issue a full refund on a credited or debited invoice | 
+
+400 | 
+E722 | 
+Credit or debit note already exist | 
+Credit or debit note number has already been sent to evat | 
+
+400 | 
+E723 | 
+Duplication of invoice number | 
+Ensure that invoice number is not duplicated in the credit/debit note payload | 
+
+400 | 
+E724 | 
+Credit note amount cannot be greater than invoice amount | 
+Ensure the credit note amount is lesser than the sum of invoice amounts in payload | 
+
+400 | 
+E725 | 
+Refund amount exceeded invoice amount | 
+Ensure Refund amount is lower than invoice amount | 
+
+400 | 
+E726 | 
+Invoice totally refunded | 
+Invoice has already been refunded, you can no longer issue a partial refund | 
+
+400 | 
+E727 | 
+Invoice Already Refunded | 
+Invoice has been refunded, request for a refund callback | 
+
+400 | 
+E728 | 
+Transaction(s) already exist | 
+Transaction number has already been sent to EVAT, use a new number | 
+
+400 | 
+E729 | 
+Refund already cancelled | 
+Request for refund callback | 
+
+400 | 
+E730 | 
+Purchase return already canceled | 
+Request for purchase return callback | 
+
+400 | 
+E750 | 
+Reference is in use | 
+Reference number has already been sent to evat, use a new one | 
+
+400 | 
+E751 | 
+Item category not found | 
+Ensure that item category exists in the payload | 
+
+400 | 
+E801 | 
+Invalid calculation type | 
+Use either INCLUSIVE or EXCLUSIVE | 
+
+400 | 
+E802 | 
+Invalid sale type | 
+Use either NORMAL or EXPORT | 
+
+400 | 
+E803 | 
+Invalid discount type | 
+Use either GENERAL or SELECTIVE | 
+
+400 | 
+E804 | 
+Invalid home currency exchange rate | 
+Set exchange rate to 1.0 if currency is GHS | 
+
+400 | 
+E805 | 
+Invalid reference | 
+Ensure the correct reference value is used | 
+
+400 | 
+E806 | 
+Invalid item category | 
+Use either "", EXM, TRSM, CST, RNT, EXC_PLASTIC | 
+
+400 | 
+E807 | 
+Invalid business partner name | 
+Ensure you use the correct name as sent on day 1 or put in a request to officially change business partner name via EVAT Suite | 
+
+400 | 
+E808 | 
+Invalid data, invoices duplication | 
+Ensure the payload is not broken | 
+
+400 | 
+E809 | 
+Invalid currency | 
+Use the approved currencies | 
+
+400 | 
+E810 | 
+Invalid exchange rate | 
+Ensure exchange rate is not 0 or less | 
+
+400 | 
+E811 | 
+Invalid business partner | 
+Ensure you use the correct name as sent on day 1 or put in a request to officially change business partner name via EVAT Suite | 
+
+400 | 
+E812 | 
+Invalid item code | 
+Ensure item code is not more than 100 characters | 
+
+400 | 
+E813 | 
+Invalid item description | 
+Ensure item description is not more than 100 characters | 
+
+400 | 
+E815 | 
+Invalid item quantity | 
+Ensure value is not 0 or less | 
+
+400 | 
+E816 | 
+Invalid item unit price | 
+Ensure value is not 0 or less | 
+
+400 | 
+E817 | 
+Invalid total voucher | 
+Ensure value is not 0 or less | 
+
+400 | 
+E818 | 
+Invalid total discount | 
+Ensure value is not 0 or less | 
+
+400 | 
+E819 | 
+Invalid levy A amount | 
+Ensure value is 2.5% of item amount | 
+
+400 | 
+E820 | 
+Invalid levy B amount | 
+Ensure value is 2.5% of item amount | 
+
+400 | 
+E821 | 
+Invalid levy C amount | 
+Ensure value is 1% of item amount (for invoices before 2025 only) | 
+
+400 | 
+E822 | 
+Invalid levy D amount | 
+Ensure value is 5% of item amount | 
+
+400 | 
+E823 | 
+Invalid levy E amount | 
+Ensure value is 1% of item amount | 
+
+400 | 
+E824 | 
+Invalid business partner TIN | 
+Ensure value has 11 or 13 characters | 
+
+400 | 
+E825 | 
+Mismatch currency between invoice and refund | 
+Ensure you use the same currency for refund as used for invoice | 
+
+400 | 
+E826 | 
+An item cannot have multiple description | 
+Ensure the same item code is not used for different item descriptions | 
+
+400 | 
+E827 | 
+An item cannot have multiple category | 
+Ensure that each tax version of an item has its unique item code | 
+
+400 | 
+E828 | 
+Different unit price was attributed to the item | 
+Ensure multiple items in the same invoice payload does not have the same item code but different unit prices | 
+
+400 | 
+E829 | 
+Item quantity exceeded | 
+Ensure the quantity is not exceeded | 
+
+400 | 
+E830 | 
+Item code is duplicated | 
+Ensure that the same item code is not assigned to multiple items on the same invoice | 
+
+400 | 
+E831 | 
+Invalid consumer | 
+ | 
+
+400 | 
+E870 | 
+Invalid invoice number format | 
+Ensure invoice number doesn't have special characters such as @ or ! | 
+
+400 | 
+E871 | 
+Invalid total amount format | 
+Ensure the value is a decimal number | 
+
+400 | 
+E872 | 
+Invalid total VAT format | 
+Ensure the value is a decimal number | 
+
+400 | 
+E873 | 
+Invalid total levies format | 
+Ensure the value is a decimal number | 
+
+400 | 
+E874 | 
+Invalid total discount format | 
+Ensure the value is a decimal number | 
+
+400 | 
+E875 | 
+Invalid total voucher format | 
+Ensure the value is a decimal number | 
+
+400 | 
+E876 | 
+Invalid exchange rate format | 
+Ensure the value is a decimal number | 
+
+400 | 
+E877 | 
+Invalid item code format | 
+Ensure the value is not more than 100 characters | 
+
+400 | 
+E878 | 
+Invalid quantity format | 
+Ensure the value is a decimal number | 
+
+400 | 
+E879 | 
+Invalid unit price format | 
+Ensure the value is a decimal number | 
+
+400 | 
+E880 | 
+QR Code data already generated | 
+Issue an invoice callback | 
+
+400 | 
+E881 | 
+Group reference not found | 
+Ensure the correct group reference value is used | 
+
+400 | 
+E890 | 
+Invalid authority | 
+Ensure your API credentials are correct | 
+
+400 | 
+E891 | 
+Invalid transaction date format | 
+Ensure the value is a date | 
+
+400 | 
+E892 | 
+Invalid supplier tin | 
+Ensure your business partner TIN has 11 or 13 characters | 
+
+400 | 
+E900 | 
+Invalid Security Key | 
+Ensure your API credentials are correct | 
+
+400 | 
+E901 | 
+Invalid Url | 
+Ensure your API endpoints are correct | 
+
+400 | 
+E902 | 
+Unable to load the application configuration | 
+Ensure your payload is not broken | 
+
+400 | 
+E903 | 
+The application is not Configured | 
+Ensure your payload is not broken | 
+
+400 | 
+E904 | 
+Invalid taxpayer reference | 
+Ensure TIN value in the endpoint URL is correct | 
+
+400 | 
+E905 | 
+Invalid application type | 
+Ensure your payload is not broken | 
+
+400 | 
+E906 | 
+The client machine is not registered | 
+Contact the tech team for assistance | 
+
+400 | 
+E907 | 
+Invalid Security Key or taxpayer reference | 
+Ensure your API credentials are correct | 
+
+400 | 
+E908 | 
+Taxpayer or branch not registered | 
+Contact the tech team for assistance | 
+
+400 | 
+E990 | 
+Too many requests | 
+Ensure you are not exceeding 50 requests per minute |
+
+====================================================================================================
+REQUEST /ERRORS/FORBIDDEN
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/invoice
+    HEADER Security_Key: 8888888888888
+--- REQUEST BODY (raw) ---
+{
+    "currency": "GHS",
+    "exchangeRate": 1.0,
+    "invoiceNumber": "NS230818-9X00001",
+    "totalLevy": 63.99,
+    "userName": "Kofi Ghana",
+    "flag": "INVOICE",
+    "calculationType": "INCLUSIVE",
+    "totalVat": 169.57,
+    "transactionDate": "2023-07-24T08:43:28Z",
+    "totalAmount": 1300.0,
+    "voucherAmount": 0.0,
+    "businessPartnerName": "fred(cash customer)",
+    "businessPartnerTin": "C0000000000",
+    "saleType": "NORMAL",
+    "discountType": "GENERAL",
+    "discountAmount": 0.0,
+    "reference": "",
+    "groupReferenceId": "",
+    "purchaseOrderReference": "",
+    "items": [
+        {
+            "itemCode": "TXC00389165855",
+            "itemCategory": "",
+            "expireDate": "2025-01-01",
+            "description": "1SFA611130R1101",
+            "quantity": 10.0,
+            "levyAmountA": 26.66,
+            "levyAmountB": 26.66,
+            "levyAmountC": 10.66,
+            "levyAmountD": 0.0,
+            "levyAmountE": 0.0,
+            "discountAmount": 0.0,           
+            "batchCode": "",
+            "unitPrice": 130.0
+        }
+    ]
+}
+--- SAMPLE RESPONSE 'JSON' [403  ] ---
+{
+    "timestamp": "2023-08-25 01:20:04",
+    "status": 901,
+    "error": "forbidden"
+}
+
+====================================================================================================
+REQUEST /ERRORS/INVOICE_NUMBER_EXIST ERROR
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/invoice
+    HEADER Security_Key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- REQUEST BODY (raw) ---
+{
+    "currency": "GHS",
+    "exchangeRate": 1.0,
+    "invoiceNumber": "NS230818-9X00001",
+    "totalLevy": 63.99,
+    "userName": "Kofi Ghana",
+    "flag": "INVOICE",
+    "calculationType": "INCLUSIVE",
+    "totalVat": 169.57,
+    "transactionDate": "2023-07-24T08:43:28Z",
+    "totalAmount": 1300.0,
+    "voucherAmount": 0.0,
+    "businessPartnerName": "fred(cash customer)",
+    "businessPartnerTin": "C0000000000",
+    "saleType": "NORMAL",
+    "discountType": "GENERAL",
+    "discountAmount": 0.0,
+    "reference": "",
+    "groupReferenceId": "",
+    "purchaseOrderReference": "",
+    "items": [
+        {
+            "itemCode": "TXC00389165855",
+            "itemCategory": "",
+            "expireDate": "2025-01-01",
+            "description": "1SFA611130R1101",
+            "quantity": 10.0,
+            "levyAmountA": 26.66,
+            "levyAmountB": 26.66,
+            "levyAmountC": 10.66,
+            "levyAmountD": 0.0,
+            "levyAmountE": 0.0,
+            "discountAmount": 0.0,           
+            "batchCode": "",
+            "unitPrice": 130.0
+        }
+    ]
+}
+--- SAMPLE RESPONSE 'JSON' [400  ] ---
+{
+    "timestamp": "2023-08-25 01:35:07",
+    "status": 400,
+    "error": "Invoice_NS230818-9X00001_already_signed"
+}
+
+====================================================================================================
+FOLDER /TIN VALIDATOR
+====================================================================================================
+
+====================================================================================================
+REQUEST /TIN VALIDATOR/TinDetails
+====================================================================================================
+--- GET 
+--- SAMPLE RESPONSE 'SuccessTinDetails' [200 OK] ---
+{
+    "status": "SUCCESS",
+    "data": {
+        "tin": "C0034186913",
+        "type": "C",
+        "name": "SPRING DATA WORKS. LIMITED",
+        "sector": "Other business support service activities n.e.c.",
+        "address": "ACRA,  NEAR Dadeban Rd., HOUSE NUMBER 17"
+    }
+}
+--- SAMPLE RESPONSE 'TinDetails' [200 OK] ---
+{
+    "status": "SUCCESS",
+    "data": {
+        "tin": "C0034186913",
+        "type": "C",
+        "name": "SPRING DATA WORKS. LIMITED",
+        "sector": "Other business support service activities n.e.c.",
+        "address": "ACRA,  NEAR Dadeban Rd., HOUSE NUMBER 17"
+    }
+}
+
+====================================================================================================
+REQUEST /TIN VALIDATOR/GhanaCardDetails
+====================================================================================================
+--- GET https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/identification/nationalId/GHA-000XXXXXX-2
+    HEADER security_key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- SAMPLE RESPONSE 'SuccessTinDetails' [200 OK] ---
+{
+    "status": "SUCCESS",
+    "data": {
+        "tin": "C0034186913",
+        "type": "C",
+        "name": "SPRING DATA WORKS. LIMITED",
+        "sector": "Other business support service activities n.e.c.",
+        "address": "ACRA,  NEAR Dadeban Rd., HOUSE NUMBER 17"
+    }
+}
+
+====================================================================================================
+FOLDER /INVENTORY
+====================================================================================================
+
+====================================================================================================
+REQUEST /INVENTORY/JSON
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/inventory
+    HEADER Security_Key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- REQUEST BODY (raw) ---
+{
+    "inventories": [
+        {
+            "code": "04004X",
+            "description": "Yogo",
+            "quantity": 3,
+            "batchCode": "0001",
+            "unitPrice": 100.0,
+            "expiryDate": "2024-04-04"
+        }
+    ],
+    "inventoryDate": "2024-04-04"
+}
+--- SAMPLE RESPONSE 'SUCCESS' [200 OK] ---
+{
+    "status": "SUCCESS"
+}
+
+====================================================================================================
+FOLDER /INVOICE_CALLBACK
+====================================================================================================
+--- DESCRIPTION ---
+A fallback mechanism that allows you to request for a copy of a transaction that has been successfully sent to EVAT.
+
+====================================================================================================
+REQUEST /INVOICE_CALLBACK/INVOICE_CALLBACK
+====================================================================================================
+--- POST https://vsdcstaging.vat-gh.com/vsdc/api/v1/taxpayer/CXX000000YY-001/invoice/callback
+    HEADER security_key: Z60gftKe9sei3xOZhvvDa0StkVILKR3j5MBM9ygi1zg=
+--- REQUEST BODY (raw) ---
+{
+    "reference": "",
+    "invoiceNumber": "NS240442-001-90003",
+    "flag": "INVOICE"
+}
+--- SAMPLE RESPONSE 'JSON_SUCCESS' [200 OK  ] ---
+{
+    "response": {
+        "distributor_tin": "C0000000003",
+        "message": {
+            "num": "NS240442-001-90003",
+            "ysdcid": "E000001001",
+            "ysdcrecnum": "1001-5FC8-NS1",
+            "ysdcintdata": "3UVG-CHSP-T62G-LMFB-4U2G-WBXC-BA",
+            "ysdcregsig": "DZGB-FS7P-EEUH-OQYJ",
+            "ysdcmrc": "00-0C-29-5C-7C-EB",
+            "ysdcmrctim": "2024/04/23 10:05:50",
+            "ysdctime": "2024/04/23 10:05:50",
+            "flag": "INVOICE",
+            "ysdcitems": "1"
+        },
+        "qr_code": "https://evat-verification-ey.cimsgh.com?data=Tgwfru4p/COzuGWHqIam5Q4pILJpZgW9+hvGA9k38PED5/xYS3+arhQ6O3Z9/SobvI4I8NOrZyYiNSLfvGSU4J4xL3/53IkvYbhbSmcweQqAtpx3lMY0hQ6UEZWm60yVcGzbRhTkSKGSGz7TfVBGFJ75GIBZJUmDiFMHpurYP/R0BbWBb2CZHvkwpR3UOws9F/dAUtREmAoNOcN7Y0292lzTiSetfcG15e6mB+3G848nsHrOxto+zymE64AkGNaN+aXkPzPmG1gDhZXxmnLU6h7da0A/1ulobMDopVs9DmP1j6oqDUByYibsH17SQy9iixfs5x4GJ4YMYDKAS0lIgw==&v=1.1&t=i",
+        "status": "SUCCESS"
+    }
+}
+--- SAMPLE RESPONSE 'XML_SUCCESS' [None None] ---
+<?xml version="1.0" encoding="UTF-8" ?>
+<ResponseDto>
+    <response>
+        <distributor_tin>C0000000003</distributor_tin>
+        <message>
+            <num>NS240442-001-90003</num>
+            <ysdcid>E000001001</ysdcid>
+            <ysdcrecnum>1001-5FC8-NS1</ysdcrecnum>
+            <ysdcintdata>3UVG-CHSP-T62G-LMFB-4U2G-WBXC-BA</ysdcintdata>
+            <ysdcregsig>DZGB-FS7P-EEUH-OQYJ</ysdcregsig>
+            <ysdcmrc>00-0C-29-5C-7C-EB</ysdcmrc>
+            <ysdcmrctim>2024/04/23 10:05:50</ysdcmrctim>
+            <ysdctime>2024/04/23 10:05:50</ysdctime>
+            <flag>INVOICE</flag>
+            <ysdcitems>1</ysdcitems>
+        </message>
+        <qr_code>https://evat-verification-ey.cimsgh.com?data=Tgwfru4p/COzuGWHqIam5Q4pILJpZgW9+hvGA9k38PED5/xYS3+arhQ6O3Z9/SobvI4I8NOrZyYiNSLfvGSU4J4xL3/53IkvYbhbSmcweQqAtpx3lMY0hQ6UEZWm60yVcGzbRhTkSKGSGz7TfVBGFJ75GIBZJUmDiFMHpurYP/R0BbWBb2CZHvkwpR3UOws9F/dAUtREmAoNOcN7Y0292lzTiSetfcG15e6mB+3G848nsHrOxto+zymE64AkGNaN+aXkPzPmG1gDhZXxmnLU6h7da0A/1ulobMDopVs9DmP1j6oqDUByYibsH17SQy9iixfs5x4GJ4YMYDKAS0lIgw==&v=1.1&t=i</qr_code>
+        <status>SUCCESS</status>
+    </response>
+</ResponseDto>

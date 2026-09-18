@@ -1,0 +1,30 @@
+GRA tax-calculation workbook, flattened. Source: tax-calculation-template.xlsx (fetched 2026-09-17).
+Each non-empty row: row number | non-empty cells as (column: value). Values are the sheet's stored results.
+
+  1 | K:EXCLUSIVE SECNARIOS
+  2 | E:STANDARD RATE | J:STANDARD RATE with CST | O:STANDARD RATE with Tourism | T:STANDARD RATE with CST & Tourism | Y:STANDARD RATE with EXCISE DUTY
+  3 | F:Quantity | G:Price | H:Amount | K:Quantity | L:Price | M:Amount | P:Quantity | Q:Price | R:Amount | U:Quantity | V:Price | W:Amount | Z:Quantity | AA:Price | AB:Amount
+  4 | F:45 | G:100 | H:4500 | K:1 | L:100 | M:100 | P:1 | Q:100 | R:100 | U:1 | V:100 | W:100 | Z:1 | AA:100 | AB:100
+ 15 | E:subtotal exc-taxes&levy | H:4500 | J:subtotal exc-taxes&levy | M:100 | O:subtotal exc-taxes&levy | R:100 | T:subtotal exc-taxes&levy | W:100 | Y:subtotal exc-taxes&levy | AB:100
+ 16 | J:CST 5% | M:5 | T:CST 5% | W:5 | Y:Excise Duty (Plastic & Plastic Products) 5% | AB:5
+ 17 | E:GETFund 2.5% | H:112.5 | J:Subtotal + CST | M:105 | O:GETFund 2.5% | R:2.5 | T:Subtotal + CST | W:105 | Y:Subtotal + Excise Duty | AB:105
+ 18 | E:NHIL 2.5% | H:112.5 | O:NHIL 2.5% | R:2.5
+ 19 | E:VAT 15% | H:675 | J:GETFund 2.5% | M:2.625 | O:Tourism 1 | R:1 | T:GETFund 2.5% | W:2.625 | Y:GETFund 2.5% | AB:2.625
+ 20 | E:Total Levy | H:225 | J:NHIL 2.5% | M:2.625 | O:VAT 15% | R:15 | T:NHIL 2.5% | W:2.625 | Y:NHIL 2.5% | AB:2.625
+ 21 | J:VAT 15% | M:15.75 | O:Total Levy | R:6 | T:Toursim 1% | W:1.05 | Y:VAT 15% | AB:15.75
+ 22 | J:Total Levy | M:10.25 | T:VAT 15% | W:15.75 | Y:Total Levy | AB:5.25
+ 25 | E:Total Amount | H:5400 | J:Total Amount | M:126 | O:Total Amount | R:121 | T:Total Amount | W:127.05 | Y:Total Amount | AB:126
+ 29 | K:INCLUSIVE SCENARIOS
+ 30 | E:STANDARD RATE | J:STANDARD RATE with CST | O:STANDARD RATE with Tourism | T:STANDARD RATE with CST & Tourism | Y:STANDARD RATE with EXCISE DUTY
+ 31 | F:Quantity | G:Price | H:Amount | K:Quantity | L:Price | M:Amount | P:Quantity | Q:Price | R:Amount | U:Quantity | V:Price | W:Amount | Z:Quantity | AA:Price | AB:Amount
+ 32 | F:1 | G:100 | H:100 | K:1 | L:100 | M:100 | P:1 | Q:100 | R:100 | U:1 | V:100 | W:100 | Z:32 | AA:540 | AB:17280
+ 43 | E:subtotal exc-taxes&levy | H:83.3333 | J:subtotal exc-taxes&levy | M:79.3651 | O:subtotal exc-taxes&levy | R:82.6446 | T:subtotal exc-taxes&levy | W:78.7092 | Y:subtotal exc-taxes&levy | AB:13714.2857
+ 44 | J:CST 5% | M:3.9683 | T:CST 5% | W:3.9355 | Y:Excise Duty (Plastic & Plastic Products) 5% | AB:685.7143
+ 45 | E:GETFund 2.5% | H:2.0833 | J:Subtotal + CST | M:83.3333 | O:GETFund 2.5% | R:2.0661 | T:Subtotal+CST | W:82.6446 | Y:Subtotal + Excise Duty | AB:14400
+ 46 | E:NHIL 2.5% | H:2.0833 | O:NHIL 2.5% | R:2.0661
+ 47 | E:VAT 15% | H:12.5 | J:GETFund 2.5% | M:2.0833 | O:Tourism 1 | R:0.8264 | T:GETFund 2.5% | W:2.0661 | Y:GETFund 2.5% | AB:360
+ 48 | E:Total Levy | H:4.1667 | J:NHIL 2.5% | M:2.0833 | O:VAT 15% | R:12.3967 | T:NHIL 2.5% | W:2.0661 | Y:NHIL 2.5% | AB:360
+ 49 | J:VAT 15% | M:12.5 | O:Total Levy | R:4.9587 | T:Tourism 1% | W:0.8264 | Y:VAT 15% | AB:2160
+ 50 | J:Total Levy | M:8.1349 | T:VAT 15% | W:12.3967 | Y:Total Levy | AB:720
+ 51 | T:Total levy | W:4.9587
+ 53 | E:Total Amount | H:100 | J:Total Amount | M:100 | O:Total Amount | R:100 | T:Total Amount | W:100 | Y:Total Amount | AB:17280
