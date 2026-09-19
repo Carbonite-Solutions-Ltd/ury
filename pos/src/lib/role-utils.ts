@@ -279,6 +279,22 @@ export const isCaptainOrAbove = (user: User | null): boolean => {
 };
 
 /**
+ * Who may Delete an order outright (2026-09-19).
+ *
+ * Cancel asks the kitchen once the food may be cooking; Delete never does,
+ * which makes it the easy way to make a served order disappear. So it sits
+ * one level above Cancel: managers and admins, not captains. Backend
+ * `can_delete_orders` is the authoritative check.
+ */
+export const canDeleteOrders = (user: User | null): boolean => {
+  if (!user) return false;
+  if (user.name === 'Administrator') return true;
+  if (!user.roles) return false;
+  const allowed = ['System Manager', 'URY Manager'];
+  return user.roles.some((role) => allowed.includes(role));
+};
+
+/**
  * Whether the current user may choose to MARK a bill printed instead of
  * physically printing it. When true, the Print / Reprint button opens a
  * PrintChoiceDialog ("Print to Printer" vs "Mark as Printed") rather

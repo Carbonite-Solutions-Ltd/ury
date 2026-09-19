@@ -106,6 +106,23 @@
         >
           Items Served
         </button>
+        <!-- Orders taken off this screen (2026-09-19): Cancelled went through
+             the kitchen (or its grace window), Deleted was a manager's call
+             that never asked. -->
+        <button
+          v-for="tab in removedTabs"
+          :key="tab.key"
+          type="button"
+          @click="openRemovedTab(tab.key)"
+          :class="[
+            'w-full text-left px-3 py-2 rounded-lg text-sm font-semibold transition',
+            servedTab === tab.key
+              ? 'bg-gray-900 text-white shadow'
+              : 'bg-white text-gray-700 hover:bg-gray-100',
+          ]"
+        >
+          {{ tab.label }}
+        </button>
         <button
           v-if="isBarUnit"
           type="button"
@@ -169,6 +186,94 @@
               >
                 {{ reinstatingKot === s.name ? "Undoing…" : "Reinstate" }}
               </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Cancelled / Deleted orders (2026-09-19), one day at a time. -->
+        <div v-else-if="servedTab === 'cancelled' || servedTab === 'deleted'">
+          <div class="rounded-xl bg-white shadow p-4">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <h2 class="text-lg font-bold text-gray-900">
+                  {{ servedTab === "deleted" ? "Deleted Orders" : "Cancelled Orders" }}
+                </h2>
+                <p class="text-xs text-gray-500">
+                  {{ production || "All" }} · {{ removedDate }} ·
+                  {{
+                    servedTab === "deleted"
+                      ? "removed by a manager without asking the kitchen"
+                      : "accepted by the kitchen, pulled before cooking, or cancelled by the waiter"
+                  }}
+                </p>
+              </div>
+              <input
+                type="date"
+                v-model="removedDate"
+                :max="todayIso()"
+                @change="fetchRemovedOrders"
+                class="rounded-md border border-gray-300 px-2 py-1 text-sm"
+              />
+            </div>
+          </div>
+
+          <p v-if="removedLoading" class="mt-3 text-sm text-gray-500">Loading…</p>
+          <p v-else-if="!removedList.length" class="mt-3 text-sm text-gray-600">
+            No {{ servedTab === "deleted" ? "deleted" : "cancelled" }} orders on this day.
+          </p>
+          <div v-else class="mt-3 space-y-3">
+            <div
+              v-for="r in removedList"
+              :key="r.kot"
+              class="rounded-xl bg-white shadow p-4 border-l-4"
+              :class="servedTab === 'deleted' ? 'border-red-600' : 'border-amber-500'"
+            >
+              <div class="flex items-center gap-2 flex-wrap">
+                <span
+                  class="rounded-full bg-gray-900 text-white px-3 py-0.5 text-lg font-extrabold leading-none"
+                >
+                  #{{ orderLabel(r) }}
+                </span>
+                <span
+                  v-if="r.waiter_name"
+                  class="rounded-full bg-[#2563EB] text-white px-2 py-0.5 text-xs font-bold leading-none"
+                >
+                  {{ r.waiter_name }}
+                </span>
+                <span class="text-sm text-gray-500">{{ r.table || "Takeaway" }}</span>
+                <span
+                  v-if="r.was_served"
+                  class="rounded-full bg-green-100 text-green-800 px-2 py-0.5 text-xs font-semibold"
+                >
+                  Was served
+                </span>
+                <span class="ml-auto text-xs text-gray-500">{{ timeLabel(r.removed_at) }}</span>
+              </div>
+              <div class="mt-2 text-sm text-gray-700">
+                <template v-if="servedTab === 'deleted'">
+                  Deleted by <span class="font-semibold">{{ r.removed_by || "a manager" }}</span>
+                </template>
+                <template v-else-if="r.by_waiter">
+                  Cancelled by the waiter
+                </template>
+                <template v-else>
+                  Cancelled by <span class="font-semibold">{{ r.removed_by || "a captain" }}</span>
+                  <span v-if="r.accepted_by"> · accepted by {{ r.accepted_by }}</span>
+                  <span v-else> · before cooking started</span>
+                </template>
+              </div>
+              <div
+                v-if="r.reason"
+                class="mt-1 rounded-md bg-gray-50 px-3 py-1.5 text-sm text-gray-800"
+              >
+                <span class="font-semibold">Reason:</span> {{ r.reason }}
+              </div>
+              <ul class="mt-2 text-sm text-gray-800 space-y-0.5">
+                <li v-for="(it, idx) in r.items" :key="idx">
+                  <span class="font-semibold">{{ it.quantity }}×</span> {{ it.item_name }}
+                  <span v-if="it.comments" class="text-gray-500"> — {{ it.comments }}</span>
+                </li>
+              </ul>
             </div>
           </div>
         </div>
@@ -1125,6 +1230,14 @@ export default {
       // Served-day sold summary (2026-07-23)
       servedSummary: null,
       summaryDate: "",
+      // Cancelled / Deleted lists (2026-09-19)
+      removedOrders: null,
+      removedDate: "",
+      removedLoading: false,
+      removedTabs: [
+        { key: "cancelled", label: "Cancelled" },
+        { key: "deleted", label: "Deleted" },
+      ],
       summaryLoading: false,
       showWaiterBreakdown: false,
       // Drag-to-reorder (2026-07-16)
@@ -1872,6 +1985,35 @@ export default {
         this.reinstatingKot = null;
       }
     },
+    /** Open the Cancelled or Deleted list; one fetch serves both tabs. */
+    openRemovedTab(kind) {
+      this.servedTab = kind;
+      if (!this.removedDate) this.removedDate = this.todayIso();
+      if (!this.removedOrders || this.removedOrders.date !== this.removedDate) {
+        this.fetchRemovedOrders();
+      }
+    },
+    async fetchRemovedOrders() {
+      this.removedLoading = true;
+      try {
+        const res = await this.call.get(
+          "ury.ury.api.ury_kot_display.get_removed_orders",
+          { production: this.production || "All", date: this.removedDate }
+        );
+        this.removedOrders = res.message || null;
+      } catch (error) {
+        console.error(error);
+        this.removedOrders = null;
+      } finally {
+        this.removedLoading = false;
+      }
+    },
+    timeLabel(raw) {
+      if (!raw) return "";
+      const d = new Date(String(raw).replace(" ", "T"));
+      if (isNaN(d.getTime())) return String(raw);
+      return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    },
     servedTimeLabel(kot) {
       const raw = kot.served_at || kot.modified;
       if (!raw) return "";
@@ -2358,6 +2500,14 @@ export default {
     },
   },
   computed: {
+    removedList() {
+      if (!this.removedOrders) return [];
+      return (
+        (this.servedTab === "deleted"
+          ? this.removedOrders.deleted
+          : this.removedOrders.cancelled) || []
+      );
+    },
     screenCount() {
       return this.myUnits.length + this.myDepartments.length;
     },

@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   Wallet,
   PauseCircle,
+  Trash2,
 } from 'lucide-react';
 import { Badge, Button, Card, CardContent } from '../components/ui';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../components/ui/dialog';
@@ -46,6 +47,7 @@ import {
   canReturnOrders,
   canSkipPhysicalPrint,
   isCaptainOrAbove,
+  canDeleteOrders,
   isWaiterOnly, canHoldOrders } from '../lib/role-utils';
 import {
   reversePosReturn,
@@ -145,6 +147,11 @@ export default function Orders() {
   const [cancelDialogOpen, setCancelDialogOpen] = React.useState(false);
   const [cancelReason, setCancelReason] = React.useState('');
   const [cancelLoading, setCancelLoading] = React.useState(false);
+  // Delete (2026-09-19): a manager removes the order without asking the
+  // kitchen. Kept apart from Cancel, which does ask.
+  const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false);
+  const [deleteReason, setDeleteReason] = React.useState('');
+  const [deleteLoading, setDeleteLoading] = React.useState(false);
   const [editLoading, setEditLoading] = React.useState(false);
   const [showPaymentDialog, setShowPaymentDialog] = React.useState(false);
   const [isPrinting, setIsPrinting] = React.useState(false);
@@ -228,6 +235,7 @@ export default function Orders() {
   // Only captains / managers / admins may cancel an order — the X on a
   // draft is hidden for cashiers (2026-06-11).
   const canCancel = useMemo(() => isCaptainOrAbove(user), [user]);
+  const canDelete = useMemo(() => canDeleteOrders(user), [user]);
 
   // Reprint gating: captains/managers/admins reprint freely; a cashier may
   // reprint until the bill's print count hits the profile's max (default 3).
@@ -406,6 +414,31 @@ export default function Orders() {
       showToast.error({ title: parsed.title || 'Failed to cancel order', description: parsed.message });
     } finally {
       setCancelLoading(false);
+    }
+  }
+
+  async function handleDeleteOrder() {
+    if (!selectedOrder) return;
+    if (!deleteReason.trim()) {
+      showToast.error('Please enter a reason for deleting this order.');
+      return;
+    }
+    setDeleteLoading(true);
+    try {
+      await call.post('ury.ury.doctype.ury_order.ury_order.delete_order', {
+        invoice_id: selectedOrder.name,
+        reason: deleteReason,
+      });
+      showToast.success('Order deleted and removed from the kitchen');
+      setDeleteDialogOpen(false);
+      setDeleteReason('');
+      clearSelectedOrder();
+      fetchOrders();
+    } catch (err) {
+      const parsed = extractFrappeServerError(err, 'Failed to delete order');
+      showToast.error({ title: parsed.title || 'Failed to delete order', description: parsed.message });
+    } finally {
+      setDeleteLoading(false);
     }
   }
 
@@ -846,8 +879,8 @@ export default function Orders() {
                               <span className="text-xs">Served</span>
                             </Badge>
                           )}
-                          <Badge variant={getBadgeVariant(order.status)}>
-                            {order.status}
+                          <Badge variant={order.custom_deleted === 1 ? 'destructive' : getBadgeVariant(order.status)}>
+                            {order.custom_deleted === 1 ? 'Deleted' : order.status}
                           </Badge>
                         </div>
                       </td>
@@ -945,8 +978,8 @@ export default function Orders() {
                             </Badge>
                           )}
                           {/* Status Badge */}
-                          <Badge variant={getBadgeVariant(order.status)}>
-                            {order.status}
+                          <Badge variant={order.custom_deleted === 1 ? 'destructive' : getBadgeVariant(order.status)}>
+                            {order.custom_deleted === 1 ? 'Deleted' : order.status}
                           </Badge>
                         </div>
                       </div>
@@ -1093,15 +1126,32 @@ export default function Orders() {
                       <Pencil className="w-4 h-4" />
                       {editLoading && <span className="ml-2 text-xs">Loading...</span>}
                     </button>
-                    {/* Cancel (X) — captains / managers / admins only. */}
-                    {canCancel && (
+                    {/* Cancel (X) — captains / managers / admins only. Hidden
+                        while a request is already with the kitchen: the
+                        server would refuse a second one. */}
+                    {canCancel && selectedOrder.custom_cancel_pending !== 1 && (
                       <button
                         type="button"
                         className="inline-flex items-center justify-center rounded-md p-2 bg-gray-100 hover:bg-gray-200 text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500"
                         aria-label="Cancel order"
+                        title="Cancel (asks the kitchen if the food may be cooking)"
                         onClick={() => setCancelDialogOpen(true)}
                       >
                         <X className="w-4 h-4" />
+                      </button>
+                    )}
+                    {/* Delete — managers / admins only, unpaid orders only.
+                        Skips the kitchen, so it also frees an order stuck
+                        on a request the kitchen can no longer answer. */}
+                    {canDelete && selectedOrder.status === 'Draft' && (
+                      <button
+                        type="button"
+                        className="inline-flex items-center justify-center rounded-md p-2 bg-red-50 hover:bg-red-100 text-red-700 focus:outline-none focus:ring-2 focus:ring-red-500"
+                        aria-label="Delete order"
+                        title="Delete (removes it from the kitchen without asking)"
+                        onClick={() => setDeleteDialogOpen(true)}
+                      >
+                        <Trash2 className="w-4 h-4" />
                       </button>
                     )}
                   </>
@@ -1137,8 +1187,8 @@ export default function Orders() {
                     <span>Room {selectedOrder.custom_hotel_room || ''}</span>
                   </Badge>
                 )}
-                <Badge variant={getBadgeVariant(selectedOrder.status)}>
-                  {selectedOrder.status}
+                <Badge variant={selectedOrder.custom_deleted === 1 ? 'destructive' : getBadgeVariant(selectedOrder.status)}>
+                  {selectedOrder.custom_deleted === 1 ? 'Deleted' : selectedOrder.status}
                 </Badge>
               </div>
             </div>
@@ -1146,13 +1196,26 @@ export default function Orders() {
             {selectedOrder.status === 'Cancelled' && (
               <div className="mx-6 mt-3 rounded-lg border border-red-200 bg-red-50 p-3">
                 <div className="flex items-center gap-2 text-sm font-semibold text-red-700">
-                  <X className="w-4 h-4" />
-                  Order Cancelled
+                  {selectedOrder.custom_deleted === 1 ? (
+                    <Trash2 className="w-4 h-4" />
+                  ) : (
+                    <X className="w-4 h-4" />
+                  )}
+                  {selectedOrder.custom_deleted === 1 ? 'Order Deleted' : 'Order Cancelled'}
                 </div>
                 <div className="mt-1 text-sm text-red-800">
                   <span className="font-medium">Reason:</span>{' '}
                   {selectedOrder.cancel_reason || '—'}
                 </div>
+                {selectedOrder.custom_deleted === 1 && (
+                  <div className="mt-1 text-xs text-red-700">
+                    Deleted by {selectedOrder.deleted_by_name || 'a manager'}
+                    {selectedOrder.custom_deleted_at
+                      ? ` on ${new Date(selectedOrder.custom_deleted_at.replace(' ', 'T')).toLocaleString()}`
+                      : ''}
+                    , without asking the kitchen.
+                  </div>
+                )}
               </div>
             )}
             {/*
@@ -1177,6 +1240,9 @@ export default function Orders() {
                   <div className="mt-1">
                     This order can't be paid or edited until the kitchen
                     accepts it on their screen.
+                    {canDelete
+                      ? ' If they can\'t, use Delete to remove it without asking.'
+                      : ' If they can\'t, a manager can delete it.'}
                   </div>
                 </div>
               </div>
@@ -1209,7 +1275,9 @@ export default function Orders() {
                 <DialogHeader>
                   <DialogTitle>Cancel Order</DialogTitle>
                   <DialogDescription>
-                    Please provide a reason for cancelling this order.
+                    Please provide a reason for cancelling this order. If the
+                    kitchen may already be cooking it, they are asked to
+                    accept first.
                   </DialogDescription>
                 </DialogHeader>
                 <div className="px-6 mb-3">
@@ -1227,6 +1295,37 @@ export default function Orders() {
                   </Button>
                   <Button variant="danger" onClick={handleCancelOrder} disabled={cancelLoading}>
                     {cancelLoading ? 'Cancelling...' : 'Confirm Cancel'}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+            {/* Delete Order Dialog (2026-09-19) */}
+            <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Delete Order</DialogTitle>
+                  <DialogDescription>
+                    This removes {selectedOrder.name} now and takes it off every
+                    kitchen screen without asking the kitchen. It shows on the
+                    kitchen's Deleted list. Use Cancel instead if the kitchen
+                    should confirm first.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="px-6 mb-3">
+                  <Textarea
+                    placeholder="Reason for deleting"
+                    value={deleteReason}
+                    onChange={e => setDeleteReason(e.target.value)}
+                    disabled={deleteLoading}
+                    autoFocus
+                  />
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setDeleteDialogOpen(false)} disabled={deleteLoading}>
+                    Close
+                  </Button>
+                  <Button variant="danger" onClick={handleDeleteOrder} disabled={deleteLoading}>
+                    {deleteLoading ? 'Deleting...' : 'Delete Order'}
                   </Button>
                 </DialogFooter>
               </DialogContent>

@@ -222,6 +222,47 @@ Facts from that pack that affect URY code today:
 
 Running record of bugs fixed and non-obvious traps discovered. Add new entries at the top. Each entry should answer: what went wrong, why, where it was fixed, how it was verified.
 
+### 2026-09-19 — Cancel vs Delete: orders stuck forever on a kitchen approval nobody could give
+- **Symptom (user):** a manager tries to cancel held orders whose tickets were cleared or served on the kitchen screen a week ago, and gets "check the production unit and approve". The ticket isn't on the kitchen screen, so nobody can approve it, and the order stays locked.
+- **Root cause, confirmed on the client's data:** `kot_list` only shows tickets that are `Ready For Prepare` **and** less than 3 hours old. `_kot_needs_kitchen_ack` returns True for **every served ticket** whatever its age. So cancelling any order with a served ticket, or with a ticket older than 3 hours, parks a request that can **never appear on a kitchen screen**. With the hard lock (2026-07-31, no override), the order could not be paid, edited or cancelled again. Found 4 locked orders (M-0379 and M-0416 from 17 Aug; M-2651 and M-2715, both held, from 17 Sep), plus 4 dead requests on orders that no longer exist.
+- **The design (user's call): Cancel and Delete are now separate actions.**
+  - **Cancel** (Captain, Manager, Admin): unchanged. Inside the grace window the ticket is pulled; after it, the kitchen is asked. It now **works for served and old tickets too**: `kot_list` adds every ticket with `cancel_status = 'Awaiting Kitchen'` whose order is still an unpaid draft marked pending, at the front of the board, whatever its status or age (`merge_pending_cancellations`). The dead requests on deleted orders are filtered out by that same join.
+  - **Delete** (Managers and Admins only; the user chose this over Captains, because Delete skips the kitchen and is the easy way to make a served order disappear): `delete_order(invoice_id, reason)` in [ury_order.py](ury/ury/doctype/ury_order/ury_order.py), whitelisted POST-only.
+    - Unpaid drafts only; a paid bill still goes through Return. A reason is required.
+    - Every ticket of the order still on a kitchen screen (reprints and cancel chits included) leaves at once, with no chit and no prompt. Each is stamped `order_status = "Deleted"` and `cancel_status = "Deleted"` (new Select option on URY KOT), plus the reason, who and when.
+    - This also clears a pending request, so it is the way out for the orders that were stuck.
+  - **The order is kept, not erased** (user's choice): cancelled (docstatus 2) with new `POS Invoice.custom_deleted`, `custom_deleted_by` and `custom_deleted_at`, in all three sources per the dual-source rule. `custom_field.json` was appended as text: 162 insertions, 0 deletions.
+- **Kitchen lists:** the Served sidebar gains **Cancelled** and **Deleted** tabs. Each shows one day at a time (a date picker defaulting to today, like Items Served), scoped to that screen's unit, or its department in Menu Course mode. Each card shows the order, waiter, table, a "Was served" chip, who removed it (and who accepted it), the reason and the items. Backend: `get_removed_orders(production, date)`, which enforces unit access like the served endpoints.
+  - Within-grace cancels used to flip only `order_status`, leaving no reason, no who and no when to show. `_delete_kots_within_grace` now stamps `cancel_reason`, `cancel_requested_by` and `cancel_requested_at`.
+- **Safety net added:** `_finalize_invoice_cancellation` now does nothing unless the invoice is still an unpaid draft. A kitchen Accept can therefore never cancel a paid bill, even if the pending lock is bypassed from the desk.
+- **POS ([Orders.tsx](pos/src/pages/Orders.tsx)):**
+  - A red **Delete** button (trash icon) sits next to Cancel for managers, on Draft orders only.
+  - Cancel is hidden while a request is pending, since the server would refuse a second one.
+  - The pending banner now points to Delete.
+  - Deleted orders read **Deleted** (red badge) under the Cancelled filter, with an "Order Deleted — by X on date, without asking the kitchen" banner.
+  - `canDeleteOrders` in role-utils mirrors the backend `can_delete_orders`.
+- **⚠ Found while testing, NOT fixed — a pre-existing crash in `getPosProfile`.** An Administrator's branch falls back to the first POS Profile's branch. When that differs from the terminal's profile branch, `if pos_profiles.branch == branchName` skips the whole block and `pos_profile_name` is unbound, giving `UnboundLocalError` and the POS "Access Denied". It happens on this data now that `Sitout` is its own branch: Administrator on the Airport terminal crashes. It would also hit a cashier linked to one branch who opens another branch's terminal. Worked around for the test by temporarily disabling the Sitout profile (restored). Flagged to the user.
+- **Verified:**
+  - **23/23 unit tests** (`bench --site <site> execute ury.ury.api.test_order_delete.run_order_delete_tests`), 10 of them live against the real locked orders, each rolled back:
+    - the unanswered request shows on the board;
+    - Delete frees a locked order;
+    - it leaves the board and lands on the Deleted list;
+    - a reason is required; paid, missing and already-deleted orders are refused;
+    - a captain is refused;
+    - a kitchen Accept can't cancel a paid bill;
+    - a within-grace cancel records who and why.
+  - Regression suites green: cancellation 22/22, KDS access 30/30, bar stock 26/26.
+  - **Headless Chromium on the client's data:**
+    - MainKitchen board showed **4 pending cards** (before the fix: 0).
+    - In the POS, M-0379 showed Delete but no Cancel, and the banner pointing to Delete; the dialog deleted it.
+    - It then appeared as Deleted under Cancelled with the by-line.
+    - The board dropped to 3 cards, and the kitchen's Deleted tab listed it with reason and items.
+    - The Cancelled tab loads. 0 page errors.
+  - All test changes were restored afterwards (order, items, ticket, shift, Sitout profile, session).
+  - `tsc` clean, ESLint shows the same 5 pre-existing errors, both frontends build.
+- **Deploy:** `bench migrate` (3 new POS Invoice fields and the new KOT status option), then `bench restart` (new whitelisted methods, changed `kot_list`, `cancel_order` and the Orders queries), then redeploy **both** `pos/` and `URYMosaic/`.
+- **After deploy:** a manager can clear the 4 locked orders with Delete, or the kitchen can now Accept them from the board.
+
 ### 2026-09-18 — Kitchen staff role + per-unit Screen Access + screen picker
 - **Ask (user):** kitchen and bar staff had no role of their own, so they were being given **URY Cashier** just to open the KDS. The user wanted a proper production role, a table on each production unit listing who can use it, and a login flow: tagged on one unit → go straight to it; tagged on several → a page to pick one, plus a way to switch later.
 - **New role `URY Production User`** ("ExPOS Production User"). It has `desk_access=1`, because untargeted realtime publishes only reach System Users and the board's socket needs them. It has **`home_page = "Mosaic"`**, which is how the login lands on the KDS with no desk flash. Frappe's `get_home_page()` checks each role's `Role.home_page` first, so `/api/method/login` returns `home_page: "Mosaic"`.

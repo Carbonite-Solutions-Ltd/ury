@@ -410,6 +410,10 @@ fixtures = [
                     # Sell on account (2026-08-24)
                     "POS Invoice-custom_on_account_amount",
                     "POS Invoice-custom_on_account_sms_sent",
+                    # Delete vs Cancel (2026-09-19)
+                    "POS Invoice-custom_deleted",
+                    "POS Invoice-custom_deleted_by",
+                    "POS Invoice-custom_deleted_at",
                     "POS Profile-custom_enable_on_account",
                     "POS Profile-custom_cancel_grace_minutes",
                     "POS Profile-custom_edit_order_type",

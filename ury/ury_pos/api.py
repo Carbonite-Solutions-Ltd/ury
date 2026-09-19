@@ -1072,6 +1072,9 @@ def getPosInvoice(
             pi.custom_order_contact_name, pi.custom_order_contact_mobile,
             pi.custom_ihotel_profile, pi.custom_print_count, pi.custom_waiter,
             pi.cancel_reason,
+            pi.custom_deleted, pi.custom_deleted_at,
+            (SELECT du.full_name FROM `tabUser` AS du WHERE du.name = pi.custom_deleted_by)
+                AS deleted_by_name,
             u.full_name AS owner_full_name,
             (
                 SELECT ml.name
@@ -1251,6 +1254,10 @@ def searchPosInvoice(
             pi.custom_on_hold, pi.custom_hold_reason,
             pi.custom_order_contact_name, pi.custom_order_contact_mobile,
             pi.custom_ihotel_profile,
+            pi.cancel_reason,
+            pi.custom_deleted, pi.custom_deleted_at,
+            (SELECT du.full_name FROM `tabUser` AS du WHERE du.name = pi.custom_deleted_by)
+                AS deleted_by_name,
             u.full_name AS owner_full_name,
             (
                 SELECT ml.name
