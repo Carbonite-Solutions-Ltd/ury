@@ -885,7 +885,8 @@ def cancel_order(invoice_id, reason):
         frappe.throw(
             _(
                 "A cancellation for this order is already with the kitchen. "
-                "It clears once they accept it."
+                "It clears once they accept it. If the kitchen can't, a "
+                "manager can Delete the order instead."
             ),
             title=_("Already Pending"),
         )
@@ -903,7 +904,7 @@ def cancel_order(invoice_id, reason):
     needs_ack = [k for k in kots if _kot_needs_kitchen_ack(k, now=now)]
     within_grace = [k for k in kots if k not in needs_ack]
 
-    _delete_kots_within_grace(within_grace)
+    _delete_kots_within_grace(within_grace, reason)
 
     if needs_ack:
         # Order is NOT cancelled here. It is locked until the kitchen
@@ -933,6 +934,88 @@ def cancel_order(invoice_id, reason):
     return {"invoice": invoice_id, "mode": "delete", "order_cancelled": 1}
 
 
+# Delete vs Cancel (2026-09-19). Cancel asks the kitchen once the grace
+# window has closed; Delete never does. That makes Delete the easy way to
+# make a served order disappear, so it sits one level above Cancel.
+DELETE_ORDER_ROLES = frozenset({"System Manager", "URY Manager"})
+
+
+def can_delete_orders(user, roles):
+    """Managers and admins may delete an order outright. Pure, for tests."""
+    if user == "Administrator":
+        return True
+    return bool(set(roles or ()) & DELETE_ORDER_ROLES)
+
+
+@frappe.whitelist(methods=["POST"])
+def delete_order(invoice_id, reason=None):
+    """Delete an unpaid order without asking the kitchen.
+
+    Its tickets leave every kitchen screen at once, with no chit and no
+    Accept, and land on the kitchen's Deleted list. The order is kept -
+    cancelled and flagged Deleted, with who, when and why - rather than
+    erased, so the desk and the kitchen can still account for it.
+
+    This is also the way out for an order locked by a cancellation the
+    kitchen never answered: the pending request is overwritten.
+    """
+    user = frappe.session.user
+    if not can_delete_orders(user, frappe.get_roles(user)):
+        frappe.throw(
+            _(
+                "Only a manager can delete an order. A captain can Cancel it "
+                "instead, which asks the kitchen first."
+            ),
+            frappe.PermissionError,
+            title=_("Not Permitted"),
+        )
+
+    reason = (reason or "").strip()
+    if not reason:
+        frappe.throw(
+            _("Give a reason for deleting this order."),
+            title=_("Reason Required"),
+        )
+
+    row = frappe.db.get_value(
+        "POS Invoice", invoice_id, ["docstatus", "status"], as_dict=True
+    )
+    if not row:
+        frappe.throw(_("Order {0} was not found.").format(invoice_id), title=_("Not Found"))
+    if row.docstatus == 2:
+        frappe.throw(
+            _("Order {0} is already cancelled.").format(invoice_id),
+            title=_("Already Cancelled"),
+        )
+    if row.docstatus != 0:
+        frappe.throw(
+            _(
+                "Only an unpaid order can be deleted. A paid bill has to be "
+                "returned instead."
+            ),
+            title=_("Already Paid"),
+        )
+
+    from ury.ury.api.ury_kot_display import (
+        _finalize_invoice_cancellation,
+        delete_invoice_kots,
+    )
+
+    removed = delete_invoice_kots(invoice_id, reason)
+    _finalize_invoice_cancellation(invoice_id, reason)
+
+    stamp = {
+        "custom_deleted": 1,
+        "custom_deleted_by": user,
+        "custom_deleted_at": frappe.utils.now(),
+    }
+    if frappe.db.has_column("POS Invoice", "custom_on_hold"):
+        stamp["custom_on_hold"] = 0
+    frappe.db.set_value("POS Invoice", invoice_id, stamp, update_modified=False)
+
+    return {"invoice": invoice_id, "mode": "deleted", "kots_removed": removed}
+
+
 def _assert_not_pending_cancellation(invoice):
     """Refuse to touch an order whose cancellation is with the kitchen.
 
@@ -954,14 +1037,13 @@ def _assert_not_pending_cancellation(invoice):
         _(
             "This order is waiting for the kitchen to accept a cancellation, "
             "so it can't be changed or paid right now. Ask the kitchen to "
-            "accept it on their screen. If the screen is down, clear "
-            "'Cancellation Status' on the order's {0} in the desk."
-        ).format(_("URY KOT")),
+            "accept it on their screen, or have a manager Delete the order."
+        ),
         title=_("Cancellation Pending"),
     )
 
 
-def _delete_kots_within_grace(kots):
+def _delete_kots_within_grace(kots, reason=None):
     """Take still-fresh tickets straight off the board.
 
     No "CNCL-" chit is raised for these: nothing was started, so there
@@ -974,10 +1056,19 @@ def _delete_kots_within_grace(kots):
     """
     for kot in kots or []:
         printed = frappe.db.get_value("URY KOT", kot["name"], "kot_printed")
+        # Who, when and why, so the kitchen's Cancelled list can show a
+        # ticket that was pulled before anyone had to accept it
+        # (2026-09-19). Before, only the status changed.
         frappe.db.set_value(
             "URY KOT",
             kot["name"],
-            {"order_status": "Cancelled by Captain"},
+            {
+                "order_status": "Cancelled by Captain",
+                "cancel_scope": "Order",
+                "cancel_reason": (reason or "").strip() or None,
+                "cancel_requested_by": frappe.session.user,
+                "cancel_requested_at": frappe.utils.now(),
+            },
             update_modified=False,
         )
         if printed:

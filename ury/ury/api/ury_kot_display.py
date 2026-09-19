@@ -3,6 +3,11 @@ import json
 import frappe
 from frappe import _
 from ury.ury_pos.api import getBranch, _get_self_waiter_for_user
+from ury.ury.api.ury_kds_access import (
+    kds_branch,
+    require_unit_access,
+    unit_access_denied,
+)
 from frappe.utils import get_datetime
 
 
@@ -490,9 +495,25 @@ def kot_list(target=None):
     If the target is not valid for the active mode, returns
     ``{"error": "...", "KOT": []}`` so the frontend can render a
     clear "not found" message instead of a blank board.
+
+    A production unit with users on its Screen Access table only opens for
+    those users (plus captains/managers/admins); anyone else gets
+    ``access_denied: 1`` so the screen can offer the units they do have.
     """
+    if unit_access_denied(target):
+        return {
+            "error": _(
+                "You don't have access to the {0} screen. Ask a manager to add "
+                "you to its Screen Access table."
+            ).format(target),
+            "access_denied": 1,
+            "KOT": [],
+        }
+
     today = frappe.utils.now()
-    branch = getBranch()
+    # A production unit carries its own branch, so a kitchen user doesn't
+    # need a URY User row on the Branch just to see their screen.
+    branch = kds_branch(target)
     pos_profile_name = frappe.db.get_value("POS Profile", {"branch": branch}, "name")
     kot_alert_time = frappe.db.get_value(
         "POS Profile", pos_profile_name, "custom_kot_warning_time"
@@ -569,6 +590,33 @@ def kot_list(target=None):
         order_by="creation desc",
     )
 
+    # A cancellation the kitchen has been asked to accept must be ON the
+    # board, or nobody can accept it (2026-09-19). The query above only
+    # shows tickets still being prepared from the last 3 hours, so a
+    # request on a SERVED ticket - which always needs the kitchen - or on an
+    # older one could never be answered, and the order stayed locked for
+    # good. Only requests whose order is still an unpaid draft marked
+    # pending: a request left behind on a deleted or settled order is dead.
+    pending_names = [
+        r[0]
+        for r in frappe.db.sql(
+            """
+            SELECT k.name
+            FROM `tabURY KOT` k
+            INNER JOIN `tabPOS Invoice` pi ON pi.name = k.invoice
+            WHERE k.branch = %s
+              AND k.docstatus = 1
+              AND k.cancel_status = 'Awaiting Kitchen'
+              AND k.type IN ('New Order', 'Order Modified')
+              AND pi.docstatus = 0
+              AND pi.custom_cancel_pending = 1
+            ORDER BY k.creation DESC
+            """,
+            (branch,),
+        )
+    ]
+    kotList = merge_pending_cancellations(kotList, pending_names)
+
     now_dt = frappe.utils.now_datetime()
     KOT = []
     for kot in kotList:
@@ -624,6 +672,187 @@ def kot_list(target=None):
         "daily_order_number": daily_order_number,
         "kds_routing_mode": kds_mode,
     }
+
+
+def merge_pending_cancellations(board, pending_names):
+    """Put tickets awaiting a cancellation answer at the front of the board.
+
+    ``board`` is the normal list of ``{"name": ...}`` rows; a pending ticket
+    already on it is moved rather than repeated. Pure, so the ordering is
+    testable without a database.
+    """
+    pending = [frappe._dict(name=n) for n in dict.fromkeys(pending_names or [])]
+    wanted = {p.name for p in pending}
+    return pending + [row for row in board or [] if row.get("name") not in wanted]
+
+
+def removed_kind(order_status):
+    """'deleted', 'cancelled' or None for a ticket's order_status."""
+    if order_status == DELETED_ORDER:
+        return "deleted"
+    if order_status in (CANCELLED_BY_CAPTAIN, CANCELLED_BY_WAITER):
+        return "cancelled"
+    return None
+
+
+def _kots_to_delete(invoice):
+    """Every ticket of this order that is not already off the board.
+
+    Wider than `_live_kots_for_invoice` on purpose: reprints and courtesy
+    cancel chits are included too, so nothing about the order is left
+    sitting on a kitchen screen.
+    """
+    return frappe.get_all(
+        "URY KOT",
+        filters={
+            "invoice": invoice,
+            "docstatus": 1,
+            "order_status": ("not in", REMOVED_ORDER_STATUSES),
+        },
+        fields=["name", "production", "branch", "type"],
+    )
+
+
+def delete_invoice_kots(invoice, reason):
+    """Take every ticket of a deleted order off the kitchen screens.
+
+    No chit, no prompt, no Accept - that is the whole difference between
+    Delete and Cancel. Each ticket keeps a record (who, when, why) on the
+    cancel_* fields so the kitchen's Deleted list can show it, and any
+    request the kitchen was never able to answer is overwritten.
+    """
+    kots = _kots_to_delete(invoice)
+    stamp = {
+        "order_status": DELETED_ORDER,
+        "cancel_status": "Deleted",
+        "cancel_scope": "Order",
+        "cancel_reason": reason,
+        "cancel_items": None,
+        "cancel_requested_by": frappe.session.user,
+        "cancel_requested_at": frappe.utils.now(),
+        "cancel_accepted_by": None,
+        "cancel_accepted_at": None,
+    }
+    for kot in kots:
+        frappe.db.set_value("URY KOT", kot["name"], stamp, update_modified=False)
+    # The screens refresh on the cancellation channel; a deleted card simply
+    # drops off because its order_status no longer matches the board.
+    for kot in kots:
+        _publish_cancel_to_kds(kot, "kot_cancel_requested")
+    return len(kots)
+
+
+@frappe.whitelist()
+def get_removed_orders(production=None, date=None):
+    """The kitchen's Cancelled and Deleted lists for one screen and day.
+
+    Cancelled = the captain cancelled and the kitchen accepted, or it was
+    removed inside the grace window, or a waiter cancelled it after a
+    change request. Deleted = a manager deleted the order without asking.
+    Scoped like the Items Served tab: the screen's production unit (or
+    department in Menu Course mode) and one calendar day.
+    """
+    from ury.ury.api.ury_kds_access import kds_branch, require_unit_access
+
+    require_unit_access(production)
+    branch = kds_branch(production)
+    date = date or frappe.utils.nowdate()
+    kds_mode = (
+        frappe.db.get_value("POS Profile", {"branch": branch}, "custom_kds_routing_mode")
+        or "Menu Course"
+    )
+
+    # When the ticket actually came off: deleted/cancel requested, accepted,
+    # or the waiter's answer. Falls back to creation for tickets removed
+    # before these stamps existed.
+    event = (
+        "COALESCE(k.cancel_accepted_at, k.cancel_requested_at, "
+        "k.change_resolved_at, k.creation)"
+    )
+    conditions = [
+        "k.branch = %(branch)s",
+        "k.docstatus = 1",
+        "k.type IN ('New Order', 'Order Modified')",
+        "k.order_status IN %(statuses)s",
+        f"DATE({event}) = %(date)s",
+    ]
+    params = {"branch": branch, "date": date, "statuses": REMOVED_ORDER_STATUSES}
+
+    if production and production != "All":
+        if kds_mode == "URY Production Unit":
+            conditions.append("k.production = %(production)s")
+            params["production"] = production
+        else:
+            conditions.append(
+                """EXISTS (
+                    SELECT 1 FROM `tabURY KOT Items` ki
+                    LEFT JOIN `tabURY Menu Course` mc ON mc.name = ki.course
+                    WHERE ki.parent = k.name
+                      AND COALESCE(NULLIF(mc.custom_department, ''), 'Food') = %(dept)s
+                )"""
+            )
+            params["dept"] = production
+
+    rows = frappe.db.sql(
+        f"""
+        SELECT k.name, k.invoice, k.order_no, k.restaurant_table, k.production,
+               k.order_status, k.cancel_status,
+               COALESCE(NULLIF(k.cancel_reason, ''), NULLIF(k.change_response, ''),
+                        pi.cancel_reason) AS reason,
+               COALESCE(k.cancel_requested_by, k.change_resolved_by) AS removed_by,
+               k.cancel_accepted_by AS accepted_by,
+               {event} AS removed_at,
+               k.served_at, k.creation
+        FROM `tabURY KOT` k
+        LEFT JOIN `tabPOS Invoice` pi ON pi.name = k.invoice
+        WHERE {" AND ".join(conditions)}
+        ORDER BY removed_at DESC
+        """,
+        params,
+        as_dict=True,
+    )
+
+    items = {}
+    if rows:
+        for it in frappe.get_all(
+            "URY KOT Items",
+            filters={"parent": ("in", [r.name for r in rows])},
+            fields=["parent", "item_name", "quantity", "comments"],
+            order_by="idx asc",
+        ):
+            items.setdefault(it.parent, []).append(
+                {"item_name": it.item_name, "quantity": it.quantity, "comments": it.comments}
+            )
+
+    names = {}
+
+    def full_name(user):
+        if not user:
+            return None
+        if user not in names:
+            names[user] = frappe.db.get_value("User", user, "full_name") or user
+        return names[user]
+
+    cancelled, deleted = [], []
+    for r in rows:
+        entry = {
+            "kot": r.name,
+            "invoice": r.invoice,
+            "order_no": r.order_no,
+            "table": r.restaurant_table,
+            "production": r.production,
+            "reason": r.reason,
+            "removed_by": full_name(r.removed_by),
+            "accepted_by": full_name(r.accepted_by),
+            "removed_at": r.removed_at,
+            "was_served": int(bool(r.served_at)),
+            "by_waiter": int(r.order_status == CANCELLED_BY_WAITER),
+            "waiter_name": _kot_waiter_name(r.invoice),
+            "items": items.get(r.name, []),
+        }
+        (deleted if removed_kind(r.order_status) == "deleted" else cancelled).append(entry)
+
+    return {"date": date, "production": production, "cancelled": cancelled, "deleted": deleted}
 
 
 @frappe.whitelist()
@@ -718,8 +947,9 @@ def get_late_orders():
 
 @frappe.whitelist()
 def served_kot_list(production=None):
+    require_unit_access(production)
     today = frappe.utils.now()
-    branch = getBranch()
+    branch = kds_branch(production)
     kot_alert_time = frappe.db.get_value(
         "POS Profile", {"branch": branch}, "custom_kot_warning_time"
     )
@@ -860,7 +1090,8 @@ def get_served_summary(production=None, date=None):
     to avoid double/over-counting. `URY KOT Items.quantity` is a Data string,
     so it's CAST to a number.
     """
-    branch = getBranch()
+    require_unit_access(production)
+    branch = kds_branch(production)
     if not date:
         date = frappe.utils.nowdate()
 
@@ -1020,6 +1251,14 @@ DEFAULT_CANCEL_GRACE_MINUTES = 2
 # free-text Data field, so this needs no schema change - the same trick
 # `kitchen_ack_change` already uses for "Cancelled by Waiter".
 CANCELLED_BY_CAPTAIN = "Cancelled by Captain"
+CANCELLED_BY_WAITER = "Cancelled by Waiter"
+
+# Delete vs Cancel (2026-09-19). Cancel asks the kitchen; Delete is a
+# manager's call that skips the kitchen entirely, so its tickets are parked
+# on their own order_status - off the board like a cancelled ticket, but
+# kept apart so the kitchen's Deleted list can tell the two stories.
+DELETED_ORDER = "Deleted"
+REMOVED_ORDER_STATUSES = (CANCELLED_BY_CAPTAIN, CANCELLED_BY_WAITER, DELETED_ORDER)
 
 
 def _profile_grace_minutes(pos_profile):
@@ -1110,7 +1349,7 @@ def _live_kots_for_invoice(invoice):
             "invoice": invoice,
             "docstatus": 1,
             "type": ("in", ("New Order", "Order Modified")),
-            "order_status": ("not in", (CANCELLED_BY_CAPTAIN, "Cancelled by Waiter")),
+            "order_status": ("not in", REMOVED_ORDER_STATUSES),
         },
         fields=[
             "name",
@@ -1291,8 +1530,18 @@ def _finalize_invoice_cancellation(invoice, reason):
     `ury_order.cancel_order`: that module imports this one's siblings and
     a back-import would be circular. These are the same six writes it
     performs, minus the KOT handling, which the caller has already done.
+
+    Returns False without touching anything unless the invoice is still an
+    unpaid draft. A pending order is locked against payment, so this should
+    never meet a settled one - but a kitchen Accept must not be able to
+    cancel a paid bill if that lock is ever bypassed from the desk.
     """
-    table = frappe.db.get_value("POS Invoice", invoice, "restaurant_table")
+    row = frappe.db.get_value(
+        "POS Invoice", invoice, ["docstatus", "restaurant_table"], as_dict=True
+    )
+    if not row or row.docstatus != 0:
+        return False
+    table = row.restaurant_table
     if table:
         frappe.db.set_value(
             "URY Table", table, {"occupied": 0, "latest_invoice_time": None}
@@ -1312,6 +1561,7 @@ def _finalize_invoice_cancellation(invoice, reason):
         },
         update_modified=False,
     )
+    return True
 
 
 @frappe.whitelist()
@@ -1390,8 +1640,7 @@ def kitchen_accept_cancellation(kot):
                 "POS Invoice", invoice, "custom_cancel_pending", 0, update_modified=False
             )
         else:
-            _finalize_invoice_cancellation(invoice, reason)
-            finalized = 1
+            finalized = int(bool(_finalize_invoice_cancellation(invoice, reason)))
 
     frappe.db.commit()
     return {

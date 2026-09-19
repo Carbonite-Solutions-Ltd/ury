@@ -82,5 +82,26 @@
   "timeline": 1,
   "two_factor_auth": 0,
   "view_switcher": 1
+ },
+ {
+  "bulk_actions": 1,
+  "dashboard": 1,
+  "desk_access": 1,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Role",
+  "form_sidebar": 1,
+  "home_page": "Mosaic",
+  "is_custom": 0,
+  "list_sidebar": 1,
+  "modified": "2026-09-18 14:00:00.000000",
+  "name": "URY Production User",
+  "notifications": 1,
+  "restrict_to_domain": null,
+  "role_name": "URY Production User",
+  "search_bar": 1,
+  "timeline": 1,
+  "two_factor_auth": 0,
+  "view_switcher": 1
  }
 ]

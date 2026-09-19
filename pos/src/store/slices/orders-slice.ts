@@ -76,6 +76,10 @@ export interface POSInvoice {
   /** 1 while a captain's cancellation is with the kitchen. The order is
    *  locked: it cannot be paid or edited until they accept. */
   custom_cancel_pending?: number;
+  /** 1 when a manager deleted the order instead of cancelling it (2026-09-19). */
+  custom_deleted?: number;
+  custom_deleted_at?: string | null;
+  deleted_by_name?: string | null;
   custom_hotel_room?: string | null;
   /** Take-away / delivery contact (optional, editable after the fact). */
   custom_order_contact_name?: string | null;

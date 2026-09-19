@@ -214,18 +214,103 @@ def getRestaurantMenu(pos_profile, room=None, order_type=None):
         "name": menu,
     }
 
+# ── Branch access (2026-09-19) ────────────────────────────────────
+# A user may only use the terminals of branches they have access to, i.e.
+# branches whose ExPOS Users table lists them. Administrator and System
+# Manager have every branch. Once the POS has opened on a terminal, that
+# terminal's branch is remembered for the session, so getBranch() - which
+# scopes the menu, tables, orders and reports - follows the terminal the
+# user is actually on instead of whichever branch happens to come first.
+ALL_BRANCH_ROLES = frozenset({"System Manager"})
+ACTIVE_BRANCH_CACHE = "ury_active_branch"
+
+
+def can_use_branch(branch, user_branches, all_access):
+    """May a user with these branches use ``branch``? Pure, for tests."""
+    if all_access:
+        return True
+    return bool(branch) and branch in (user_branches or ())
+
+
+def _has_all_branch_access(user=None):
+    user = user or frappe.session.user
+    if user == "Administrator":
+        return True
+    return bool(set(frappe.get_roles(user)) & ALL_BRANCH_ROLES)
+
+
+def _user_branches(user=None):
+    """Branches whose ExPOS Users table lists ``user``, in lookup order."""
+    rows = frappe.db.sql(
+        """
+        SELECT b.branch
+        FROM `tabURY User` AS a
+        INNER JOIN `tabBranch` AS b ON a.parent = b.name
+        WHERE a.user = %s
+        """,
+        user or frappe.session.user,
+    )
+    return list(dict.fromkeys(r[0] for r in rows if r[0]))
+
+
+def _session_key():
+    sid = getattr(frappe.session, "sid", None)
+    return sid if sid and sid != "Guest" else None
+
+
+def _set_active_branch(branch):
+    key = _session_key()
+    if key and branch:
+        frappe.cache.hset(ACTIVE_BRANCH_CACHE, key, branch)
+
+
+def _get_active_branch():
+    key = _session_key()
+    return frappe.cache.hget(ACTIVE_BRANCH_CACHE, key) if key else None
+
+
+def _require_branch_access(branch, what):
+    """Refuse, with a message that says how to fix it, when the session
+    user has no access to ``branch``."""
+    user = frappe.session.user
+    all_access = _has_all_branch_access(user)
+    if can_use_branch(branch, [] if all_access else _user_branches(user), all_access):
+        return
+    frappe.throw(
+        _(
+            "You don't have access to the {0} branch, so you can't use {1}. "
+            "Use a terminal of your own branch, or ask a manager to add you "
+            "to the {0} branch's {2}s table."
+        ).format(branch or _("unknown"), what, _("URY User")),
+        frappe.PermissionError,
+        title=_("No Access To Branch"),
+    )
+
+
 @frappe.whitelist()
 def getBranch():
     user = frappe.session.user
+    all_access = _has_all_branch_access(user)
+
+    # The branch of the terminal this session opened the POS on, while the
+    # user still has access to it.
+    active = _get_active_branch()
+    if active and can_use_branch(active, [] if all_access else _user_branches(user), all_access):
+        return active
+
     if user != "Administrator":
-        sql_query = """
-            SELECT b.branch
-            FROM `tabURY User` AS a
-            INNER JOIN `tabBranch` AS b ON a.parent = b.name
-            WHERE a.user = %s
-        """
-        branch_array = frappe.db.sql(sql_query, user, as_dict=True)
-        if not branch_array:
+        branches = _user_branches(user)
+        if branches:
+            return branches[0]
+        # A kitchen user listed on a production unit's Screen Access
+        # table belongs to that unit's branch, with no URY User row
+        # needed (2026-09-18).
+        from ury.ury.api.ury_kds_access import branch_from_assigned_units
+
+        unit_branch = branch_from_assigned_units(user)
+        if unit_branch:
+            return unit_branch
+        if not all_access:
             frappe.throw(
                 _(
                     "Your user is not linked to any Branch. "
@@ -234,10 +319,8 @@ def getBranch():
                 ).format(_("URY User")),
                 title=_("Branch Not Linked"),
             )
-
-        branch_name = branch_array[0].get("branch")
-
-        return branch_name
+        # A System Manager with no branch row falls through to the
+        # Administrator default below.
 
     # Administrator fallback: pick the branch of the first available POS Profile
     # so Admin can load the POS without being tied to a specific URY User/Branch.
@@ -1064,6 +1147,9 @@ def getPosInvoice(
             pi.custom_order_contact_name, pi.custom_order_contact_mobile,
             pi.custom_ihotel_profile, pi.custom_print_count, pi.custom_waiter,
             pi.cancel_reason,
+            pi.custom_deleted, pi.custom_deleted_at,
+            (SELECT du.full_name FROM `tabUser` AS du WHERE du.name = pi.custom_deleted_by)
+                AS deleted_by_name,
             u.full_name AS owner_full_name,
             (
                 SELECT ml.name
@@ -1243,6 +1329,10 @@ def searchPosInvoice(
             pi.custom_on_hold, pi.custom_hold_reason,
             pi.custom_order_contact_name, pi.custom_order_contact_mobile,
             pi.custom_ihotel_profile,
+            pi.cancel_reason,
+            pi.custom_deleted, pi.custom_deleted_at,
+            (SELECT du.full_name FROM `tabUser` AS du WHERE du.name = pi.custom_deleted_by)
+                AS deleted_by_name,
             u.full_name AS owner_full_name,
             (
                 SELECT ml.name
@@ -1654,8 +1744,26 @@ def getPosProfile(terminal=None):
     "first POS Profile on this branch" behaviour so nothing breaks.
 
     See CLAUDE.md "Fixes log" 2026-04-08 for context.
+
+    The terminal's branch is used, and the user must have access to it
+    (2026-09-19). Before, the user's own first branch was compared with the
+    terminal's and the whole setup block was skipped on a mismatch, so an
+    Administrator on another branch's terminal crashed with an
+    UnboundLocalError that the POS showed as "Access Denied".
     """
-    branchName = getBranch()
+    terminal_row = None
+    if terminal:
+        terminal_row = frappe.db.get_value(
+            "URY POS Terminal", terminal, ["pos_profile", "branch"], as_dict=True
+        )
+    if terminal_row and terminal_row.pos_profile:
+        branchName = terminal_row.branch or frappe.db.get_value(
+            "POS Profile", terminal_row.pos_profile, "branch"
+        )
+        _require_branch_access(branchName, _("the {0} terminal").format(terminal))
+        _set_active_branch(branchName)
+    else:
+        branchName = getBranch()
     waiter = frappe.session.user
     bill_present = False
     qz_host = None
@@ -1663,13 +1771,7 @@ def getPosProfile(terminal=None):
     cashier = None
     owner = None
 
-    posProfile = None
-    if terminal:
-        terminal_profile = frappe.db.get_value(
-            "URY POS Terminal", terminal, "pos_profile"
-        )
-        if terminal_profile:
-            posProfile = terminal_profile
+    posProfile = terminal_row.pos_profile if terminal_row else None
 
     if not posProfile:
         posProfile = frappe.db.exists("POS Profile", {"branch": branchName})
@@ -1685,6 +1787,16 @@ def getPosProfile(terminal=None):
         )
 
     pos_profiles = frappe.get_doc("POS Profile", posProfile)
+    if pos_profiles.branch != branchName:
+        # Only possible when the terminal and its POS Profile disagree about
+        # the branch - say so instead of failing further down.
+        frappe.throw(
+            _(
+                "{0} '{1}' is on branch '{2}' but its POS Profile '{3}' is on "
+                "branch '{4}'. Fix one of them in the desk."
+            ).format(_("URY POS Terminal"), terminal, branchName, posProfile, pos_profiles.branch),
+            title=_("Branch Mismatch"),
+        )
     global_defaults = frappe.get_single('Global Defaults')
     disable_rounded_total = global_defaults.disable_rounded_total
     
@@ -5907,20 +6019,27 @@ def get_transfer_report(from_date=None, to_date=None, terminal=None):
 
 @frappe.whitelist()
 def get_terminals():
-    """List all active POS Terminals for the current user's branch.
+    """List the active POS Terminals of every branch the user can use.
 
-    Used by the React POS setup screen to let the admin pick which terminal
-    this device is. Includes ``pos_profile`` so the caller can show which
-    profile a terminal is bound to before selection.
+    Used by the React POS setup screen to pick which terminal this device
+    is. Includes ``pos_profile`` so the caller can show which profile a
+    terminal is bound to before selection. A user linked to one branch sees
+    only that branch's terminals; Administrator and System Manager see all
+    (2026-09-19 - it used to be the user's first branch only).
     """
-    branch = getBranch()
-    terminals = frappe.get_all(
+    filters = {"disabled": 0}
+    if not _has_all_branch_access():
+        branches = _user_branches()
+        if not branches:
+            getBranch()  # raises the "not linked to any Branch" message
+            return []
+        filters["branch"] = ("in", branches)
+    return frappe.get_all(
         "URY POS Terminal",
-        filters={"branch": branch, "disabled": 0},
+        filters=filters,
         fields=["name", "room", "branch", "description", "pos_profile"],
-        order_by="name asc",
+        order_by="branch asc, name asc",
     )
-    return terminals
 
 
 @frappe.whitelist()
@@ -5954,6 +6073,9 @@ def get_terminal_config(terminal):
             ).format(terminal),
             title=_("Terminal Not Configured"),
         )
+
+    _require_branch_access(doc.branch, _("the {0} terminal").format(terminal))
+    _set_active_branch(doc.branch)
 
     return {
         "terminal": doc.name,

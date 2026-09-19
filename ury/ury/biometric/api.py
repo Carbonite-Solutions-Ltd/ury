@@ -49,7 +49,14 @@ except ImportError:
 # Role helpers
 # ---------------------------------------------------------------------------
 
-URY_LOGIN_ROLES = ("URY Cashier", "URY Captain", "URY Manager", "URY Waiter")
+URY_LOGIN_ROLES = (
+	"URY Cashier",
+	"URY Captain",
+	"URY Manager",
+	"URY Waiter",
+	# Kitchen/bar staff sign in on the same page and are sent on to the KDS.
+	"URY Production User",
+)
 URY_ENROLLMENT_ADMIN_ROLES = ("System Manager", "URY Manager", "URY Captain")
 # Who shows up in the /pos login user-picker. Broader than URY_LOGIN_ROLES
 # (which gates PIN/biometric auth) so admins can sign in via password too.
@@ -60,6 +67,7 @@ URY_LOGIN_SEARCH_ROLES = (
 	"URY Captain",
 	"URY Manager",
 	"URY Waiter",
+	"URY Production User",
 	"System Manager",
 )
 

@@ -354,9 +354,9 @@
    "fieldname": "cancel_status",
    "fieldtype": "Select",
    "label": "Cancellation Status",
-   "options": "\nAwaiting Kitchen\nAccepted",
+   "options": "\nAwaiting Kitchen\nAccepted\nDeleted",
    "in_standard_filter": 1,
-   "description": "POS → kitchen cancellation handshake (2026-07-31). Set to 'Awaiting Kitchen' when a captain cancels AFTER the grace window has closed, so the kitchen may already be cooking. The card stays on the board carrying the reason until the kitchen Accepts. DISTINCT from `change_status`, which is the opposite direction (kitchen asks the waiter) — the two can legitimately be in flight on the same KOT at once, which is why they are separate field sets."
+   "description": "POS → kitchen cancellation handshake (2026-07-31). Set to 'Awaiting Kitchen' when a captain cancels AFTER the grace window has closed, so the kitchen may already be cooking. The card stays on the board carrying the reason until the kitchen Accepts. DISTINCT from `change_status`, which is the opposite direction (kitchen asks the waiter) — the two can legitimately be in flight on the same KOT at once, which is why they are separate field sets. 'Deleted' (2026-09-19) means a manager deleted the order outright, without asking the kitchen."
   },
   {
    "allow_on_submit": 1,
@@ -408,7 +408,7 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-07-31 10:00:00.000000",
+ "modified": "2026-09-19 10:00:00.000000",
  "modified_by": "obed.odai@gmail.com",
  "module": "URY",
  "name": "URY KOT",

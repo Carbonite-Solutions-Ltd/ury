@@ -169,6 +169,15 @@ No frontend test suites are configured. `pos/` has `yarn lint` (ESLint); the Vue
 - **What to do in the React POS (`pos/`)** — there is no translation layer. **Hardcode the brand string** (`ExPOS Restaurant`, `ExPOS Menu Item`, etc.) in user-visible text. Keep URL paths, DocType arguments, and API payloads literal — they still reference the real `URY …` names (e.g. the deep-link target is `/app/ury-menu-item/new`, not `/app/expos-menu-item/new`). If the brand changes again, grep for `ExPOS` in `pos/src/` to find every hardcoded occurrence.
 - **Never rename the DocTypes, Python package, URL slugs, or file paths.** A rename would break the database schema, all existing records, and all API callers. This is a label-only rebrand.
 
+## Planned: GRA E-VAT integration (Ghana fiscalisation) — PLANNING ONLY
+
+**Read [docs/gra-evat/README.md](docs/gra-evat/README.md) before touching anything related to tax, payment, returns, cancellation or receipt printing.** A separate app, `gra_evat`, will sign every paid POS Invoice with the Ghana Revenue Authority and reverse it on Return / Undo Return, so URY's tax always equals GRA's. As of 2026-09-17 it is **documented and planned but not built**; build waits for the user's go-ahead and the open decisions in [08-decisions-and-risks.md](docs/gra-evat/08-decisions-and-risks.md).
+
+Facts from that pack that affect URY code today:
+- `cancel_order` sets `docstatus=2` by raw SQL with **no docstatus guard**, so it can cancel a *paid* invoice with no hook firing. Planned fix: refuse `docstatus != 0` (needs the user's OK — it's a new restriction).
+- GRA's 2026 tax is **not cumulative**: NHIL 2.5 %, GETFund 2.5 % and VAT 15 % all on the net amount. A tax template row set to *On Previous Row Total* would make every GRA submission fail.
+- The official GRA docs are wrong in several places (error codes, response shapes, HTTP statuses). The verified behaviour is in `docs/gra-evat/`, with the raw sandbox log in `docs/gra-evat/reference/`.
+
 ## Gotchas
 
 - **The React POS (`pos/`) is an installable PWA — ALWAYS consider it when changing the POS frontend (2026-07-13).** It ships a web app manifest ([pos/public/manifest.json](pos/public/manifest.json), `start_url`/`scope` = `/pos`, `display: standalone`), app icons ([pos/public/icons/](pos/public/icons/) — 192 / 512 / maskable-512 / apple-touch-180, all committed source, NOT the gitignored build output), PWA meta in [pos/index.html](pos/index.html), and a mobile/tablet install prompt ([pos/src/components/InstallPrompt.tsx](pos/src/components/InstallPrompt.tsx)). Implications for any POS frontend change:
@@ -212,6 +221,167 @@ No frontend test suites are configured. `pos/` has `yarn lint` (ESLint); the Vue
 ## Fixes log
 
 Running record of bugs fixed and non-obvious traps discovered. Add new entries at the top. Each entry should answer: what went wrong, why, where it was fixed, how it was verified.
+
+### 2026-09-19 — A user may only use the terminals of branches they have access to (and the Administrator "Access Denied" crash)
+- **Symptom:** an Administrator opening the Airport terminal got "Access Denied — There was an error". Once the data had two branches (Sitout became its own branch), `getPosProfile` raised `UnboundLocalError: pos_profile_name`.
+- **Cause:** `getPosProfile` compared the terminal profile's branch with `getBranch()`. For an Administrator that is the first POS Profile's branch; for everyone else it is their first ExPOS Users branch. On a mismatch it skipped its whole setup block. Two related gaps:
+  - `get_terminals()` listed only the user's first branch, so an Administrator saw only Sitout's terminals.
+  - Nothing stopped a user opening another branch's terminal from a saved device.
+- **Rule (user's call):** a user may only use terminals of branches whose ExPOS Users table lists them. A user on one branch gets only that branch's terminals. **Administrator and System Manager have every branch.** That is the existing convention (System Manager bypasses the POS access gate too); drop System Manager from `ALL_BRANCH_ROLES` in [api.py](ury/ury_pos/api.py) to narrow it.
+- **Fix ([api.py](ury/ury_pos/api.py)):**
+  - Pure `can_use_branch`, plus `_require_branch_access`, which throws a PermissionError titled "No Access To Branch" whose message says how to fix it.
+  - `get_terminals` lists the terminals of every accessible branch.
+  - `get_terminal_config` and `getPosProfile` refuse an inaccessible terminal.
+  - `getPosProfile` now takes the **terminal's** branch instead of comparing. A terminal/profile branch disagreement gives a clear "Branch Mismatch" instead of a crash.
+- **`getBranch()` follows the terminal:** once the POS opens on a terminal, its branch is remembered for the session (`frappe.cache` hash `ury_active_branch`, keyed by session id). `getBranch()` returns it while the user still has access. Its ~40 callers (menu, tables, orders, reports) therefore scope to the terminal the user is on, not to whichever branch happens to come first. Without this a two-branch user, or the Administrator, would see one branch's menu on the other branch's terminal.
+  - A System Manager with no branch row now falls back to the Administrator default instead of "Branch Not Linked", which is a loosening.
+- **POS ([App.tsx](pos/src/App.tsx)):** when a device's saved terminal is refused, the setup screen shows why and lists only the user's own terminals, instead of silently dropping the terminal.
+- **Verified:**
+  - **13/13 tests** (`bench --site <site> execute ury.ury.api.test_branch_access.run_branch_access_tests`): the pure rule, and live checks with throwaway users added to the real branches (rolled back):
+    - a one-branch user sees and may use only their terminals;
+    - a two-branch user's `getBranch()` follows the terminal;
+    - a remembered branch is ignored once access is removed;
+    - Administrator loads the profile on both branches (the crash);
+    - a System Manager sees all branches;
+    - an unlinked user gets the branch message.
+  - **All 13 URY suites green (289 tests).**
+  - **Headless Chromium:**
+    - Administrator on the Airport terminal reaches "Open POS Entry" (was "Access Denied").
+    - A cashier linked only to Airport, on a device saved to "Sitout Kitchen", gets the setup screen with the notice and the six Airport terminals only.
+    - 0 page errors.
+  - `tsc` clean, ESLint unchanged on App.tsx (same 2 pre-existing errors), POS builds.
+- **Deploy:** `bench restart` and redeploy `pos/`. No migrate.
+- **Config:** every POS user must be on the ExPOS Users table of each branch they work at. Anyone missing a branch will now be refused its terminals.
+
+### 2026-09-19 — Cancel vs Delete: orders stuck forever on a kitchen approval nobody could give
+- **Symptom (user):** a manager tries to cancel held orders whose tickets were cleared or served on the kitchen screen a week ago, and gets "check the production unit and approve". The ticket isn't on the kitchen screen, so nobody can approve it, and the order stays locked.
+- **Root cause, confirmed on the client's data:** `kot_list` only shows tickets that are `Ready For Prepare` **and** less than 3 hours old. `_kot_needs_kitchen_ack` returns True for **every served ticket** whatever its age. So cancelling any order with a served ticket, or with a ticket older than 3 hours, parks a request that can **never appear on a kitchen screen**. With the hard lock (2026-07-31, no override), the order could not be paid, edited or cancelled again. Found 4 locked orders (M-0379 and M-0416 from 17 Aug; M-2651 and M-2715, both held, from 17 Sep), plus 4 dead requests on orders that no longer exist.
+- **The design (user's call): Cancel and Delete are now separate actions.**
+  - **Cancel** (Captain, Manager, Admin): unchanged. Inside the grace window the ticket is pulled; after it, the kitchen is asked. It now **works for served and old tickets too**: `kot_list` adds every ticket with `cancel_status = 'Awaiting Kitchen'` whose order is still an unpaid draft marked pending, at the front of the board, whatever its status or age (`merge_pending_cancellations`). The dead requests on deleted orders are filtered out by that same join.
+  - **Delete** (Managers and Admins only; the user chose this over Captains, because Delete skips the kitchen and is the easy way to make a served order disappear): `delete_order(invoice_id, reason)` in [ury_order.py](ury/ury/doctype/ury_order/ury_order.py), whitelisted POST-only.
+    - Unpaid drafts only; a paid bill still goes through Return. A reason is required.
+    - Every ticket of the order still on a kitchen screen (reprints and cancel chits included) leaves at once, with no chit and no prompt. Each is stamped `order_status = "Deleted"` and `cancel_status = "Deleted"` (new Select option on URY KOT), plus the reason, who and when.
+    - This also clears a pending request, so it is the way out for the orders that were stuck.
+  - **The order is kept, not erased** (user's choice): cancelled (docstatus 2) with new `POS Invoice.custom_deleted`, `custom_deleted_by` and `custom_deleted_at`, in all three sources per the dual-source rule. `custom_field.json` was appended as text: 162 insertions, 0 deletions.
+- **Kitchen lists:** the Served sidebar gains **Cancelled** and **Deleted** tabs. Each shows one day at a time (a date picker defaulting to today, like Items Served), scoped to that screen's unit, or its department in Menu Course mode. Each card shows the order, waiter, table, a "Was served" chip, who removed it (and who accepted it), the reason and the items. Backend: `get_removed_orders(production, date)`, which enforces unit access like the served endpoints.
+  - Within-grace cancels used to flip only `order_status`, leaving no reason, no who and no when to show. `_delete_kots_within_grace` now stamps `cancel_reason`, `cancel_requested_by` and `cancel_requested_at`.
+- **Safety net added:** `_finalize_invoice_cancellation` now does nothing unless the invoice is still an unpaid draft. A kitchen Accept can therefore never cancel a paid bill, even if the pending lock is bypassed from the desk.
+- **POS ([Orders.tsx](pos/src/pages/Orders.tsx)):**
+  - A red **Delete** button (trash icon) sits next to Cancel for managers, on Draft orders only.
+  - Cancel is hidden while a request is pending, since the server would refuse a second one.
+  - The pending banner now points to Delete.
+  - Deleted orders read **Deleted** (red badge) under the Cancelled filter, with an "Order Deleted — by X on date, without asking the kitchen" banner.
+  - `canDeleteOrders` in role-utils mirrors the backend `can_delete_orders`.
+- **⚠ Found while testing — a pre-existing crash in `getPosProfile` (fixed the same day, see the entry above).** An Administrator's branch falls back to the first POS Profile's branch. When that differs from the terminal's profile branch, `if pos_profiles.branch == branchName` skips the whole block and `pos_profile_name` is unbound, giving `UnboundLocalError` and the POS "Access Denied". It happens on this data now that `Sitout` is its own branch: Administrator on the Airport terminal crashes. It would also hit a cashier linked to one branch who opens another branch's terminal. Worked around for the test by temporarily disabling the Sitout profile (restored). Flagged to the user.
+- **Verified:**
+  - **23/23 unit tests** (`bench --site <site> execute ury.ury.api.test_order_delete.run_order_delete_tests`), 10 of them live against the real locked orders, each rolled back:
+    - the unanswered request shows on the board;
+    - Delete frees a locked order;
+    - it leaves the board and lands on the Deleted list;
+    - a reason is required; paid, missing and already-deleted orders are refused;
+    - a captain is refused;
+    - a kitchen Accept can't cancel a paid bill;
+    - a within-grace cancel records who and why.
+  - Regression suites green: cancellation 22/22, KDS access 30/30, bar stock 26/26.
+  - **Headless Chromium on the client's data:**
+    - MainKitchen board showed **4 pending cards** (before the fix: 0).
+    - In the POS, M-0379 showed Delete but no Cancel, and the banner pointing to Delete; the dialog deleted it.
+    - It then appeared as Deleted under Cancelled with the by-line.
+    - The board dropped to 3 cards, and the kitchen's Deleted tab listed it with reason and items.
+    - The Cancelled tab loads. 0 page errors.
+  - All test changes were restored afterwards (order, items, ticket, shift, Sitout profile, session).
+  - `tsc` clean, ESLint shows the same 5 pre-existing errors, both frontends build.
+- **Deploy:** `bench migrate` (3 new POS Invoice fields and the new KOT status option), then `bench restart` (new whitelisted methods, changed `kot_list`, `cancel_order` and the Orders queries), then redeploy **both** `pos/` and `URYMosaic/`.
+- **After deploy:** a manager can clear the 4 locked orders with Delete, or the kitchen can now Accept them from the board.
+
+### 2026-09-18 — Kitchen staff role + per-unit Screen Access + screen picker
+- **Ask (user):** kitchen and bar staff had no role of their own, so they were being given **URY Cashier** just to open the KDS. The user wanted a proper production role, a table on each production unit listing who can use it, and a login flow: tagged on one unit → go straight to it; tagged on several → a page to pick one, plus a way to switch later.
+- **New role `URY Production User`** ("ExPOS Production User"). It has `desk_access=1`, because untargeted realtime publishes only reach System Users and the board's socket needs them. It has **`home_page = "Mosaic"`**, which is how the login lands on the KDS with no desk flash. Frappe's `get_home_page()` checks each role's `Role.home_page` first, so `/api/method/login` returns `home_page: "Mosaic"`.
+  - The role is created by `_ensure_role_exists(role, home_page=...)` in [permissions.py](ury/permissions.py) on every migrate, and also appended to [role.json](ury/fixtures/role.json) as text.
+  - The home page is set when the role is created, and afterwards only while it is still blank, so an admin who repoints it keeps their choice.
+  - **Deliberately NOT in `ROLES`.** That list carries the whole POS baseline (create POS Invoice and so on). The kitchen gets only `PRODUCTION_DOCTYPES`: read, select and report on URY KOT and URY Bar Session, and read and select on URY Production Unit.
+  - Why so little is needed: `kot_list` is the only permission-checked read (`frappe.get_list("URY KOT")`). Every other KDS action writes through `db.set_value` or `ignore_permissions`.
+- **New child doctype `URY Production Unit User`** (`user`, plus `full_name` fetched from the user). It sits on URY Production Unit as `users`, under a "Screen Access" section, with `modified` bumped so it re-imports.
+  - The unit controller drops blank and duplicate rows on save.
+- **The rules** live in [ury_kds_access.py](ury/ury/api/ury_kds_access.py) as pure functions (`can_open_unit`, `units_for_user`, `screen_groups`):
+  - **An EMPTY table means open to anyone signed in.** Every existing screen keeps working the day this ships; nothing locks until an admin lists users.
+  - A table with users is open to those users plus Administrator, System Manager, URY Manager and URY Captain.
+  - A user listed on some unit sees only their own units in the picker, not every open unit as well.
+- **Enforcement:**
+  - `kot_list` returns `access_denied: 1` rather than throwing, so the screen can offer the user's own units instead of a dead end.
+  - `served_kot_list`, `get_served_summary` and every bar-stock endpoint (through `_get_unit`) throw PermissionError.
+  - Department targets (Food, Drinks and so on) are never gated, because the table only exists on production units.
+- **Loosenings, per working rule 4:**
+  - `kot_list`, the served list and the summary now take the branch from the **unit itself** (`kds_branch(target)`) instead of the viewer's URY User row.
+  - `getBranch()` falls back to the branch of a unit the user is tagged on before throwing "Branch Not Linked".
+  - Together these mean a kitchen user needs **no URY User row on the Branch at all**, only a Screen Access row.
+- **`get_my_production_units(current)`** returns the picker list. It also returns department screens when any enabled POS Profile runs Menu Course mode, and hides the units when none run Production Unit mode.
+- **KDS frontend:**
+  - New [UnitPicker.vue](URYMosaic/src/components/UnitPicker.vue) with four modes: `page` (the `/Mosaic` landing), `modal` (Switch), `denied` (a unit that isn't theirs, offering their own units) and `none`.
+  - [kot.vue](URYMosaic/src/components/kot.vue) `routeToScreen()` runs after auth and before anything else:
+    - A single screen → `location.replace` straight to it.
+    - The board only starts when `boardActive` is true. The 30s poll and the online handler are gated on it, so nothing polls behind the picker.
+  - [Header.vue](URYMosaic/src/components/Header.vue) shows the current screen and a **Switch** button, but only when there is somewhere else to go.
+  - The production segment is now read from `location.pathname` (a query string used to leak into it). `/Mosaic` itself becomes `""`.
+  - `redirectToLogin` copes with an empty production, where it used to produce `redirect-to=Mosaic/Mosaic`.
+- **⚠ `kot.vue` has a global, unscoped `.bg-gray-100 { background-color: rgba(0,0,0,.2) }`** that overrides Tailwind across the whole KDS. It is why the old "Not Permitted" modal is a grey tint. The picker uses `bg-slate-100` to get round it. Don't "fix" the global rule casually, because other KDS pieces may rely on it.
+- **Other entry points:**
+  - A production-only user who reaches `/pos` is sent to `/Mosaic`. [App.tsx](pos/src/App.tsx) does this before any POS endpoint runs, using `isProductionOnly(roles)` from [role-utils.ts](pos/src/lib/role-utils.ts).
+  - The desk sends them to `/Mosaic` via [cashier_desk_redirect.js](ury/public/js/cashier_desk_redirect.js). That check runs before the cashier check, so a user who still has URY Cashier as well also lands on the kitchen, matching the login landing.
+  - The role was added to `URY_LOGIN_ROLES` and `URY_LOGIN_SEARCH_ROLES`, so kitchen staff can use the /pos PIN and fingerprint sign-in and can have PINs set.
+- **Verified:**
+  - **30/30 unit tests** (`bench --site <site> execute ury.ury.api.test_ury_kds_access.run_kds_access_tests`):
+    - pure rules;
+    - live: one-unit and two-unit users; duplicate rows dropped; current-unit checks; Administrator sees all;
+    - `kot_list` denies another unit but opens the user's own **with no URY User row**;
+    - the served and bar endpoints refuse another unit;
+    - the `getBranch` fallback.
+  - The bar-stock suite still passes, **26/26**.
+  - **Headless Chromium, through the real login form:**
+    - The one-unit user lands on `/Mosaic/MainKitchen` with no Switch button.
+    - `/Mosaic/Bar` shows "This screen isn't yours" and offers MainKitchen.
+    - `/pos` and `/app` both end on `/Mosaic/MainKitchen`.
+    - The two-unit user lands on the picker with Bar and MainKitchen. Picking Bar opens it, and Switch opens the modal with Bar marked "Open now".
+    - A guest still gets Not Permitted.
+    - 0 page errors.
+  - `tsc` clean. ESLint shows the same 2 pre-existing errors as before. Both frontends built. All test users and rows removed.
+- **Deploy:** `bench migrate` (new child doctype, table field, role and permissions), then `bench restart` (new whitelisted method and changed endpoints), then redeploy **both** the `URYMosaic/` and `pos/` builds, then `bench build --app ury` (desk JS changed).
+- **Config the client must do:**
+  - Give kitchen and bar staff the **ExPOS Production User** role and **remove URY Cashier** from them. A user with both still lands on the kitchen screen but keeps POS access.
+  - List each person on their unit's **Screen Access** table.
+
+### 2026-09-18 — WHOLE SITE 500'd (`/pos` included) — and the cause was in `cs_hrms`, not URY
+- **Symptom:** `http://127.0.0.1:8003/pos` returned **500: Uncaught Exception** with `AttributeError: module 'frappe.boot' has no attribute 'get_user_pages_or_reports'`. It looked like a POS bug; it was not. `/app` 500'd too — **every request on the site was failing**.
+- **Cause:** [apps/cs_hrms/cs_hrms/perf.py](../cs_hrms/cs_hrms/perf.py) registers `patch_workspace_boot` as a **`before_request` hook** (cs_hrms/hooks.py), and it did `getattr(boot.get_user_pages_or_reports, ...)` — an **unguarded attribute access that runs on every single request**. `cs_hrms` is on branch `version-15` while this bench runs frappe 16.33, and in v16 that function is no longer a module-level function in `frappe.boot`: it moved to a classmethod on `frappe.desk.desk_views.DeskViews`. One missing attribute in a `before_request` hook = total outage.
+- **The optimisation it existed for is already fixed upstream**, so the fix is a no-op rather than a port. The docstring's premise was that `get_user_pages_or_reports` "returns `{}` early, *before* the line that writes the redis key, so the cache is never populated". In v16 every lookup goes through `DeskViews._allowed_entity_cache`, which **always** writes the key after building (`value = builder(); frappe.cache.set_value(...)`) — no early return, so the per-user cache populates even for users with no Report permission. Memoising on `frappe.local` would now buy nothing.
+- **Fix:** resolve the function with `getattr(boot, "get_user_pages_or_reports", None)` and return when it's absent. v15 behaviour is unchanged; v16 no-ops. **Rule worth keeping: a `before_request` / `before_request_task` hook must never be able to raise — it fails the whole site, not one page.**
+- **Verified:** before — `/pos` and `/app` both HTTP 500. After — `/pos` **200** serving the real shell (`<title>Ex POS</title>`, `assets/ury/pos`), `/app` 301, `/api/method/ping` 200, and `/Mosaic/Bar` 200 serving the current bundle. `py_compile` clean.
+- **Not URY's code.** Only `cs_hrms/cs_hrms/perf.py` changed (25 insertions, 5 deletions); nothing in this repo. If cs_hrms is ever properly upgraded to v16 the whole `perf.py` patch can go.
+
+
+### 2026-09-18 — Bar stock handover report (KDS Served page) + `URY Production Unit.unit_type`
+- **Ask (user):** a simple stock report for the bar — mark which production unit is the bar and which is the kitchen, then on the KDS **Served** page let the barman generate a sheet of the items tagged to that production showing **stock available** and **how many were sold**, to hand over to the next person.
+- **THE THING THAT MAKES THIS NOT-SIMPLE, and it is invisible until you look: `Bin.actual_qty` does NOT include today's sales.** `POSInvoice.on_submit` never posts stock — ERPNext defers the stock ledger to the **consolidated Sales Invoice at shift close**. Verified on the client's data rather than assumed: `tabStock Ledger Entry` has rows for `Sales Invoice` (3,966), `Stock Reconciliation` and `Stock Entry`, and **zero** for `POS Invoice`; on the day checked there were 41 paid + 33 draft invoices whose drinks had left the shelf while the last stock movement was the day before. A naive "stock available" column would have shown 23 STAR L/S when the fridge held fewer, and read as a broken report. Everything therefore works in PHYSICAL terms: `physical = Bin.actual_qty − (sold on invoices not yet consolidated)`.
+- **Why a "bar session" and not the POS shift (the user's own call, and it's the right one):** outlets routinely never close a POS Opening Entry, so a shift is not a usable boundary. The barman **opens the bar** on the KDS when he takes over; that instant is the boundary and the snapshot taken then is what he is accountable for. **Opening a new session auto-closes the previous one**, because people who don't close shifts won't close sessions either.
+- **⚠ "Sold" is DERIVED, not counted from timestamps — this was the key design trap.** The obvious implementation (sum invoice lines created after the session opened) cannot work: **`sync_order` does `invoice.items = []` and rebuilds every row on each edit**, so a line's `creation` is reset whenever the tab is touched. A tab opened before the handover and added to afterwards would dump all its drinks on one side or the other, and the error would land in the *new* barman's expected count. So both ends are measured physically and the movement derived: `expected = physical now`, `sold = opening − expected`. That always adds up, needs no attribution, and is self-correcting — a consolidation mid-session drops Bin and the unposted figure by the same amount, leaving `expected` untouched. A stock receipt during the session legitimately shows as a **negative** "sold"; `rung_item_count` is the cross-check off the bills.
+- **⚠ Never sum quantities across a bar's lines.** The first draft's summary printed `total opening 182,096` — it was adding bottles to glasses to kg. `summarise_rows` now publishes **counts only** (items listed / moved / negative). Caught by looking at the real output, not by a test.
+- **Warehouse resolution reuses the sale's own resolver.** All three production units have `warehouse` empty (it's `read_only`, fetched from `POS Profile.warehouse`, which is also empty) and the profiles run in item-warehouse mode, so stock is per item. The snapshot calls the same pure `_pick_outlet_warehouse` that `sync_order` uses, in bulk (one Item Default query + one warehouse tree instead of two per item), so **the stock reported is the stock the sale will actually deduct** — Bar items resolve to `Beverage Stores - Airport WH - LR` via the Airport cost centre, not the `Beverage Stores WH - LR` group node the Item Defaults point at.
+- **Scoped by POS Profile, not branch.** `Airport` and `Sitout` are two outlets on ONE branch with different cost centres and different stock; a branch-scoped "sold" would mix them.
+- **Other deliberate choices:** `stock_qty` (stock UOM) not `qty`, because a bar sells a glass out of a bottle and Bin counts bottles; open tabs (`docstatus=0`) COUNT as sold, because the drink has left the shelf whether or not it is paid for; merged-away source invoices excluded; returns reduce the figure naturally via negative quantities; items idle on both sides hidden behind a "Show all items" toggle (178 items in the Bar's groups, 134 had stock or movement).
+- **Schema:** new **`URY Production Unit.unit_type`** (Select Kitchen/Bar/Other, default Kitchen) — the KDS shows none of this for a non-Bar unit, and `open_bar_session` refuses one. New **`URY Bar Session`** + child **`URY Bar Session Item`** (item, warehouse, `system_qty`, `unposted_sold_qty`, `opening_qty`). URY-owned doctypes → native fields, `modified` bumped on the production unit so Frappe re-imports it (the 2026-06-12 standard-record trap). `URY Bar Session` added to `WRITE_DOCTYPES` in [permissions.py](ury/permissions.py) and to [en.csv](ury/translations/en.csv).
+- **Backend** [ury_bar_stock.py](ury/ury/api/ury_bar_stock.py): `get_bar_session_state` / `open_bar_session` / `close_bar_session` / `get_bar_stock_report`. The two mutating endpoints are `@frappe.whitelist(methods=["POST"])`. **Frontend** [kot.vue](URYMosaic/src/components/kot.vue): an amber "Open the bar" banner above every view when a Bar unit has no open session, a third sidebar tab **Stock Report** next to Recently Served / Items Served, and a print window with a blank **Counted** column plus handed-over/received signature lines.
+- **⚠ One race worth remembering:** `goToStockReport()` originally set `servedTab` before `showServed()` resolved — and `showServed` sets the tab itself (landing on "summary" when the unit has reinstate off), silently overwriting it. It now awaits.
+- **Verified:** **26/26 unit tests** (`bench --site <site> execute ury.ury.api.test_ury_bar_stock.run_bar_stock_tests`) — 15 pure arithmetic cases (normal sale, nothing moved, all sold, missing Bin row, oversold/negative, **stock received mid-session → negative sold**, fractions, the idle filter both ways, ordering, name fallback, empty) and 11 live ones against the site's real Bar unit (snapshot invariant `opening = system − unposted`, warehouse resolution, auto-close of the previous session, report consistency `opening − sold == expected` on every row, show-all vs hidden count, idempotent close, no-session case, non-Bar and unknown-unit refusals). Full flow exercised on the client's data: 178 items snapshotted, 134 shown / 44 hidden, correction visible (CLUB L/S bin 7 − 4 unposted = 3 opening). `bench migrate` created the column and both doctypes; `py_compile` clean; `yarn build` clean and the new code confirmed in the emitted bundle. All test sessions deleted and `unit_type` restored afterwards.
+- **Deploy: `bench migrate` (1 new field + 2 new doctypes) + `bench restart` (4 new whitelisted methods) + redeploy the `URYMosaic/` build.** The `pos/` build is untouched.
+- **Config the client must do:** set **Unit Type = Bar** on the `Bar` production unit (everything defaults to `Kitchen`, so the feature is invisible until then).
+- **Known / not done:** the barman cannot type a **physical count** — the sheet prints a blank "Counted" column to write on instead (the user picked the no-typing option). 42 of the Bar's items currently show **negative** stock, which is pre-existing data (sold without stock received); the report shows them in red rather than hiding them.
+- **Follow-up (same day) — the sheet scrolled the whole page away.** 134 rows made the page ~4,500px tall, so scrolling the list took the navbar, sidebar and bar strip off screen. Now the card is capped to the space left in the window and **the page never scrolls**:
+  - `measureStockPanel()` sets the card's `max-height` from `window.innerHeight − card top − 24`, **measured, not a CSS calc()**, because the height above the card varies (open-the-bar banner vs. the "open since" strip). Re-measured on resize and whenever `servedTab` / `viewMode` / `barSession` change. The wrapper drops its `mb-16` on this tab only (the kitchen board keeps it); otherwise the page still scrolls by that margin.
+  - The table is the **only** scrolling region (`min-h-0 flex-auto overflow-auto`, sticky `thead`), with a pager (« ‹ Page N of M › », "21–40 of 134") and a **Find an item…** filter across all pages.
+  - **Rows default to "Fit screen"**: `fitStockRows()` computes how many rows fit without scrolling from `card height − list height` (the non-list chrome, which does not depend on the row count, so it can't feed back on itself). Fixed 20 / 50 / 100 remain selectable; those scroll inside the list. Changing the page size keeps the first visible row on screen instead of jumping to page 1.
+  - **Print still prints ALL rows**, not the page on screen.
+  - **Verified in headless Chromium** (throwaway Administrator session, deleted afterwards) at 1920×960 / 1280×720 / 1024×768: page scroll **0** at every size, list overflow **0** on Fit (19 / 11 / 12 rows per page), Next/Prev and the search work, a live resize from page 3 keeps the same items in view, 0 page errors. `yarn build` clean. **Frontend-only → redeploy the `URYMosaic/` build.**
+
 
 ### 2026-07-31 — Table grid was ordered as TEXT, so Table 3 sat near the bottom
 - **Symptom (user):** "in the table section i want the tables to be orderly by their numbers. right now table 1 doesn't come first and 3 will be at the bottom… even in a different room that it starts from 29".

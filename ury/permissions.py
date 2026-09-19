@@ -100,6 +100,12 @@ READ_ONLY_DOCTYPES = [
 # perm flags appropriate for "regular cashier operation".
 WRITE_DOCTYPES = [
     (
+        # The barman opens/closes his own bar session from the KDS, so every
+        # URY role that can sign in to a KDS screen needs to create one.
+        "URY Bar Session",
+        {"read": 1, "write": 1, "create": 1, "select": 1, "print": 1, "report": 1},
+    ),
+    (
         "Customer",
         {"read": 1, "write": 1, "create": 1, "select": 1, "report": 1},
     ),
@@ -230,6 +236,22 @@ CAPTAIN_EXTRA_WRITE_DOCTYPES: list[tuple[str, dict]] = [
 # she needs the same POS baseline as a cashier (create POS Invoice etc.).
 ROLES = ("URY Cashier", "URY Captain", "URY Manager", "URY Waiter")
 
+# Kitchen / bar staff who only work the KDS (2026-09-18). Deliberately NOT
+# in ROLES: they never ring or pay orders, so they get none of the POS
+# baseline — only read on what the kitchen screen reads through
+# permission-checked calls (kot_list uses frappe.get_list on URY KOT).
+# Every other KDS action writes through db.set_value / ignore_permissions.
+PRODUCTION_ROLE = "URY Production User"
+PRODUCTION_DOCTYPES: list[tuple[str, dict]] = [
+    ("URY KOT", {"read": 1, "select": 1, "report": 1}),
+    ("URY Production Unit", {"read": 1, "select": 1}),
+    ("URY Bar Session", {"read": 1, "select": 1, "report": 1}),
+]
+# Frappe sends a user to the first of their roles' `home_page` after login.
+# "Mosaic" is the KDS; with no unit in the URL it routes the user to their
+# own unit (or a picker when they have several).
+PRODUCTION_HOME_PAGE = "Mosaic"
+
 
 # ───────────────────────────────────────────────────────────────────
 # Public entry point
@@ -249,6 +271,7 @@ def ensure_role_permissions():
     # URY Waiter) won't exist on an already-installed site otherwise.
     for role in ROLES:
         _ensure_role_exists(role)
+    _ensure_role_exists(PRODUCTION_ROLE, home_page=PRODUCTION_HOME_PAGE)
 
     for role in ROLES:
         for doctype in READ_ONLY_DOCTYPES:
@@ -261,6 +284,12 @@ def ensure_role_permissions():
                 inserted += 1
             else:
                 skipped += 1
+
+    for doctype, perms in PRODUCTION_DOCTYPES:
+        if _ensure_perm(PRODUCTION_ROLE, doctype, perms):
+            inserted += 1
+        else:
+            skipped += 1
 
     # Captain extras (and managers, who are effectively super-captains).
     for role in ("URY Captain", "URY Manager"):
@@ -285,12 +314,24 @@ def ensure_role_permissions():
 # ───────────────────────────────────────────────────────────────────
 
 
-def _ensure_role_exists(role_name: str) -> None:
-    """Create a URY Role if it doesn't already exist. Idempotent."""
+def _ensure_role_exists(role_name: str, home_page: str | None = None) -> None:
+    """Create a URY Role if it doesn't already exist. Idempotent.
+
+    ``home_page`` is set on creation, and on an existing role only while its
+    home page is still blank — an admin who pointed it elsewhere keeps it.
+    """
     if frappe.db.exists("Role", role_name):
+        if home_page and not frappe.db.get_value("Role", role_name, "home_page"):
+            frappe.db.set_value("Role", role_name, "home_page", home_page)
+            print(f"[URY perms] set home page of {role_name} to {home_page}")
         return
     doc = frappe.get_doc(
-        {"doctype": "Role", "role_name": role_name, "desk_access": 1}
+        {
+            "doctype": "Role",
+            "role_name": role_name,
+            "desk_access": 1,
+            "home_page": home_page,
+        }
     )
     doc.flags.ignore_permissions = True
     doc.insert()

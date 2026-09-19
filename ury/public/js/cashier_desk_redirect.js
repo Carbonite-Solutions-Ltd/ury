@@ -1,4 +1,4 @@
-// URY Cashier desk redirect.
+// URY Cashier / Production User desk redirect.
 //
 // Loaded into the Frappe desk via `app_include_js` in hooks.py. When a
 // user with ONLY the URY Cashier role (no elevated role like System
@@ -29,11 +29,22 @@
 	var hasElevated = elevated.some(function (role) {
 		return frappe.user.has_role(role);
 	});
+	if (hasElevated) return;
+
+	// Kitchen / bar staff go to the kitchen screen (2026-09-18). Checked
+	// before the POS roles so it matches the login landing, which comes from
+	// the URY Production User role's home page. /Mosaic with no unit sends
+	// them to their own unit, or to a picker when they have several.
+	if (frappe.user.has_role("URY Production User")) {
+		window.location.replace("/Mosaic");
+		return;
+	}
+
 	// POS-only roles (cashier + self-serve waiter) get bounced to /pos.
 	var isPosOnly =
 		frappe.user.has_role("URY Cashier") || frappe.user.has_role("URY Waiter");
 
-	if (isPosOnly && !hasElevated) {
+	if (isPosOnly) {
 		// Replace (not assign) so the desk doesn't sit in browser history.
 		window.location.replace("/pos");
 	}

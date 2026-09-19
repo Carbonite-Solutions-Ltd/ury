@@ -2,15 +2,85 @@
   <!-- Single root on purpose: masonryLoading() uses this.$el.querySelector,
        and a multi-root (fragment) component would make $el a comment node. -->
   <div>
-    <Header :view-mode="viewMode" @set-view="onSetView" @logout="logout" />
+    <Header
+      :view-mode="viewMode"
+      :unit-label="boardActive ? production : ''"
+      :can-switch="canSwitchUnit"
+      :picker-mode="!boardActive"
+      @set-view="onSetView"
+      @logout="logout"
+      @switch="unitPickerMode = 'modal'"
+    />
 
-    <div class="mx-auto p-4 mb-16 relative">
+    <!-- Screen picker (2026-09-18): /Mosaic landing, the Switch button, and
+         the "not your screen" case. Only once the user's units are loaded,
+         so a signed-out visitor still gets the Not Permitted modal. -->
+    <UnitPicker
+      v-if="unitsLoaded && unitPickerMode"
+      :mode="unitPickerMode"
+      :units="myUnits"
+      :departments="myDepartments"
+      :current="production"
+      :full-name="myFullName"
+      @pick="openScreen"
+      @close="unitPickerMode = ''"
+      @logout="logout"
+    />
+
+    <!-- mb-16 keeps the kitchen board clear of the bottom edge; the stock
+         sheet sizes itself to the window instead, so it drops the margin
+         (measureStockPanel reserves only the p-4 below it). -->
+    <div
+      class="mx-auto p-4 relative"
+      :class="viewMode === 'served' && servedTab === 'stock' ? 'mb-0' : 'mb-16'"
+    >
+    <!-- Bar handover (2026-09-18). A Bar unit has to be "opened" before the
+         stock report has a starting point, so the prompt sits above every
+         view - the barman taking over cannot miss it. Kitchen units never
+         see any of this. -->
+    <div
+      v-if="isBarUnit && !barSession"
+      class="mb-4 rounded-xl border-2 border-amber-400 bg-amber-50 p-4 flex items-center justify-between gap-4 flex-wrap"
+    >
+      <div class="min-w-0">
+        <h2 class="text-lg font-extrabold text-amber-900">Open the bar</h2>
+        <p class="text-sm text-amber-800">
+          Taking over? Open the bar to record the stock you are starting with.
+          At the end of your watch you can print a handover sheet.
+        </p>
+      </div>
+      <button
+        type="button"
+        @click="openBar"
+        :disabled="openingBar"
+        class="rounded-lg bg-amber-600 px-5 py-2.5 text-white text-sm font-bold hover:bg-amber-700 disabled:opacity-50"
+      >
+        {{ openingBar ? "Opening…" : "Open the bar" }}
+      </button>
+    </div>
+    <div
+      v-else-if="isBarUnit && barSession"
+      class="mb-4 flex items-center justify-between gap-3 flex-wrap rounded-lg bg-white shadow px-4 py-2 text-sm"
+    >
+      <span class="text-gray-700">
+        Bar open since
+        <strong>{{ fmtWhen(barSession.opened_at) }}</strong>
+        · {{ barSession.opened_by_name }}
+      </span>
+      <button
+        type="button"
+        @click="goToStockReport"
+        class="rounded-md bg-gray-900 text-white px-3 py-1.5 text-xs font-semibold hover:bg-gray-700"
+      >
+        Stock report
+      </button>
+    </div>
     <!-- Served view (2026-07-16 / sidebar 2026-07-23): a sidebar toggles
          Recently Served (reinstate list) vs Items Served (sold summary).
          Recently Served is first + the default; it's hidden when the
          production unit has reinstate disabled. -->
     <div v-if="viewMode === 'served'" class="flex gap-4 items-start">
-      <aside class="w-40 shrink-0 space-y-1">
+      <aside class="w-40 shrink-0 space-y-1 sticky top-4 self-start">
         <button
           v-if="reinstateEnabled"
           type="button"
@@ -36,9 +106,42 @@
         >
           Items Served
         </button>
+        <!-- Orders taken off this screen (2026-09-19): Cancelled went through
+             the kitchen (or its grace window), Deleted was a manager's call
+             that never asked. -->
+        <button
+          v-for="tab in removedTabs"
+          :key="tab.key"
+          type="button"
+          @click="openRemovedTab(tab.key)"
+          :class="[
+            'w-full text-left px-3 py-2 rounded-lg text-sm font-semibold transition',
+            servedTab === tab.key
+              ? 'bg-gray-900 text-white shadow'
+              : 'bg-white text-gray-700 hover:bg-gray-100',
+          ]"
+        >
+          {{ tab.label }}
+        </button>
+        <button
+          v-if="isBarUnit"
+          type="button"
+          @click="openStockTab"
+          :class="[
+            'w-full text-left px-3 py-2 rounded-lg text-sm font-semibold transition',
+            servedTab === 'stock'
+              ? 'bg-gray-900 text-white shadow'
+              : 'bg-white text-gray-700 hover:bg-gray-100',
+          ]"
+        >
+          Stock Report
+        </button>
       </aside>
 
-      <div class="flex-1 min-w-0 max-w-3xl">
+      <div
+        class="flex-1 min-w-0"
+        :class="servedTab === 'stock' ? 'max-w-5xl' : 'max-w-3xl'"
+      >
         <!-- Recently served (reinstate) — default view -->
         <div v-if="servedTab === 'recent' && reinstateEnabled">
           <p v-if="servedLoading" class="text-gray-600">
@@ -83,6 +186,94 @@
               >
                 {{ reinstatingKot === s.name ? "Undoing…" : "Reinstate" }}
               </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Cancelled / Deleted orders (2026-09-19), one day at a time. -->
+        <div v-else-if="servedTab === 'cancelled' || servedTab === 'deleted'">
+          <div class="rounded-xl bg-white shadow p-4">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <h2 class="text-lg font-bold text-gray-900">
+                  {{ servedTab === "deleted" ? "Deleted Orders" : "Cancelled Orders" }}
+                </h2>
+                <p class="text-xs text-gray-500">
+                  {{ production || "All" }} · {{ removedDate }} ·
+                  {{
+                    servedTab === "deleted"
+                      ? "removed by a manager without asking the kitchen"
+                      : "accepted by the kitchen, pulled before cooking, or cancelled by the waiter"
+                  }}
+                </p>
+              </div>
+              <input
+                type="date"
+                v-model="removedDate"
+                :max="todayIso()"
+                @change="fetchRemovedOrders"
+                class="rounded-md border border-gray-300 px-2 py-1 text-sm"
+              />
+            </div>
+          </div>
+
+          <p v-if="removedLoading" class="mt-3 text-sm text-gray-500">Loading…</p>
+          <p v-else-if="!removedList.length" class="mt-3 text-sm text-gray-600">
+            No {{ servedTab === "deleted" ? "deleted" : "cancelled" }} orders on this day.
+          </p>
+          <div v-else class="mt-3 space-y-3">
+            <div
+              v-for="r in removedList"
+              :key="r.kot"
+              class="rounded-xl bg-white shadow p-4 border-l-4"
+              :class="servedTab === 'deleted' ? 'border-red-600' : 'border-amber-500'"
+            >
+              <div class="flex items-center gap-2 flex-wrap">
+                <span
+                  class="rounded-full bg-gray-900 text-white px-3 py-0.5 text-lg font-extrabold leading-none"
+                >
+                  #{{ orderLabel(r) }}
+                </span>
+                <span
+                  v-if="r.waiter_name"
+                  class="rounded-full bg-[#2563EB] text-white px-2 py-0.5 text-xs font-bold leading-none"
+                >
+                  {{ r.waiter_name }}
+                </span>
+                <span class="text-sm text-gray-500">{{ r.table || "Takeaway" }}</span>
+                <span
+                  v-if="r.was_served"
+                  class="rounded-full bg-green-100 text-green-800 px-2 py-0.5 text-xs font-semibold"
+                >
+                  Was served
+                </span>
+                <span class="ml-auto text-xs text-gray-500">{{ timeLabel(r.removed_at) }}</span>
+              </div>
+              <div class="mt-2 text-sm text-gray-700">
+                <template v-if="servedTab === 'deleted'">
+                  Deleted by <span class="font-semibold">{{ r.removed_by || "a manager" }}</span>
+                </template>
+                <template v-else-if="r.by_waiter">
+                  Cancelled by the waiter
+                </template>
+                <template v-else>
+                  Cancelled by <span class="font-semibold">{{ r.removed_by || "a captain" }}</span>
+                  <span v-if="r.accepted_by"> · accepted by {{ r.accepted_by }}</span>
+                  <span v-else> · before cooking started</span>
+                </template>
+              </div>
+              <div
+                v-if="r.reason"
+                class="mt-1 rounded-md bg-gray-50 px-3 py-1.5 text-sm text-gray-800"
+              >
+                <span class="font-semibold">Reason:</span> {{ r.reason }}
+              </div>
+              <ul class="mt-2 text-sm text-gray-800 space-y-0.5">
+                <li v-for="(it, idx) in r.items" :key="idx">
+                  <span class="font-semibold">{{ it.quantity }}×</span> {{ it.item_name }}
+                  <span v-if="it.comments" class="text-gray-500"> — {{ it.comments }}</span>
+                </li>
+              </ul>
             </div>
           </div>
         </div>
@@ -181,6 +372,223 @@
             <p v-else class="mt-3 text-sm text-gray-500">
               No items sold on this day.
             </p>
+          </div>
+        </div>
+
+        <!-- Bar stock handover sheet (2026-09-18). The card is sized to the
+             space left in the window (stockPanelHeight, measured) so the page
+             itself never scrolls: the list scrolls inside it under a sticky
+             column header, and pages keep it short. Print still prints ALL
+             rows, not just the page on screen. -->
+        <div v-else-if="servedTab === 'stock'">
+          <div
+            ref="stockPanel"
+            class="rounded-xl bg-white shadow p-4 flex flex-col"
+            :style="stockPanelHeight ? { maxHeight: stockPanelHeight + 'px' } : null"
+          >
+            <div class="shrink-0 flex items-start justify-between gap-3 flex-wrap">
+              <div class="min-w-0">
+                <h2 class="text-lg font-bold text-gray-900">Stock Report</h2>
+                <p v-if="stockReport && stockReport.has_session" class="text-xs text-gray-500">
+                  {{ production }} · opened
+                  {{ fmtWhen(stockReport.opened_at) }} by
+                  {{ stockReport.opened_by_name }}
+                  <span v-if="stockReport.status === 'Closed'">
+                    · closed {{ fmtWhen(stockReport.closed_at) }}</span
+                  >
+                </p>
+              </div>
+              <div class="flex items-center gap-2 flex-wrap">
+                <label class="flex items-center gap-1 text-xs text-gray-600">
+                  <input
+                    type="checkbox"
+                    v-model="stockShowAll"
+                    @change="fetchStockReport"
+                  />
+                  Show all items
+                </label>
+                <button
+                  type="button"
+                  @click="fetchStockReport"
+                  class="rounded-md border border-gray-300 px-3 py-1.5 text-sm font-semibold text-gray-700 hover:bg-gray-100"
+                >
+                  Generate
+                </button>
+                <button
+                  type="button"
+                  @click="printStockReport"
+                  :disabled="!stockReport || !stockReport.rows || !stockReport.rows.length"
+                  class="rounded-md bg-gray-900 text-white px-3 py-1.5 text-sm font-semibold hover:bg-gray-700 disabled:opacity-50"
+                >
+                  Print
+                </button>
+              </div>
+            </div>
+
+            <p v-if="stockLoading" class="mt-3 shrink-0 text-sm text-gray-500">
+              Loading stock…
+            </p>
+
+            <div
+              v-else-if="stockReport && !stockReport.has_session"
+              class="mt-3 shrink-0 rounded-lg bg-amber-50 border border-amber-300 p-3 text-sm text-amber-900"
+            >
+              The bar has not been opened yet, so there is no starting stock to
+              compare against. Open the bar to begin.
+            </div>
+
+            <template v-else-if="stockReport && stockReport.rows">
+              <div class="mt-3 shrink-0 flex items-center gap-3 flex-wrap text-sm">
+                <span class="rounded-lg bg-gray-100 px-3 py-1 font-semibold">
+                  {{ stockReport.totals.line_count }} item(s)
+                </span>
+                <span class="rounded-lg bg-gray-100 px-3 py-1 font-semibold">
+                  {{ stockReport.totals.moved_count }} moved
+                </span>
+                <span
+                  v-if="stockReport.totals.negative_count"
+                  class="rounded-lg bg-red-100 text-red-800 px-3 py-1 font-semibold"
+                >
+                  {{ stockReport.totals.negative_count }} negative
+                </span>
+                <span v-if="stockReport.hidden_count" class="text-xs text-gray-500">
+                  {{ stockReport.hidden_count }} idle item(s) hidden
+                </span>
+                <input
+                  v-model="stockSearch"
+                  type="search"
+                  placeholder="Find an item…"
+                  class="ml-auto w-48 rounded-md border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-gray-400"
+                />
+              </div>
+
+              <!-- The only scrolling region. min-h-0 lets it shrink inside
+                   the capped card instead of pushing the card taller. -->
+              <div
+                ref="stockScroll"
+                class="mt-3 min-h-0 flex-auto overflow-auto border-t border-gray-100"
+              >
+                <table class="w-full text-sm">
+                  <thead class="sticky top-0 z-[1] bg-white">
+                    <tr class="text-left text-xs uppercase text-gray-500 shadow-[0_1px_0_#e5e7eb]">
+                      <th class="py-1.5 pr-2">Item</th>
+                      <th class="py-1.5 pr-2">Group</th>
+                      <th class="py-1.5 pr-2 text-right">Opening</th>
+                      <th class="py-1.5 pr-2 text-right">Sold</th>
+                      <th class="py-1.5 text-right">Expected</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-gray-100">
+                    <tr v-for="r in stockPageRows" :key="r.item_code">
+                      <td class="py-1 pr-2 text-gray-800">
+                        {{ r.item_name }}
+                        <span class="text-xs text-gray-400">{{ r.stock_uom }}</span>
+                      </td>
+                      <td class="py-1 pr-2 text-xs text-gray-500">
+                        {{ r.item_group }}
+                      </td>
+                      <td class="py-1 pr-2 text-right">{{ fmtQty(r.opening_qty) }}</td>
+                      <td class="py-1 pr-2 text-right font-semibold">
+                        {{ fmtQty(r.sold_qty) }}
+                      </td>
+                      <td
+                        class="py-1 text-right font-bold"
+                        :class="r.is_negative ? 'text-red-600' : 'text-gray-900'"
+                      >
+                        {{ fmtQty(r.expected_qty) }}
+                      </td>
+                    </tr>
+                    <tr v-if="!stockPageRows.length">
+                      <td colspan="5" class="py-6 text-center text-sm text-gray-500">
+                        No item matches "{{ stockSearch }}".
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Pager -->
+              <div
+                class="shrink-0 mt-2 pt-2 border-t border-gray-100 flex items-center justify-between gap-3 flex-wrap text-sm"
+              >
+                <span class="text-gray-600">
+                  <template v-if="stockFilteredRows.length">
+                    {{ stockRangeStart }}–{{ stockRangeEnd }} of
+                    {{ stockFilteredRows.length }}
+                  </template>
+                  <template v-else>0 items</template>
+                </span>
+                <div class="flex items-center gap-1">
+                  <button
+                    type="button"
+                    @click="goStockPage(1)"
+                    :disabled="stockCurrentPage <= 1"
+                    class="rounded-md border border-gray-300 px-2 py-1 font-semibold text-gray-700 hover:bg-gray-100 disabled:opacity-40"
+                    title="First page"
+                  >
+                    «
+                  </button>
+                  <button
+                    type="button"
+                    @click="goStockPage(stockCurrentPage - 1)"
+                    :disabled="stockCurrentPage <= 1"
+                    class="rounded-md border border-gray-300 px-3 py-1 font-semibold text-gray-700 hover:bg-gray-100 disabled:opacity-40"
+                  >
+                    ‹ Prev
+                  </button>
+                  <span class="px-2 text-gray-700 whitespace-nowrap">
+                    Page <strong>{{ stockCurrentPage }}</strong> of
+                    {{ stockPageCount }}
+                  </span>
+                  <button
+                    type="button"
+                    @click="goStockPage(stockCurrentPage + 1)"
+                    :disabled="stockCurrentPage >= stockPageCount"
+                    class="rounded-md border border-gray-300 px-3 py-1 font-semibold text-gray-700 hover:bg-gray-100 disabled:opacity-40"
+                  >
+                    Next ›
+                  </button>
+                  <button
+                    type="button"
+                    @click="goStockPage(stockPageCount)"
+                    :disabled="stockCurrentPage >= stockPageCount"
+                    class="rounded-md border border-gray-300 px-2 py-1 font-semibold text-gray-700 hover:bg-gray-100 disabled:opacity-40"
+                    title="Last page"
+                  >
+                    »
+                  </button>
+                </div>
+                <label class="flex items-center gap-1 text-xs text-gray-600">
+                  Rows
+                  <select
+                    v-model="stockRowsSetting"
+                    class="rounded-md border border-gray-300 px-1 py-0.5 text-sm"
+                  >
+                    <option value="fit">Fit screen</option>
+                    <option :value="20">20</option>
+                    <option :value="50">50</option>
+                    <option :value="100">100</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="shrink-0 mt-2 flex items-end justify-between gap-3">
+                <p class="text-xs text-gray-500">
+                  Expected = what should be on the shelf now. POS sales are only
+                  deducted from stock when the shift is consolidated, so this
+                  already allows for drinks sold but not yet deducted.
+                </p>
+                <button
+                  v-if="stockReport.status === 'Open'"
+                  type="button"
+                  @click="closeBar"
+                  :disabled="closingBar"
+                  class="shrink-0 rounded-md border border-gray-300 px-3 py-1.5 text-sm font-semibold text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                >
+                  {{ closingBar ? "Closing…" : "Close the bar" }}
+                </button>
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -727,6 +1135,7 @@ import { FrappeApp } from "frappe-js-sdk";
 import Masonry from "masonry-layout";
 import io from "socket.io-client";
 import Header from "./Header.vue";
+import UnitPicker from "./UnitPicker.vue";
 
 let host = window.location.hostname;
 let port = window.location.port;
@@ -775,7 +1184,7 @@ initializeSocket(); // Initialize the socket after fetching the site name
 const frappe = new FrappeApp(url);
 export default {
   // inject: ["$auth", "$socket"],
-  components: { Header },
+  components: { Header, UnitPicker },
   data() {
     return {
       kot: [],
@@ -801,9 +1210,34 @@ export default {
       servedTab: "recent",
       reinstateEnabled: true,
       reinstateWindowHours: 3,
+      // Bar stock handover (2026-09-18). Only a URY Production Unit whose
+      // unit_type is "Bar" gets any of this; kitchens are untouched.
+      isBarUnit: false,
+      barSession: null,
+      openingBar: false,
+      closingBar: false,
+      stockReport: null,
+      stockLoading: false,
+      stockShowAll: false,
+      // Stock list paging (2026-09-18): keep the sheet inside the window.
+      stockSearch: "",
+      stockPage: 1,
+      // "fit" = as many rows as fit the card without scrolling (stockFitRows,
+      // measured); a number = a fixed page size the barman picked.
+      stockRowsSetting: "fit",
+      stockFitRows: 15,
+      stockPanelHeight: null,
       // Served-day sold summary (2026-07-23)
       servedSummary: null,
       summaryDate: "",
+      // Cancelled / Deleted lists (2026-09-19)
+      removedOrders: null,
+      removedDate: "",
+      removedLoading: false,
+      removedTabs: [
+        { key: "cancelled", label: "Cancelled" },
+        { key: "deleted", label: "Deleted" },
+      ],
       summaryLoading: false,
       showWaiterBreakdown: false,
       // Drag-to-reorder (2026-07-16)
@@ -830,6 +1264,15 @@ export default {
       statusMessage: "",
       daily_order_number:0,
       targetError: "",
+      // Screen access (2026-09-18). boardActive stays false on the /Mosaic
+      // picker and on a screen the user may not open, so nothing is
+      // fetched or subscribed behind the picker.
+      myUnits: [],
+      myDepartments: [],
+      myFullName: "",
+      unitsLoaded: false,
+      unitPickerMode: "",
+      boardActive: false,
       service_policy_time: 0,
       _tickHandle: null,
       _refreshHandle: null,
@@ -896,6 +1339,13 @@ export default {
             })
             .then((result) => {
               const msg = result.message || {};
+              if (msg.access_denied) {
+                this.boardActive = false;
+                this.kot = [];
+                this.unitPickerMode = this.screenCount ? "denied" : "none";
+                resolve();
+                return;
+              }
               if (msg.error) {
                 this.targetError = msg.error;
                 this.kot = [];
@@ -1195,6 +1645,224 @@ export default {
       return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
     },
     /** Load the day's SOLD summary for this screen's production/department. */
+    /** Is this a Bar unit, and is somebody's session already open? */
+    async fetchBarState() {
+      if (!this.production || this.production === "All") return;
+      try {
+        const res = await this.call.get(
+          "ury.ury.api.ury_bar_stock.get_bar_session_state",
+          { production: this.production }
+        );
+        const msg = res.message || res;
+        this.isBarUnit = !!(msg && msg.is_bar);
+        this.barSession = (msg && msg.session) || null;
+      } catch (error) {
+        // A kitchen unit (or an older backend) simply has no bar state —
+        // never let that break the board.
+        console.error(error);
+        this.isBarUnit = false;
+        this.barSession = null;
+      }
+    },
+    /** Take over the bar: snapshot the stock and start a session. */
+    async openBar() {
+      if (this.openingBar) return;
+      this.openingBar = true;
+      try {
+        const res = await this.call.post(
+          "ury.ury.api.ury_bar_stock.open_bar_session",
+          { production: this.production }
+        );
+        const msg = res.message || res;
+        await this.fetchBarState();
+        this.setStatusMessage(
+          `Bar opened — ${msg.item_count} item(s) recorded.`
+        );
+        await this.goToStockReport();
+      } catch (error) {
+        console.error(error);
+        this.setStatusMessage("Could not open the bar.");
+      } finally {
+        this.openingBar = false;
+      }
+    },
+    /** Hand over: close the session. The next person opens their own. */
+    async closeBar() {
+      if (this.closingBar) return;
+      this.closingBar = true;
+      try {
+        await this.call.post("ury.ury.api.ury_bar_stock.close_bar_session", {
+          production: this.production,
+        });
+        await this.fetchBarState();
+        await this.fetchStockReport();
+        this.setStatusMessage("Bar closed.");
+      } catch (error) {
+        console.error(error);
+        this.setStatusMessage("Could not close the bar.");
+      } finally {
+        this.closingBar = false;
+      }
+    },
+    openStockTab() {
+      this.servedTab = "stock";
+      this.fetchStockReport();
+    },
+    goStockPage(n) {
+      this.stockPage = Math.min(Math.max(1, n), this.stockPageCount);
+      const el = this.$refs.stockScroll;
+      if (el) el.scrollTop = 0;
+    },
+    /** Cap the stock card at the space left below it in the window, so the
+     * page never scrolls and the navbar, sidebar and bar strip stay put.
+     *
+     * Measured rather than a CSS calc(): the height above the card varies
+     * (open-the-bar banner vs. the "open since" strip). The 24px reserve is
+     * the wrapper's p-4 below the card plus a little breathing room (the
+     * wrapper drops its mb-16 on this tab); without it the page scrolls by
+     * that margin. */
+    measureStockPanel() {
+      this.$nextTick(() => {
+        const el = this.$refs.stockPanel;
+        if (!el) return;
+        const top = el.getBoundingClientRect().top + window.scrollY;
+        this.stockPanelHeight = Math.max(
+          320,
+          Math.floor(window.innerHeight - top - 24)
+        );
+        this.$nextTick(this.fitStockRows);
+      });
+    },
+    /** "Fit screen" page size: how many rows fit the list area without it
+     * scrolling. The card's non-list chrome (title, chips, pager, note) does
+     * not depend on the row count, so card height minus list height is a
+     * stable number and this does not feed back on itself. A row that wraps
+     * onto two lines can still leave a small scroll — that is the fallback,
+     * not a bug. */
+    fitStockRows() {
+      const panel = this.$refs.stockPanel;
+      const scroller = this.$refs.stockScroll;
+      if (!panel || !scroller || !this.stockPanelHeight) return;
+      const chrome = panel.offsetHeight - scroller.offsetHeight;
+      const head = scroller.querySelector("thead");
+      const row = scroller.querySelector("tbody tr");
+      const rowH = (row && row.offsetHeight) || 33;
+      const room =
+        this.stockPanelHeight - chrome - ((head && head.offsetHeight) || 0) - 2;
+      this.stockFitRows = Math.max(5, Math.floor(room / rowH));
+    },
+    /** Jump straight to the handover sheet.
+     *
+     * showServed() is awaited on purpose: it resets servedTab itself (and
+     * lands on "summary" when the unit has reinstate turned off), so setting
+     * the tab before it resolves would be overwritten. */
+    async goToStockReport() {
+      if (this.viewMode !== "served") await this.showServed();
+      this.openStockTab();
+    },
+    async fetchStockReport() {
+      if (!this.isBarUnit) return;
+      this.stockLoading = true;
+      try {
+        const res = await this.call.get(
+          "ury.ury.api.ury_bar_stock.get_bar_stock_report",
+          {
+            production: this.production,
+            show_all: this.stockShowAll ? 1 : 0,
+          }
+        );
+        this.stockReport = res.message || res;
+        this.goStockPage(1);
+      } catch (error) {
+        console.error(error);
+        this.stockReport = null;
+      } finally {
+        this.stockLoading = false;
+        this.measureStockPanel();
+      }
+    },
+    /** Handover sheet via the browser print dialog — same self-contained
+     * print-window pattern as the Items Sold summary (no printer wiring in
+     * the KDS, so the cashier can print or save a PDF). */
+    printStockReport() {
+      const r = this.stockReport;
+      if (!r || !r.rows || !r.rows.length) return;
+      const esc = (x) =>
+        String(x == null ? "" : x).replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[c]
+        );
+      const fmt = (n) => this.fmtQty(n);
+      const rows = r.rows
+        .map(
+          (it) =>
+            `<tr><td>${esc(it.item_name)}</td><td class="g">${esc(
+              it.item_group || ""
+            )}</td><td class="q">${fmt(it.opening_qty)}</td><td class="q">${fmt(
+              it.sold_qty
+            )}</td><td class="q${it.is_negative ? " neg" : ""}">${fmt(
+              it.expected_qty
+            )}</td><td class="c"></td></tr>`
+        )
+        .join("");
+      const w = window.open("", "_blank");
+      if (!w) return;
+      w.document.write(`<!doctype html><html><head><meta charset="utf-8">
+<title>Stock Report — ${esc(r.production)}</title>
+<style>
+  body{font-family:system-ui,Arial,sans-serif;margin:24px;color:#111}
+  h1{font-size:18px;margin:0 0 2px}
+  p.meta{font-size:12px;color:#555;margin:0 0 12px}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:5px 6px;border-bottom:1px solid #ddd}
+  th{font-size:10px;text-transform:uppercase;color:#555}
+  td.q,th.q{text-align:right;white-space:nowrap}
+  td.g{color:#666;font-size:11px}
+  td.c{width:70px;border-bottom:1px solid #999}
+  td.neg{color:#b00020;font-weight:700}
+  .sign{margin-top:28px;font-size:12px;display:flex;gap:48px}
+  .sign div{flex:1;border-top:1px solid #999;padding-top:4px}
+</style></head><body>
+<h1>Bar Stock Handover — ${esc(r.production)}</h1>
+<p class="meta">
+  Opened ${esc(r.opened_at)} by ${esc(r.opened_by_name)}${
+    r.closed_at ? ` · closed ${esc(r.closed_at)}` : ""
+  }<br>
+  Printed ${esc(r.generated_at)} by ${esc(r.generated_by)} ·
+  ${r.totals.line_count} item(s), ${r.totals.moved_count} moved${
+    r.totals.negative_count
+      ? `, ${r.totals.negative_count} negative`
+      : ""
+  }
+</p>
+<table>
+  <thead><tr><th>Item</th><th>Group</th><th class="q">Opening</th><th class="q">Sold</th><th class="q">Expected</th><th>Counted</th></tr></thead>
+  <tbody>${rows}</tbody>
+</table>
+<div class="sign"><div>Handed over by</div><div>Received by</div></div>
+<script>window.onload=function(){window.print()};window.onafterprint=function(){window.close()}<\/script>
+</body></html>`);
+      w.document.close();
+    },
+    /** "2026-09-18 12:20:13.345748" -> "18 Sep, 12:20" */
+    fmtWhen(value) {
+      if (!value) return "";
+      const d = new Date(String(value).replace(" ", "T"));
+      if (isNaN(d.getTime())) return String(value);
+      return d.toLocaleString([], {
+        day: "2-digit",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    },
     async fetchServedSummary() {
       if (!this.summaryDate) this.summaryDate = this.todayIso();
       this.summaryLoading = true;
@@ -1316,6 +1984,35 @@ export default {
       } finally {
         this.reinstatingKot = null;
       }
+    },
+    /** Open the Cancelled or Deleted list; one fetch serves both tabs. */
+    openRemovedTab(kind) {
+      this.servedTab = kind;
+      if (!this.removedDate) this.removedDate = this.todayIso();
+      if (!this.removedOrders || this.removedOrders.date !== this.removedDate) {
+        this.fetchRemovedOrders();
+      }
+    },
+    async fetchRemovedOrders() {
+      this.removedLoading = true;
+      try {
+        const res = await this.call.get(
+          "ury.ury.api.ury_kot_display.get_removed_orders",
+          { production: this.production || "All", date: this.removedDate }
+        );
+        this.removedOrders = res.message || null;
+      } catch (error) {
+        console.error(error);
+        this.removedOrders = null;
+      } finally {
+        this.removedLoading = false;
+      }
+    },
+    timeLabel(raw) {
+      if (!raw) return "";
+      const d = new Date(String(raw).replace(" ", "T"));
+      if (isNaN(d.getTime())) return String(raw);
+      return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     },
     servedTimeLabel(kot) {
       const raw = kot.served_at || kot.modified;
@@ -1548,10 +2245,65 @@ export default {
         this.masonryLoading();
       });
     },
+    /** The screens this user may open, from their Screen Access rows. */
+    async loadMyUnits() {
+      const res = await this.call.get(
+        "ury.ury.api.ury_kds_access.get_my_production_units",
+        { current: this.production || "" }
+      );
+      const data = res.message || {};
+      this.myUnits = data.units || [];
+      this.myDepartments = data.departments || [];
+      this.myFullName = data.full_name || "";
+      this.unitsLoaded = true;
+      return data;
+    },
+    openScreen(name) {
+      if (!name) return;
+      window.location.href = "/Mosaic/" + encodeURIComponent(name);
+    },
+    /** Decide what this page shows. Resolves true to start the board.
+     *
+     *  /Mosaic (no screen): one screen -> go straight to it; several -> the
+     *  picker; none -> "not assigned". A screen the user isn't on -> the
+     *  picker with their own screens instead. */
+    async routeToScreen() {
+      let data;
+      try {
+        data = await this.loadMyUnits();
+      } catch (error) {
+        console.error(error);
+        if (!this.production) {
+          this.targetError = "Couldn't load your screens. Refresh to try again.";
+          return false;
+        }
+        // The board endpoints still enforce access; don't block on this.
+        return true;
+      }
+      const count = this.screenCount;
+      if (!this.production) {
+        if (count === 1) {
+          const only = this.myUnits.length
+            ? this.myUnits[0].name
+            : this.myDepartments[0];
+          window.location.replace("/Mosaic/" + encodeURIComponent(only));
+          return false;
+        }
+        this.unitPickerMode = count ? "page" : "none";
+        return false;
+      }
+      if (!data.current_allowed) {
+        this.unitPickerMode = count ? "denied" : "none";
+        return false;
+      }
+      return true;
+    },
     redirectToLogin() {
       var currentDomain = window.location.origin;
-      window.location.href =
-        currentDomain + "/login?redirect-to=Mosaic/" + this.production;
+      const target = this.production
+        ? "Mosaic/" + encodeURIComponent(this.production)
+        : "Mosaic";
+      window.location.href = currentDomain + "/login?redirect-to=" + target;
     },
     masonryLoading() {
       this.$nextTick(() => {
@@ -1588,6 +2340,7 @@ export default {
       this.isOnline = true;
       this.setStatusMessage("You are online");
       this.hideStatusMessageAfterDelay();
+      if (!this.boardActive) return;
       this.fetchKOT().then(() => {
         this.masonryLoading();
       });
@@ -1614,18 +2367,23 @@ export default {
   mounted() {
     window.addEventListener("online", this.handleOnline);
     window.addEventListener("offline", this.handleOffline);
+    window.addEventListener("resize", this.measureStockPanel);
     document.addEventListener("click", this.hideAudioAlertMessage);
-    const currentUrl = window.location.href;
-    const parts = currentUrl.split("/");
-    const production = parts[parts.length - 1];
-    const decodedProduction = decodeURIComponent(production);
-    this.production = decodedProduction;
+    // The screen is the last path segment: /Mosaic/<unit or department>.
+    // Plain /Mosaic (where a kitchen user lands after login) has none.
+    const parts = window.location.pathname.split("/").filter(Boolean);
+    const last = decodeURIComponent(parts[parts.length - 1] || "");
+    this.production = last.toLowerCase() === "mosaic" ? "" : last;
     const self = this;
     window.addEventListener("resize", this.masonryLoading());
     this.masonryLoading();
 
     this.auth()
-      .then(() => {
+      .then(() => this.routeToScreen())
+      .then((startBoard) => {
+        if (!startBoard) return;
+        self.boardActive = true;
+        self.fetchBarState();
         self.fetchKOT().then(() => {
           if (this.audio_alert === 1) {
             this.showAudioAlertMessage = true;
@@ -1699,6 +2457,7 @@ export default {
     // tickets already sitting on the board.
     this._refreshHandle = setInterval(() => {
       if (document.hidden) return; // don't poll a backgrounded screen
+      if (!this.boardActive) return; // picker / no-access screen
       this.fetchKOT()
         .then(() => this.masonryLoading())
         .catch(() => {
@@ -1709,11 +2468,97 @@ export default {
   beforeUnmount() {
     window.removeEventListener("online", this.handleOnline);
     window.removeEventListener("offline", this.handleOffline);
+    window.removeEventListener("resize", this.measureStockPanel);
     document.removeEventListener("click", this.hideAudioAlertMessage);
     if (this._tickHandle) clearInterval(this._tickHandle);
     if (this._refreshHandle) clearInterval(this._refreshHandle);
   },
+  watch: {
+    stockSearch() {
+      this.goStockPage(1);
+    },
+    // Keep the first row on screen in view when the page size changes
+    // (window resized, or a different Rows choice) instead of jumping back
+    // to page 1.
+    stockPageSize(size, oldSize) {
+      const first = (Math.max(1, this.stockPage) - 1) * (oldSize || size);
+      this.goStockPage(Math.floor(first / size) + 1);
+    },
+    stockRowsSetting() {
+      this.measureStockPanel();
+    },
+    // Anything that changes what sits ABOVE the stock card changes how much
+    // room is left for it, so re-measure.
+    servedTab() {
+      this.measureStockPanel();
+    },
+    viewMode() {
+      this.measureStockPanel();
+    },
+    barSession() {
+      this.measureStockPanel();
+    },
+  },
   computed: {
+    removedList() {
+      if (!this.removedOrders) return [];
+      return (
+        (this.servedTab === "deleted"
+          ? this.removedOrders.deleted
+          : this.removedOrders.cancelled) || []
+      );
+    },
+    screenCount() {
+      return this.myUnits.length + this.myDepartments.length;
+    },
+    /** Offer Switch only when there is somewhere else to go. */
+    canSwitchUnit() {
+      if (!this.boardActive) return false;
+      const names = this.myUnits
+        .map((u) => u.name)
+        .concat(this.myDepartments);
+      return names.some((n) => n !== this.production);
+    },
+    stockPageSize() {
+      return this.stockRowsSetting === "fit"
+        ? this.stockFitRows
+        : Number(this.stockRowsSetting) || 20;
+    },
+    stockFilteredRows() {
+      const rows = (this.stockReport && this.stockReport.rows) || [];
+      const q = (this.stockSearch || "").trim().toLowerCase();
+      if (!q) return rows;
+      return rows.filter((r) =>
+        [r.item_name, r.item_code, r.item_group].some((v) =>
+          String(v || "").toLowerCase().includes(q)
+        )
+      );
+    },
+    stockPageCount() {
+      return Math.max(
+        1,
+        Math.ceil(this.stockFilteredRows.length / this.stockPageSize)
+      );
+    },
+    // Clamped, so a regenerate that returns fewer rows can't strand the
+    // barman on a page that no longer exists.
+    stockCurrentPage() {
+      return Math.min(Math.max(1, this.stockPage), this.stockPageCount);
+    },
+    stockPageRows() {
+      const start = (this.stockCurrentPage - 1) * this.stockPageSize;
+      return this.stockFilteredRows.slice(start, start + this.stockPageSize);
+    },
+    stockRangeStart() {
+      if (!this.stockFilteredRows.length) return 0;
+      return (this.stockCurrentPage - 1) * this.stockPageSize + 1;
+    },
+    stockRangeEnd() {
+      return Math.min(
+        this.stockCurrentPage * this.stockPageSize,
+        this.stockFilteredRows.length
+      );
+    },
     sortedKotItems() {
       return (kot) => {
         return kot.kot_items.sort((a, b) => a.serve_priority - b.serve_priority);
