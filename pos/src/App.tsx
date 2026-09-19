@@ -50,6 +50,9 @@ function App() {
   const [terminalError, setTerminalError] = useState<string | null>(null);
   const [terminalLoading, setTerminalLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
+  // Why the saved terminal was refused (e.g. no access to its branch),
+  // shown on the setup screen instead of silently dropping it.
+  const [setupNotice, setSetupNotice] = useState<string | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [isGuest, setIsGuest] = useState(false);
   const [geofenceChecking, setGeofenceChecking] = useState(false);
@@ -102,8 +105,13 @@ function App() {
           setTerminalConfig(config);
           sessionStorage.removeItem('posProfile');
           sessionStorage.removeItem('menuCategories');
-        } catch {
-          // Saved terminal no longer valid — show setup
+        } catch (err) {
+          // Saved terminal no longer valid, or this user has no access to
+          // its branch (2026-09-19) — show setup, saying why.
+          const parsed = extractFrappeServerError(err, '');
+          if (parsed.title === 'No Access To Branch' && parsed.message) {
+            setSetupNotice(parsed.message);
+          }
           setNeedsSetup(true);
         }
       } else {
@@ -242,7 +250,7 @@ function App() {
   }
 
   if (needsSetup) {
-    return <TerminalSetupScreen onSelect={handleTerminalSelected} />;
+    return <TerminalSetupScreen onSelect={handleTerminalSelected} notice={setupNotice} />;
   }
 
   if (terminal && geofenceChecking && !geofencePassed) {
@@ -376,7 +384,13 @@ function App() {
  * One-time device registration screen.
  * Fetches available terminals from the server and lets admin pick one.
  */
-function TerminalSetupScreen({ onSelect }: { onSelect: (terminal: string) => void }) {
+function TerminalSetupScreen({
+  onSelect,
+  notice,
+}: {
+  onSelect: (terminal: string) => void;
+  notice?: string | null;
+}) {
   const [terminals, setTerminals] = useState<TerminalConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -449,8 +463,11 @@ function TerminalSetupScreen({ onSelect }: { onSelect: (terminal: string) => voi
             <Monitor className="w-8 h-8 text-amber-500" />
           </div>
           <h2 className="text-xl font-bold text-gray-900 mb-2">No Terminals Available</h2>
+          {notice && (
+            <p className="mb-3 text-sm text-amber-800">{notice}</p>
+          )}
           <p className="text-gray-600">
-            No POS Terminals have been created yet. Ask your administrator to create terminals in the back office under <strong>ExPOS POS Terminal</strong>.
+            No POS Terminals have been created for your branch yet. Ask your administrator to create terminals in the back office under <strong>ExPOS POS Terminal</strong>.
           </p>
         </div>
       </div>
@@ -471,6 +488,12 @@ function TerminalSetupScreen({ onSelect }: { onSelect: (terminal: string) => voi
               Select which POS terminal this device will be. This is a one-time setup.
             </p>
           </div>
+
+          {notice && (
+            <div className="mb-6 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+              {notice}
+            </div>
+          )}
 
           {/* Terminal list */}
           <div className="space-y-3 mb-8">

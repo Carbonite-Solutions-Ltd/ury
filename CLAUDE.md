@@ -222,6 +222,37 @@ Facts from that pack that affect URY code today:
 
 Running record of bugs fixed and non-obvious traps discovered. Add new entries at the top. Each entry should answer: what went wrong, why, where it was fixed, how it was verified.
 
+### 2026-09-19 — A user may only use the terminals of branches they have access to (and the Administrator "Access Denied" crash)
+- **Symptom:** an Administrator opening the Airport terminal got "Access Denied — There was an error". Once the data had two branches (Sitout became its own branch), `getPosProfile` raised `UnboundLocalError: pos_profile_name`.
+- **Cause:** `getPosProfile` compared the terminal profile's branch with `getBranch()`. For an Administrator that is the first POS Profile's branch; for everyone else it is their first ExPOS Users branch. On a mismatch it skipped its whole setup block. Two related gaps:
+  - `get_terminals()` listed only the user's first branch, so an Administrator saw only Sitout's terminals.
+  - Nothing stopped a user opening another branch's terminal from a saved device.
+- **Rule (user's call):** a user may only use terminals of branches whose ExPOS Users table lists them. A user on one branch gets only that branch's terminals. **Administrator and System Manager have every branch.** That is the existing convention (System Manager bypasses the POS access gate too); drop System Manager from `ALL_BRANCH_ROLES` in [api.py](ury/ury_pos/api.py) to narrow it.
+- **Fix ([api.py](ury/ury_pos/api.py)):**
+  - Pure `can_use_branch`, plus `_require_branch_access`, which throws a PermissionError titled "No Access To Branch" whose message says how to fix it.
+  - `get_terminals` lists the terminals of every accessible branch.
+  - `get_terminal_config` and `getPosProfile` refuse an inaccessible terminal.
+  - `getPosProfile` now takes the **terminal's** branch instead of comparing. A terminal/profile branch disagreement gives a clear "Branch Mismatch" instead of a crash.
+- **`getBranch()` follows the terminal:** once the POS opens on a terminal, its branch is remembered for the session (`frappe.cache` hash `ury_active_branch`, keyed by session id). `getBranch()` returns it while the user still has access. Its ~40 callers (menu, tables, orders, reports) therefore scope to the terminal the user is on, not to whichever branch happens to come first. Without this a two-branch user, or the Administrator, would see one branch's menu on the other branch's terminal.
+  - A System Manager with no branch row now falls back to the Administrator default instead of "Branch Not Linked", which is a loosening.
+- **POS ([App.tsx](pos/src/App.tsx)):** when a device's saved terminal is refused, the setup screen shows why and lists only the user's own terminals, instead of silently dropping the terminal.
+- **Verified:**
+  - **13/13 tests** (`bench --site <site> execute ury.ury.api.test_branch_access.run_branch_access_tests`): the pure rule, and live checks with throwaway users added to the real branches (rolled back):
+    - a one-branch user sees and may use only their terminals;
+    - a two-branch user's `getBranch()` follows the terminal;
+    - a remembered branch is ignored once access is removed;
+    - Administrator loads the profile on both branches (the crash);
+    - a System Manager sees all branches;
+    - an unlinked user gets the branch message.
+  - **All 13 URY suites green (289 tests).**
+  - **Headless Chromium:**
+    - Administrator on the Airport terminal reaches "Open POS Entry" (was "Access Denied").
+    - A cashier linked only to Airport, on a device saved to "Sitout Kitchen", gets the setup screen with the notice and the six Airport terminals only.
+    - 0 page errors.
+  - `tsc` clean, ESLint unchanged on App.tsx (same 2 pre-existing errors), POS builds.
+- **Deploy:** `bench restart` and redeploy `pos/`. No migrate.
+- **Config:** every POS user must be on the ExPOS Users table of each branch they work at. Anyone missing a branch will now be refused its terminals.
+
 ### 2026-09-19 — Cancel vs Delete: orders stuck forever on a kitchen approval nobody could give
 - **Symptom (user):** a manager tries to cancel held orders whose tickets were cleared or served on the kitchen screen a week ago, and gets "check the production unit and approve". The ticket isn't on the kitchen screen, so nobody can approve it, and the order stays locked.
 - **Root cause, confirmed on the client's data:** `kot_list` only shows tickets that are `Ready For Prepare` **and** less than 3 hours old. `_kot_needs_kitchen_ack` returns True for **every served ticket** whatever its age. So cancelling any order with a served ticket, or with a ticket older than 3 hours, parks a request that can **never appear on a kitchen screen**. With the hard lock (2026-07-31, no override), the order could not be paid, edited or cancelled again. Found 4 locked orders (M-0379 and M-0416 from 17 Aug; M-2651 and M-2715, both held, from 17 Sep), plus 4 dead requests on orders that no longer exist.
@@ -241,7 +272,7 @@ Running record of bugs fixed and non-obvious traps discovered. Add new entries a
   - The pending banner now points to Delete.
   - Deleted orders read **Deleted** (red badge) under the Cancelled filter, with an "Order Deleted — by X on date, without asking the kitchen" banner.
   - `canDeleteOrders` in role-utils mirrors the backend `can_delete_orders`.
-- **⚠ Found while testing, NOT fixed — a pre-existing crash in `getPosProfile`.** An Administrator's branch falls back to the first POS Profile's branch. When that differs from the terminal's profile branch, `if pos_profiles.branch == branchName` skips the whole block and `pos_profile_name` is unbound, giving `UnboundLocalError` and the POS "Access Denied". It happens on this data now that `Sitout` is its own branch: Administrator on the Airport terminal crashes. It would also hit a cashier linked to one branch who opens another branch's terminal. Worked around for the test by temporarily disabling the Sitout profile (restored). Flagged to the user.
+- **⚠ Found while testing — a pre-existing crash in `getPosProfile` (fixed the same day, see the entry above).** An Administrator's branch falls back to the first POS Profile's branch. When that differs from the terminal's profile branch, `if pos_profiles.branch == branchName` skips the whole block and `pos_profile_name` is unbound, giving `UnboundLocalError` and the POS "Access Denied". It happens on this data now that `Sitout` is its own branch: Administrator on the Airport terminal crashes. It would also hit a cashier linked to one branch who opens another branch's terminal. Worked around for the test by temporarily disabling the Sitout profile (restored). Flagged to the user.
 - **Verified:**
   - **23/23 unit tests** (`bench --site <site> execute ury.ury.api.test_order_delete.run_order_delete_tests`), 10 of them live against the real locked orders, each rolled back:
     - the unanswered request shows on the board;
