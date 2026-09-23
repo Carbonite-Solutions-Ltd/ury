@@ -46,6 +46,8 @@ import {
   getMergeReport,
   getTransferReport,
   getPaymentSplitsReport,
+  ON_ACCOUNT_PAYMENT_FILTER,
+  paymentModeLabel,
   type CourseSalesResponse,
   type MealPeriodResponse,
   type PaymentMethodResponse,
@@ -277,7 +279,7 @@ export default function Reports() {
     setLoading(true);
     setError(null);
     try {
-      const res = await getMyShiftSummary(terminalName);
+      const res = await getMyShiftSummary();
       setShiftSummary(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch shift summary');
@@ -293,7 +295,6 @@ export default function Reports() {
       const res = await getShiftHistory({
         from_date: fromDate,
         to_date: toDate,
-        terminal: terminalName,
       });
       setShiftHistory(res);
     } catch (err) {
@@ -324,7 +325,6 @@ export default function Reports() {
         await getSalesByPaymentMethod({
           from_date: fromDate,
           to_date: toDate,
-          terminal: terminalName,
         })
       );
     } catch (err) {
@@ -342,7 +342,6 @@ export default function Reports() {
         await getCourseSales({
           from_date: fromDate,
           to_date: toDate,
-          terminal: terminalName,
         })
       );
     } catch (err) {
@@ -364,7 +363,7 @@ export default function Reports() {
     setError(null);
     try {
       const res = await getSalesByCashier(
-        { from_date: fromDate, to_date: toDate, terminal: terminalName },
+        { from_date: fromDate, to_date: toDate },
         staffGrouping,
         paymentMode || null
       );
@@ -384,7 +383,6 @@ export default function Reports() {
         await getMealPeriodSales({
           from_date: fromDate,
           to_date: toDate,
-          terminal: terminalName,
         })
       );
     } catch (err) {
@@ -409,7 +407,6 @@ export default function Reports() {
       const res = await getSalesByCategory({
         from_date: fromDate,
         to_date: toDate,
-        terminal: terminalName,
       });
       setSalesByCategory(res);
     } catch (err) {
@@ -426,7 +423,6 @@ export default function Reports() {
       const res = await getTopBottomItems({
         from_date: fromDate,
         to_date: toDate,
-        terminal: terminalName,
         limit: 10,
       });
       setTopBottom(res);
@@ -444,7 +440,6 @@ export default function Reports() {
       const res = await getMergeReport({
         from_date: fromDate,
         to_date: toDate,
-        terminal: terminalName,
       });
       setMergeReport(res);
     } catch (err) {
@@ -461,7 +456,6 @@ export default function Reports() {
       const res = await getTransferReport({
         from_date: fromDate,
         to_date: toDate,
-        terminal: terminalName,
       });
       setTransferReport(res);
     } catch (err) {
@@ -478,7 +472,6 @@ export default function Reports() {
       const res = await getPaymentSplitsReport({
         from_date: fromDate,
         to_date: toDate,
-        terminal: terminalName,
       });
       setPaymentSplits(res);
     } catch (err) {
@@ -1010,7 +1003,7 @@ export default function Reports() {
         ) : activeTab === 'payment-methods' ? (
           <PaymentMethodView
             report={paymentMethods}
-            range={{ from_date: fromDate, to_date: toDate, terminal: terminalName }}
+            range={{ from_date: fromDate, to_date: toDate }}
           />
         ) : activeTab === 'covers' ? (
           <CoversView report={courseSales} />
@@ -1826,11 +1819,28 @@ function SalesByCashierView({
         className="border border-gray-300 rounded-lg px-2.5 py-1.5 text-xs"
       >
         <option value="">All payment methods</option>
-        {(report?.payment_modes ?? []).map((m) => (
-          <option key={m} value={m}>
-            {m}
+        {/* Options come from payment_mode_options — every mode in the
+            window, ignoring the current filter — so picking one doesn't
+            remove the others from the list you picked it from. Falls
+            back to payment_modes against an older backend. */}
+        {(report?.payment_mode_options ?? report?.payment_modes ?? []).map(
+          (m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          )
+        )}
+        {/* On Account is NOT a Mode of Payment — it is the balance left
+            on a customer's account, with no payment row to match on — so
+            it carries its own sentinel value. Only offered when the
+            window actually has some. */}
+        {report?.has_on_account ? (
+          <option
+            value={report.on_account_filter_value ?? ON_ACCOUNT_PAYMENT_FILTER}
+          >
+            On Account
           </option>
-        ))}
+        ) : null}
       </select>
       <StaffToggle value={grouping} onChange={onGroupingChange} />
     </div>
@@ -1871,7 +1881,6 @@ function SalesByCashierView({
   const range: ReportDateRange = {
     from_date: report.from_date,
     to_date: report.to_date,
-    terminal: report.terminal,
   };
   const allOpen = openStaff.size === report.rows.length && report.rows.length > 0;
   return (
@@ -1890,7 +1899,6 @@ function SalesByCashierView({
               <p className="text-sm text-gray-500">
                 {report.from_date} → {report.to_date} · {report.rows.length}{' '}
                 cashier{report.rows.length === 1 ? '' : 's'}
-                {report.terminal ? ` · ${report.terminal}` : ''}
               </p>
             </div>
             <div className="text-right">
@@ -2207,7 +2215,6 @@ function SalesByCategoryView({
               <p className="text-sm text-gray-500">
                 {report.from_date} → {report.to_date} · classified via URY
                 Menu Course department
-                {report.terminal ? ` · ${report.terminal}` : ''}
               </p>
             </div>
             <div className="text-right">
@@ -3927,8 +3934,7 @@ function printStaffReport(
     `<h1>Sales by ${label}</h1>
      <div class="sub">${escHtml(report.from_date)} to ${escHtml(report.to_date)}
        · ${escHtml(report.branch)}
-       ${report.terminal ? '· ' + escHtml(report.terminal) : ''}
-       ${report.payment_mode ? '· ' + escHtml(report.payment_mode) + ' only' : ''}</div>
+       ${report.payment_mode ? '· ' + escHtml(paymentModeLabel(report.payment_mode)) + ' only' : ''}</div>
      <table><thead><tr>${head}</tr></thead>
      <tbody>${body}</tbody><tfoot>${foot}</tfoot></table>`
   );
@@ -3963,7 +3969,7 @@ function printCoversReport(
     `<h1>Covers by Course</h1>
      <div class="sub">${escHtml(report.from_date)} to ${escHtml(report.to_date)}
        · ${escHtml(report.branch)}
-       ${report.terminal ? '· ' + escHtml(report.terminal) : ''}</div>
+</div>
      <table><thead><tr><th>Course / Item</th><th class="r">Times</th>
        <th class="r">Qty</th><th class="r">Total</th></tr></thead>
      <tbody>${rows}</tbody>
@@ -4224,7 +4230,7 @@ function printPaymentMethodReport(
     `<h1>Sales by Payment Method</h1>
      <div class="sub">${escHtml(report.from_date)} to ${escHtml(report.to_date)}
        · ${escHtml(report.branch)}
-       ${report.terminal ? '· ' + escHtml(report.terminal) : ''}</div>
+</div>
      <table><thead><tr><th>Method</th><th class="r">Bills</th>
        <th class="r">Share</th><th class="r">Amount</th></tr></thead>
      <tbody>${rows}</tbody>
@@ -4524,7 +4530,7 @@ function printMealPeriodReport(
     `<h1>Meal Periods</h1>
      <div class="sub">${escHtml(report.from_date)} to ${escHtml(report.to_date)}
        ${report.branch ? '· ' + escHtml(report.branch) : ''}
-       ${report.terminal ? '· ' + escHtml(report.terminal) : ''}</div>
+</div>
      <table><thead><tr><th>Meal period</th><th class="r">People</th>
        <th class="r">Bills</th><th class="r">Total</th></tr></thead>
      <tbody>${rows}</tbody>

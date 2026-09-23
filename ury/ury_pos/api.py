@@ -1,7 +1,7 @@
 import frappe
 import json
 from frappe import _
-from frappe.utils import flt, now
+from frappe.utils import cint, flt, now
 from datetime import date, datetime, time as dt_time, timedelta
 
 
@@ -3239,7 +3239,7 @@ def _wrap_close_error(err, company):
 
 
 @frappe.whitelist()
-def get_pos_open_entry(terminal=None):
+def get_pos_open_entry(terminal=None, include_own_elsewhere=0):
     """Return metadata about the *currently open* POS Opening Entry that
     `posOpening()` would consider "this user's session".
 
@@ -3271,10 +3271,24 @@ def get_pos_open_entry(terminal=None):
     That matters because a cashier must not be invited to close a
     colleague's shift; the dialog uses ``is_mine`` to decide whether to
     offer a Close button or a read-only "ask them to close it" card.
-    """
-    branch_name = getBranch()
 
-    def _entry(filters):
+    ``include_own_elsewhere`` (opt-in, default off) adds one more step:
+    when the terminal's own profile has NO open entry, look for this
+    user's open entry on ANY profile and return it with
+    ``other_profile = 1``. ERPNext's ``check_user_already_assigned``
+    allows a user exactly ONE open entry across the whole site, so that
+    is the only other thing that can refuse a create — and without this
+    step the opening dialog could not name it and had nothing to offer
+    but ERPNext's own sentence. See CLAUDE.md 2026-09-23 (round 2).
+
+    It is **opt-in on purpose**. The Shift Hours watcher and the Header's
+    End Shift button ask "how long has THIS till been open" — handing
+    them a shift from another outlet would make the banner fire against
+    the wrong clock. Only the opening dialog, which is explicitly looking
+    for whatever blocked it, passes the flag.
+    """
+
+    def _entry(filters, other_profile=0):
         rows = frappe.get_all(
             "POS Opening Entry",
             filters=filters,
@@ -3300,28 +3314,50 @@ def get_pos_open_entry(terminal=None):
         row["same_terminal"] = (
             1 if terminal and row.get("custom_terminal") == terminal else 0
         )
+        row["other_profile"] = 1 if other_profile else 0
         return row
 
-    if not terminal:
-        return _entry(
-            {"branch": branch_name, "status": "Open", "docstatus": 1}
-        )
+    def _branch_entry():
+        """Legacy branch-only lookup (no terminal, or an unconfigured one).
 
-    pos_profile = frappe.db.get_value(
-        "URY POS Terminal", terminal, "pos_profile"
+        ``getBranch()`` is resolved HERE rather than at the top of the
+        function so that a user it cannot resolve a branch for still gets
+        the per-profile answer above, and still reaches the own-entry
+        fallback below, instead of an exception that the caller can only
+        render as another dead end.
+        """
+        try:
+            return _entry(
+                {"branch": getBranch(), "status": "Open", "docstatus": 1}
+            )
+        except (frappe.ValidationError, frappe.PermissionError):
+            return None
+
+    pos_profile = (
+        frappe.db.get_value("URY POS Terminal", terminal, "pos_profile")
+        if terminal
+        else None
     )
 
-    if not pos_profile:
-        return _entry(
-            {"branch": branch_name, "status": "Open", "docstatus": 1}
+    if pos_profile:
+        row = _entry(
+            {
+                "pos_profile": pos_profile,
+                "status": "Open",
+                "docstatus": 1,
+            }
         )
+    else:
+        row = _branch_entry()
 
+    if row or not cint(include_own_elsewhere):
+        return row
+
+    # Nothing open on the till's own profile, yet a create was still
+    # refused: the blocker is this user's own shift on another outlet.
     return _entry(
-        {
-            "pos_profile": pos_profile,
-            "status": "Open",
-            "docstatus": 1,
-        }
+        {"user": frappe.session.user, "status": "Open", "docstatus": 1},
+        other_profile=1,
     )
 
 
@@ -4621,6 +4657,67 @@ def get_waiter_sales(from_date=None, to_date=None, waiter=None):
 # ============================================================
 
 
+# ── _NO_TERMINAL_SCOPE (2026-09-23) ──────────────────────────
+# NO REPORT IS TERMINAL-SCOPED. Every report below is scoped by
+# BRANCH (plus "cashiers see only their own trading"), never by
+# `custom_terminal`.
+#
+# Why it was removed: the same report read differently depending on
+# which till the BROWSER was registered to — "Main Restaurant
+# Cashier" and "Airport Main Terminal" showed different grand totals
+# for the same window, so nobody could tell which number was the
+# day's takings. That is not an auditing knob, it is two sets of
+# books. A bill is stamped with the till the PAYMENT was taken on,
+# which is routinely not the till the cashier is standing at, so the
+# filter never partitioned the data the way people assumed it did.
+#
+# Every report endpoint still ACCEPTS a `terminal` argument so a
+# stale POS bundle (the PWA service worker can serve the previous
+# shell) doesn't blow up with an unexpected-keyword TypeError. It is
+# ignored, and the response echoes `terminal: None` so a heading or
+# printout can never label branch-wide figures with one till.
+#
+# NOT covered by this rule — these are Orders-page queries, not
+# reports, and their per-terminal scoping is deliberate:
+#   getPosInvoice / searchPosInvoice / get_pending_kot_count.
+# ============================================================
+
+
+# ── Payment-method filter (Sales by Staff) ───────────────────
+# On Account is NOT a Mode of Payment. It is the ABSENCE of a
+# tender: the bill is submitted under-paid and the balance sits on
+# the customer's account (see CLAUDE.md 2026-08-24). There is no
+# `Sales Invoice Payment` row to match on, so it needs its own
+# predicate and its own sentinel in the dropdown. The `__` prefix
+# means it can never collide with a real Mode of Payment name.
+ON_ACCOUNT_PAYMENT_FILTER = "__on_account__"
+
+
+def _payment_mode_clause(payment_mode):
+    """WHERE fragment for the Sales by Staff payment-method filter.
+
+    Returns ``(clause, params)``, or ``(None, [])`` when nothing is
+    selected. Shared by the report and its drill-down so the two can
+    never disagree about what the filter means.
+    """
+    if not payment_mode:
+        return None, []
+    if payment_mode == ON_ACCOUNT_PAYMENT_FILTER:
+        # Read the denormalised amount off the invoice rather than
+        # grand_total - paid_amount, which would also pick up bills
+        # that are short for unrelated reasons.
+        return "COALESCE(pi.custom_on_account_amount, 0) > 0", []
+    # Restricts to invoices that took at least one payment in that
+    # mode; the per-row breakdown still shows every mode on those
+    # invoices, so the numbers stay explicable.
+    return (
+        "EXISTS (SELECT 1 FROM `tabSales Invoice Payment` sip"
+        " WHERE sip.parent = pi.name AND sip.parenttype = 'POS Invoice'"
+        " AND sip.mode_of_payment = %s)",
+        [payment_mode],
+    )
+
+
 def _user_can_see_admin_reports(user=None):
     """Return True when the caller can see the cross-cashier reports
     (Sales by Cashier, Sales by Category, Top/Bottom Items). Cashiers
@@ -4672,8 +4769,11 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
     would make the waiter totals disagree with the cashier totals for
     no visible reason.
 
-    Admin / captain / manager only. Branch-scoped; optional terminal
-    filter so a captain can audit a single till.
+    Branch-scoped, never terminal-scoped — see _NO_TERMINAL_SCOPE.
+    Open to cashiers, but a cashier sees only their own trading.
+
+    `payment_mode` accepts a real Mode of Payment name or the
+    ON_ACCOUNT_PAYMENT_FILTER sentinel.
     """
     # Open to CASHIERS as of 2026-08-06, but scoped: a cashier sees only
     # their own trading. Everyone can answer "how did I do today"; only a
@@ -4694,21 +4794,7 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
     if branch:
         where_parts.insert(0, "pi.branch = %s")
         params.insert(0, branch)
-    # ADMIN ONLY. For a captain/manager the terminal is a deliberate audit
-    # knob -- "show me just this till". For a CASHIER it is not a choice at
-    # all: the POS sends whatever till their BROWSER happens to be
-    # registered to, and a cashier's own bills are stamped with the till
-    # the PAYMENT was taken on, which is routinely a different one. A
-    # cashier on a side till therefore had every row filtered away and got
-    # an empty report with no error. Their rows are already restricted to
-    # their own trading, so this filter only ever subtracts. Third time
-    # this same shape has bitten (waiter Orders list 2026-07-15, branch
-    # 2026-08-14). 2026-08-14.
-    if terminal and is_admin:
-        where_parts.append(
-            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
-        )
-        params.append(terminal)
+    # NO TERMINAL FILTER — see _NO_TERMINAL_SCOPE.
 
     if not is_admin:
         # Their own trading, whichever way it is grouped. Matches the
@@ -4719,16 +4805,20 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
         where_parts.append(clause)
         params.extend(clause_params)
 
-    # Optional mode-of-payment filter. Restricts to invoices that took at
-    # least one payment in that mode; the per-row breakdown below still
-    # shows every mode on those invoices, so the numbers stay explicable.
-    if payment_mode:
-        where_parts.append(
-            "EXISTS (SELECT 1 FROM `tabSales Invoice Payment` sip"
-            " WHERE sip.parent = pi.name AND sip.parenttype = 'POS Invoice'"
-            " AND sip.mode_of_payment = %s)"
-        )
-        params.append(payment_mode)
+    # The scope BEFORE the payment-method filter. The dropdown has to be
+    # built from this, not from the filtered result: otherwise picking a
+    # mode removes the other modes from the list you picked it from, and
+    # "On Account" (which has no payment rows at all) would vanish the
+    # moment it was selected.
+    options_where = list(where_parts)
+    options_params = list(params)
+
+    # Optional mode-of-payment filter — including the On Account
+    # pseudo-mode. See _payment_mode_clause.
+    pay_clause, pay_params = _payment_mode_clause(payment_mode)
+    if pay_clause:
+        where_parts.append(pay_clause)
+        params.extend(pay_params)
 
     # Group on the fields the INVOICE itself carries, not on who happens
     # to own the document. `owner` is whoever created the draft, which on
@@ -4809,17 +4899,55 @@ def get_sales_by_cashier(from_date=None, to_date=None, terminal=None, group_by="
     for row in rows:
         row["payments"] = by_user.get(row["user"], {})
 
+    # ── dropdown options, computed on the UNFILTERED scope ──────────
+    # Two different lists on purpose: `payment_modes` drives the table
+    # COLUMNS and must describe what is on screen right now, while
+    # `payment_mode_options` drives the FILTER and must stay stable
+    # whatever is selected.
+    option_rows = frappe.db.sql(
+        f"""
+        SELECT sip.mode_of_payment AS mode
+        FROM `tabPOS Invoice` AS pi
+        INNER JOIN `tabSales Invoice Payment` AS sip
+                ON sip.parent = pi.name AND sip.parenttype = 'POS Invoice'
+        WHERE {" AND ".join(options_where)}
+        GROUP BY sip.mode_of_payment
+        """,
+        tuple(options_params),
+        as_dict=True,
+    )
+    mode_options = sorted({r["mode"] for r in option_rows if r.get("mode")})
+    # Only offer On Account when the window actually has some, so a site
+    # that never sells on credit doesn't get a dead option — same rule
+    # the mode list already follows.
+    has_on_account = bool(
+        frappe.db.sql(
+            f"""
+            SELECT 1 FROM `tabPOS Invoice` AS pi
+            WHERE {" AND ".join(options_where)}
+              AND COALESCE(pi.custom_on_account_amount, 0) > 0
+            LIMIT 1
+            """,
+            tuple(options_params),
+        )
+    )
+
     return {
         "from_date": from_date,
         "to_date": to_date,
         "branch": branch,
-        "terminal": terminal or None,
+        "terminal": None,  # never terminal-scoped — see _NO_TERMINAL_SCOPE
         "group_by": "waiter" if by_waiter else "cashier",
         "is_admin": 1 if is_admin else 0,
         "payment_mode": payment_mode or None,
-        # Every mode seen in the window, so the filter lists exactly what
-        # is actually there rather than every mode configured on the site.
+        # Every mode seen in the CURRENT result — drives the columns.
         "payment_modes": sorted(mode_totals),
+        # Every mode available in the window ignoring the filter — drives
+        # the dropdown, so the options don't disappear as you use them.
+        "payment_mode_options": mode_options,
+        # Whether to offer the On Account pseudo-mode in that dropdown.
+        "has_on_account": 1 if has_on_account else 0,
+        "on_account_filter_value": ON_ACCOUNT_PAYMENT_FILTER,
         "payment_totals": mode_totals,
         "rows": rows,
         "totals": {
@@ -4862,11 +4990,7 @@ def get_sales_by_category(from_date=None, to_date=None, terminal=None):
         "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
     ]
     params = [branch, from_date, to_date]
-    if terminal:
-        where_parts.append(
-            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
-        )
-        params.append(terminal)
+    # NO TERMINAL FILTER — see _NO_TERMINAL_SCOPE.
 
     sql = f"""
         SELECT
@@ -4903,7 +5027,7 @@ def get_sales_by_category(from_date=None, to_date=None, terminal=None):
         "from_date": from_date,
         "to_date": to_date,
         "branch": branch,
-        "terminal": terminal or None,
+        "terminal": None,  # never terminal-scoped — see _NO_TERMINAL_SCOPE
         "rows": rows,
         "totals": {"total_amount": grand},
     }
@@ -4939,11 +5063,7 @@ def get_top_bottom_items(
         "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
     ]
     params_base = [branch, from_date, to_date]
-    if terminal:
-        where_parts.append(
-            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
-        )
-        params_base.append(terminal)
+    # NO TERMINAL FILTER — see _NO_TERMINAL_SCOPE.
 
     base_sql = f"""
         SELECT
@@ -4971,7 +5091,7 @@ def get_top_bottom_items(
         "from_date": from_date,
         "to_date": to_date,
         "branch": branch,
-        "terminal": terminal or None,
+        "terminal": None,  # never terminal-scoped — see _NO_TERMINAL_SCOPE
         "limit": limit,
         "top": top,
         "bottom": bottom,
@@ -4988,9 +5108,8 @@ def get_my_shift_summary(terminal=None):
     the heavy lifting so the numbers stay consistent with the Close
     Shift dialog.
 
-    Scope: the current session's user + (optionally) the supplied
-    terminal. Returns ``{has_open_shift: 0}`` when the user has no
-    Open POS Opening Entry matching the filter.
+    Scope: the current session's user. Returns
+    ``{has_open_shift: 0}`` when they have no Open POS Opening Entry.
     """
     user = frappe.session.user
     filters = {
@@ -4998,8 +5117,10 @@ def get_my_shift_summary(terminal=None):
         "docstatus": 1,
         "status": "Open",
     }
-    if terminal:
-        filters["custom_terminal"] = terminal
+    # NO TERMINAL FILTER. A shift is one open POS Opening Entry per POS
+    # Profile (2026-07-28), so narrowing by the till the BROWSER happens
+    # to be registered to could report "no open shift" to a cashier who
+    # opened on another till of the same profile. `user` is the scope.
 
     opening_name = frappe.db.get_value(
         "POS Opening Entry",
@@ -5011,7 +5132,7 @@ def get_my_shift_summary(terminal=None):
         return {
             "has_open_shift": 0,
             "user": user,
-            "terminal": terminal or None,
+            "terminal": None,  # never terminal-scoped — see _NO_TERMINAL_SCOPE
         }
 
     preview = preview_pos_closing_entry(opening_name)
@@ -5395,16 +5516,7 @@ def get_shift_history(from_date=None, to_date=None, terminal=None):
         # Cashier scope: only their own shifts.
         where_parts.append("pce.user = %s")
         params.append(frappe.session.user)
-    if terminal:
-        # POS Closing Entry doesn't carry custom_terminal directly;
-        # filter by the linked opening entry's terminal instead.
-        where_parts.append(
-            "pce.pos_opening_entry IN ("
-            "  SELECT name FROM `tabPOS Opening Entry` "
-            "  WHERE custom_terminal = %s OR custom_terminal IS NULL OR custom_terminal = ''"
-            ")"
-        )
-        params.append(terminal)
+    # NO TERMINAL FILTER — see _NO_TERMINAL_SCOPE.
 
     closing_rows = frappe.db.sql(
         f"""
@@ -5435,7 +5547,7 @@ def get_shift_history(from_date=None, to_date=None, terminal=None):
             "from_date": from_date,
             "to_date": to_date,
             "branch": branch,
-            "terminal": terminal or None,
+            "terminal": None,  # never terminal-scoped — see _NO_TERMINAL_SCOPE
             "scope": "branch" if is_admin else "user",
             "shifts": [],
             "summary": {
@@ -5540,7 +5652,7 @@ def get_shift_history(from_date=None, to_date=None, terminal=None):
         "from_date": from_date,
         "to_date": to_date,
         "branch": branch,
-        "terminal": terminal or None,
+        "terminal": None,  # never terminal-scoped — see _NO_TERMINAL_SCOPE
         "scope": "branch" if is_admin else "user",
         "shifts": shifts,
         "summary": {
@@ -5578,11 +5690,7 @@ def get_merge_report(from_date=None, to_date=None, terminal=None):
         "DATE(ml.merged_at) BETWEEN %s AND %s",
     ]
     order_params = [branch, from_date, to_date]
-    if terminal:
-        order_where.append(
-            "(ml.custom_terminal = %s OR ml.custom_terminal IS NULL OR ml.custom_terminal = '')"
-        )
-        order_params.append(terminal)
+    # NO TERMINAL FILTER — see _NO_TERMINAL_SCOPE.
 
     order_sql = f"""
         SELECT
@@ -5618,11 +5726,7 @@ def get_merge_report(from_date=None, to_date=None, terminal=None):
         "DATE(ml.merged_at) BETWEEN %s AND %s",
     ]
     table_params = [branch, from_date, to_date]
-    if terminal:
-        table_where.append(
-            "(ml.custom_terminal = %s OR ml.custom_terminal IS NULL OR ml.custom_terminal = '')"
-        )
-        table_params.append(terminal)
+    # NO TERMINAL FILTER — see _NO_TERMINAL_SCOPE.
 
     table_sql = f"""
         SELECT
@@ -5660,7 +5764,7 @@ def get_merge_report(from_date=None, to_date=None, terminal=None):
         "from_date": from_date,
         "to_date": to_date,
         "branch": branch,
-        "terminal": terminal or None,
+        "terminal": None,  # never terminal-scoped — see _NO_TERMINAL_SCOPE
         "order_merges": order_merges,
         "table_merges": table_merges,
         "summary": {
@@ -5705,11 +5809,7 @@ def get_payment_splits_report(from_date=None, to_date=None, terminal=None):
         "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
     ]
     params = [branch, from_date, to_date]
-    if terminal:
-        where_parts.append(
-            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
-        )
-        params.append(terminal)
+    # NO TERMINAL FILTER — see _NO_TERMINAL_SCOPE.
 
     invoices = frappe.db.sql(
         f"""
@@ -5749,7 +5849,7 @@ def get_payment_splits_report(from_date=None, to_date=None, terminal=None):
             "from_date": from_date,
             "to_date": to_date,
             "branch": branch,
-            "terminal": terminal or None,
+            "terminal": None,  # never terminal-scoped — see _NO_TERMINAL_SCOPE
             "rows": [],
             "summary": {
                 "count": 0,
@@ -5824,7 +5924,7 @@ def get_payment_splits_report(from_date=None, to_date=None, terminal=None):
         "from_date": from_date,
         "to_date": to_date,
         "branch": branch,
-        "terminal": terminal or None,
+        "terminal": None,  # never terminal-scoped — see _NO_TERMINAL_SCOPE
         "rows": rows,
         "summary": {
             "count": len(rows),
@@ -5866,11 +5966,7 @@ def get_transfer_report(from_date=None, to_date=None, terminal=None):
         "pi.modified BETWEEN %s AND %s",
     ]
     params = [branch, f"{from_date} 00:00:00", f"{to_date} 23:59:59"]
-    if terminal:
-        where_parts.append(
-            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
-        )
-        params.append(terminal)
+    # NO TERMINAL FILTER — see _NO_TERMINAL_SCOPE.
 
     rows = frappe.db.sql(
         f"""
@@ -6003,7 +6099,7 @@ def get_transfer_report(from_date=None, to_date=None, terminal=None):
         "from_date": from_date,
         "to_date": to_date,
         "branch": branch,
-        "terminal": terminal or None,
+        "terminal": None,  # never terminal-scoped — see _NO_TERMINAL_SCOPE
         "events": events,
         # Flat per-invoice list kept around for backwards compat with
         # any caller that still wants the un-grouped view.
@@ -9311,11 +9407,7 @@ def get_course_sales(from_date=None, to_date=None, terminal=None):
         "(pi.custom_merged_into IS NULL OR pi.custom_merged_into = '')",
     ]
     params = [branch, from_date, to_date]
-    if terminal:
-        where_parts.append(
-            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
-        )
-        params.append(terminal)
+    # NO TERMINAL FILTER — see _NO_TERMINAL_SCOPE.
 
     # One course per item — see the docstring. MIN() is an arbitrary but
     # STABLE pick when an item is on two menus under different courses,
@@ -9402,7 +9494,7 @@ def get_course_sales(from_date=None, to_date=None, terminal=None):
         "from_date": from_date,
         "to_date": to_date,
         "branch": branch,
-        "terminal": terminal or None,
+        "terminal": None,  # never terminal-scoped — see _NO_TERMINAL_SCOPE
         "courses": ordered,
         "totals": {
             "amount": total_amount,
@@ -9425,8 +9517,8 @@ def get_staff_invoices(
 
     Scope is IDENTICAL to get_sales_by_cashier so the drill-down always
     reconciles with the row it came from: same date window, same branch,
-    same terminal and payment-mode filters, and the same "cashiers see
-    only their own" rule. A drill-down that showed more than the total
+    same payment-mode filter, and the same "cashiers see only their
+    own" rule. A drill-down that showed more than the total
     it expanded from would be worse than no drill-down at all.
     """
     is_admin = _user_can_see_admin_reports()
@@ -9442,32 +9534,18 @@ def get_staff_invoices(
     if branch:
         where_parts.insert(0, "pi.branch = %s")
         params.insert(0, branch)
-    # ADMIN ONLY. For a captain/manager the terminal is a deliberate audit
-    # knob -- "show me just this till". For a CASHIER it is not a choice at
-    # all: the POS sends whatever till their BROWSER happens to be
-    # registered to, and a cashier's own bills are stamped with the till
-    # the PAYMENT was taken on, which is routinely a different one. A
-    # cashier on a side till therefore had every row filtered away and got
-    # an empty report with no error. Their rows are already restricted to
-    # their own trading, so this filter only ever subtracts. Third time
-    # this same shape has bitten (waiter Orders list 2026-07-15, branch
-    # 2026-08-14). 2026-08-14.
-    if terminal and is_admin:
-        where_parts.append(
-            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
-        )
-        params.append(terminal)
+    # NO TERMINAL FILTER — see _NO_TERMINAL_SCOPE.
     if not is_admin:
         clause, clause_params = _own_trading_clause()
         where_parts.append(clause)
         params.extend(clause_params)
-    if payment_mode:
-        where_parts.append(
-            "EXISTS (SELECT 1 FROM `tabSales Invoice Payment` sip"
-            " WHERE sip.parent = pi.name AND sip.parenttype = 'POS Invoice'"
-            " AND sip.mode_of_payment = %s)"
-        )
-        params.append(payment_mode)
+    # Same filter semantics as the parent report — including the On
+    # Account pseudo-mode — or the drill-down would show more than the
+    # total it expanded from.
+    pay_clause, pay_params = _payment_mode_clause(payment_mode)
+    if pay_clause:
+        where_parts.append(pay_clause)
+        params.extend(pay_params)
 
     field = "pi.custom_waiter" if (group_by or "").lower() == "waiter" else "pi.cashier"
     if staff == "__unassigned__":
@@ -9561,8 +9639,9 @@ def _own_trading_clause(alias="pi"):
 def _payment_report_scope(from_date, to_date, terminal):
     """Shared WHERE for the payment-method report and its drill-down, so
     the two can never disagree. Mirrors get_sales_by_cashier: branch,
-    submitted only, date window, merged sources excluded, optional
-    terminal, and cashiers restricted to their own trading."""
+    submitted only, date window, merged sources excluded, and cashiers
+    restricted to their own trading. Never terminal-scoped — see
+    _NO_TERMINAL_SCOPE."""
     is_admin = _user_can_see_admin_reports()
     from_date, to_date = _reports_date_range(from_date, to_date)
     branch = _report_branch(is_admin)
@@ -9576,21 +9655,7 @@ def _payment_report_scope(from_date, to_date, terminal):
     if branch:
         where_parts.insert(0, "pi.branch = %s")
         params.insert(0, branch)
-    # ADMIN ONLY. For a captain/manager the terminal is a deliberate audit
-    # knob -- "show me just this till". For a CASHIER it is not a choice at
-    # all: the POS sends whatever till their BROWSER happens to be
-    # registered to, and a cashier's own bills are stamped with the till
-    # the PAYMENT was taken on, which is routinely a different one. A
-    # cashier on a side till therefore had every row filtered away and got
-    # an empty report with no error. Their rows are already restricted to
-    # their own trading, so this filter only ever subtracts. Third time
-    # this same shape has bitten (waiter Orders list 2026-07-15, branch
-    # 2026-08-14). 2026-08-14.
-    if terminal and is_admin:
-        where_parts.append(
-            "(pi.custom_terminal = %s OR pi.custom_terminal IS NULL OR pi.custom_terminal = '')"
-        )
-        params.append(terminal)
+    # NO TERMINAL FILTER — see _NO_TERMINAL_SCOPE.
     if not is_admin:
         clause, clause_params = _own_trading_clause()
         where_parts.append(clause)
@@ -9670,7 +9735,7 @@ def get_sales_by_payment_method(from_date=None, to_date=None, terminal=None):
         "from_date": from_date,
         "to_date": to_date,
         "branch": branch,
-        "terminal": terminal or None,
+        "terminal": None,  # never terminal-scoped — see _NO_TERMINAL_SCOPE
         "is_admin": 1 if is_admin else 0,
         "modes": rows,
         "on_account": {
@@ -10222,7 +10287,7 @@ def get_meal_period_sales(from_date=None, to_date=None, terminal=None):
 	"""Sales and covers per meal period, drilling into order type then items.
 
 	Open to cashiers, scoped to their own trading (same rule as Sales by
-	Staff). Branch and terminal are ADMIN-ONLY filters: a cashier's rows
+	Staff). Branch is an ADMIN-ONLY filter: a cashier's rows
 	are already restricted to them, so those filters can only subtract —
 	see the note on `_report_branch`.
 	"""
@@ -10240,12 +10305,7 @@ def get_meal_period_sales(from_date=None, to_date=None, terminal=None):
 	if branch:
 		where.append("pi.branch = %(branch)s")
 		params["branch"] = branch
-	if terminal and is_admin:
-		where.append(
-			"(pi.custom_terminal = %(terminal)s OR pi.custom_terminal IS NULL"
-			" OR pi.custom_terminal = '')"
-		)
-		params["terminal"] = terminal
+	# NO TERMINAL FILTER — see _NO_TERMINAL_SCOPE.
 	if not is_admin:
 		me = frappe.session.user
 		params["me"] = me
@@ -10380,7 +10440,7 @@ def get_meal_period_sales(from_date=None, to_date=None, terminal=None):
 		"from_date": from_date,
 		"to_date": to_date,
 		"branch": branch,
-		"terminal": terminal if (terminal and is_admin) else None,
+		"terminal": None,  # never terminal-scoped — see _NO_TERMINAL_SCOPE
 		"is_admin": 1 if is_admin else 0,
 		"periods": out,
 		"totals": {
