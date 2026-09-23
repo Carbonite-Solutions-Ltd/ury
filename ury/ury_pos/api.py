@@ -1,7 +1,7 @@
 import frappe
 import json
 from frappe import _
-from frappe.utils import flt, now
+from frappe.utils import cint, flt, now
 from datetime import date, datetime, time as dt_time, timedelta
 
 
@@ -3239,7 +3239,7 @@ def _wrap_close_error(err, company):
 
 
 @frappe.whitelist()
-def get_pos_open_entry(terminal=None):
+def get_pos_open_entry(terminal=None, include_own_elsewhere=0):
     """Return metadata about the *currently open* POS Opening Entry that
     `posOpening()` would consider "this user's session".
 
@@ -3271,10 +3271,24 @@ def get_pos_open_entry(terminal=None):
     That matters because a cashier must not be invited to close a
     colleague's shift; the dialog uses ``is_mine`` to decide whether to
     offer a Close button or a read-only "ask them to close it" card.
-    """
-    branch_name = getBranch()
 
-    def _entry(filters):
+    ``include_own_elsewhere`` (opt-in, default off) adds one more step:
+    when the terminal's own profile has NO open entry, look for this
+    user's open entry on ANY profile and return it with
+    ``other_profile = 1``. ERPNext's ``check_user_already_assigned``
+    allows a user exactly ONE open entry across the whole site, so that
+    is the only other thing that can refuse a create — and without this
+    step the opening dialog could not name it and had nothing to offer
+    but ERPNext's own sentence. See CLAUDE.md 2026-09-23 (round 2).
+
+    It is **opt-in on purpose**. The Shift Hours watcher and the Header's
+    End Shift button ask "how long has THIS till been open" — handing
+    them a shift from another outlet would make the banner fire against
+    the wrong clock. Only the opening dialog, which is explicitly looking
+    for whatever blocked it, passes the flag.
+    """
+
+    def _entry(filters, other_profile=0):
         rows = frappe.get_all(
             "POS Opening Entry",
             filters=filters,
@@ -3300,28 +3314,50 @@ def get_pos_open_entry(terminal=None):
         row["same_terminal"] = (
             1 if terminal and row.get("custom_terminal") == terminal else 0
         )
+        row["other_profile"] = 1 if other_profile else 0
         return row
 
-    if not terminal:
-        return _entry(
-            {"branch": branch_name, "status": "Open", "docstatus": 1}
-        )
+    def _branch_entry():
+        """Legacy branch-only lookup (no terminal, or an unconfigured one).
 
-    pos_profile = frappe.db.get_value(
-        "URY POS Terminal", terminal, "pos_profile"
+        ``getBranch()`` is resolved HERE rather than at the top of the
+        function so that a user it cannot resolve a branch for still gets
+        the per-profile answer above, and still reaches the own-entry
+        fallback below, instead of an exception that the caller can only
+        render as another dead end.
+        """
+        try:
+            return _entry(
+                {"branch": getBranch(), "status": "Open", "docstatus": 1}
+            )
+        except (frappe.ValidationError, frappe.PermissionError):
+            return None
+
+    pos_profile = (
+        frappe.db.get_value("URY POS Terminal", terminal, "pos_profile")
+        if terminal
+        else None
     )
 
-    if not pos_profile:
-        return _entry(
-            {"branch": branch_name, "status": "Open", "docstatus": 1}
+    if pos_profile:
+        row = _entry(
+            {
+                "pos_profile": pos_profile,
+                "status": "Open",
+                "docstatus": 1,
+            }
         )
+    else:
+        row = _branch_entry()
 
+    if row or not cint(include_own_elsewhere):
+        return row
+
+    # Nothing open on the till's own profile, yet a create was still
+    # refused: the blocker is this user's own shift on another outlet.
     return _entry(
-        {
-            "pos_profile": pos_profile,
-            "status": "Open",
-            "docstatus": 1,
-        }
+        {"user": frappe.session.user, "status": "Open", "docstatus": 1},
+        other_profile=1,
     )
 
 

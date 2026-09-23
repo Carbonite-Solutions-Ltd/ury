@@ -20,6 +20,7 @@ import {
   type OpeningBalanceRow,
 } from '../lib/pos-opening-api';
 import { extractFrappeServerError } from '../lib/utils';
+import { canCloseShift } from '../lib/role-utils';
 import POSClosingDialog from './POSClosingDialog';
 
 /**
@@ -176,6 +177,22 @@ interface OpeningBranchProps {
   onOpened: () => void;
 }
 
+/**
+ * "2026-09-14 13:42:51.868228" → "14 Sep".
+ *
+ * Frappe sends site-local datetimes with no offset, so this is parsed as
+ * local time — which is what we want to print back at the cashier
+ * standing in that timezone. Returns "" for anything unparseable rather
+ * than "Invalid Date": a missing date should quietly drop out of the
+ * sentence, not shout in it.
+ */
+function shortDay(raw: string | null): string {
+  if (!raw) return '';
+  const d = new Date(raw.replace(' ', 'T'));
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+
 type OpeningMode =
   | { kind: 'loading' }
   | { kind: 'open-form' } // show the full opening form
@@ -185,7 +202,13 @@ type OpeningMode =
       message: string;
       isMine: boolean;
       openedBy: string | null;
-    }; // ERPNext rejected the create because the profile already has an open entry
+      /** The entry is open on a DIFFERENT POS Profile than this till. */
+      otherProfile: boolean;
+      /** That profile's name, so we can say WHICH outlet holds it. */
+      profileName: string | null;
+      /** When it was opened, so "since Sun 14 Sep" can be shown. */
+      openedAt: string | null;
+    }; // ERPNext rejected the create — something already holds an open entry
 
 const OpeningBranch = ({ posProfile, user, terminalName, onOpened }: OpeningBranchProps) => {
   const [mode, setMode] = useState<OpeningMode>({ kind: 'loading' });
@@ -281,13 +304,24 @@ const OpeningBranch = ({ posProfile, user, terminalName, onOpened }: OpeningBran
         /currently assigned to another pos/i.test(parsed.message);
       if (titleMatches || msgMatches) {
         try {
-          const existing = await getCurrentPosOpenEntry(terminalName);
+          // `includeOwnElsewhere` is what makes "Cannot Assign Cashier"
+          // answerable. That guard fires over an entry this user holds on
+          // a DIFFERENT outlet, which a profile-scoped lookup can never
+          // see — so the dialog used to show ERPNext's bare sentence with
+          // nothing but Reload and Sign out. Now we can name the shift and
+          // offer to close it.
+          const existing = await getCurrentPosOpenEntry(terminalName, {
+            includeOwnElsewhere: true,
+          });
           setMode({
             kind: 'existing-entry',
             entryName: existing?.name || null,
             message: parsed.message,
             isMine: existing?.is_mine === 1,
             openedBy: existing?.opened_by || null,
+            otherProfile: existing?.other_profile === 1,
+            profileName: existing?.pos_profile || null,
+            openedAt: existing?.period_start_date || null,
           });
         } catch {
           setMode({
@@ -296,6 +330,9 @@ const OpeningBranch = ({ posProfile, user, terminalName, onOpened }: OpeningBran
             message: parsed.message,
             isMine: false,
             openedBy: null,
+            otherProfile: false,
+            profileName: null,
+            openedAt: null,
           });
         }
         setSubmitting(false);
@@ -348,30 +385,60 @@ const OpeningBranch = ({ posProfile, user, terminalName, onOpened }: OpeningBran
   // ───── existing open entry blocking the new one ─────
   // Safety net only. Normally `posOpening()` returns 0 as soon as the
   // profile has an open entry, so nobody gets here. If we DO get here,
-  // an ERPNext guard rejected the create, and who owns the blocking
-  // entry decides what we may offer:
+  // an ERPNext guard rejected the create, and WHO holds the blocking
+  // entry — and WHERE — decides what we may offer:
   //
-  //   * it's mine  → offer to close it in-POS (the shift really is ours)
-  //   * it's someone else's → show it read-only. We must NOT invite a
+  //   * mine, on this till's profile → offer to close it in-POS
+  //   * mine, on ANOTHER outlet      → `check_user_already_assigned`:
+  //     one open shift per person, site-wide. Name the outlet holding
+  //     it and offer to close it, because it is genuinely ours.
+  //   * someone else's → show it read-only. We must NOT invite a
   //     cashier to close a colleague's shift: that consolidates their
   //     invoices under our count and was how the old flow pushed people
   //     into closing the captain's day just to get into the POS.
+  //   * nothing found → we still say what to do rather than parroting
+  //     ERPNext's sentence at a user with no way forward.
   if (mode.kind === 'existing-entry') {
-    const canClose = mode.isMine && !!mode.entryName;
+    // Closing the day is ExPOS Manager only (2026-08-05). Offering a
+    // button the backend will refuse just teaches people to ignore
+    // errors, so a cashier gets told who to ask instead.
+    const mayClose = canCloseShift(user);
+    const canClose = mode.isMine && !!mode.entryName && mayClose;
+    const since = shortDay(mode.openedAt);
+    const whereIsIt = mode.profileName
+      ? `${mode.profileName}${since ? `, open since ${since}` : ''}`
+      : '';
+
+    let title: string;
+    let subtitle: string;
+    if (mode.isMine && mode.otherProfile) {
+      title = 'Your Shift Is Open On Another Till';
+      subtitle = whereIsIt
+        ? `You still have a shift open on ${whereIsIt}${
+            mode.entryName ? ` (${mode.entryName})` : ''
+          }. One person can only hold one open shift at a time, so this till can't be opened until that one is closed.`
+        : `You already have a shift open on another till. One person can only hold one open shift at a time, so this till can't be opened until that one is closed.`;
+    } else if (mode.isMine && mode.entryName) {
+      title = 'Your Shift Is Still Open';
+      subtitle = `Your entry ${mode.entryName} is still open. Close it before starting a new shift.`;
+    } else if (mode.entryName) {
+      title = 'POS Already Open';
+      subtitle = `${
+        mode.openedBy || 'Another cashier'
+      } already opened this POS (${mode.entryName}). You don't need to open it — just reload to start serving.`;
+    } else {
+      title = 'POS Already Open';
+      subtitle = mode.message;
+    }
+
     return (
       <>
         <DialogShell
           icon={<AlertTriangle className="h-8 w-8 text-orange-600" />}
           iconBg="bg-orange-100"
-          title={mode.isMine ? 'Your Shift Is Still Open' : 'POS Already Open'}
+          title={title}
           showLogout
-          subtitle={
-            mode.entryName
-              ? mode.isMine
-                ? `Your entry ${mode.entryName} is still open. Close it before starting a new shift.`
-                : `${mode.openedBy || 'Another cashier'} already opened this POS (${mode.entryName}). You don't need to open it — just reload to start serving.`
-              : mode.message
-          }
+          subtitle={subtitle}
         >
           {canClose ? (
             <Button
@@ -379,16 +446,28 @@ const OpeningBranch = ({ posProfile, user, terminalName, onOpened }: OpeningBran
               className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-lg"
             >
               <DoorOpen className="w-5 h-5 mr-2" />
-              Close My Shift
+              {mode.otherProfile ? 'Close That Shift' : 'Close My Shift'}
             </Button>
+          ) : mode.isMine && mode.entryName ? (
+            <p className="mb-3 p-3 rounded-lg bg-gray-50 text-gray-600 text-sm">
+              Only an ExPOS Manager can close a shift. Ask one to close{' '}
+              {mode.entryName}
+              {mode.profileName ? ` on ${mode.profileName}` : ''}, then reload
+              this page.
+            </p>
+          ) : mode.entryName ? (
+            <p className="mb-3 p-3 rounded-lg bg-gray-50 text-gray-600 text-sm">
+              Only {mode.openedBy || 'the cashier who opened it'} or a manager
+              should close this shift. Closing it here would settle their
+              takings under your count.
+            </p>
           ) : (
-            mode.entryName && (
-              <p className="mb-3 p-3 rounded-lg bg-gray-50 text-gray-600 text-sm">
-                Only {mode.openedBy || 'the cashier who opened it'} or a manager
-                should close this shift. Closing it here would settle their
-                takings under your count.
-              </p>
-            )
+            <p className="mb-3 p-3 rounded-lg bg-gray-50 text-gray-600 text-sm">
+              A shift is already open — either on this till, or on another one
+              under your account. A manager can close it from ExPOS Opening
+              Entry in the desk, then reload this page. If it isn't yours, sign
+              out and back in as the right user.
+            </p>
           )}
           <Button
             onClick={() => window.location.reload()}

@@ -222,6 +222,31 @@ Facts from that pack that affect URY code today:
 
 Running record of bugs fixed and non-obvious traps discovered. Add new entries at the top. Each entry should answer: what went wrong, why, where it was fixed, how it was verified.
 
+### 2026-09-23 (round 2) — "POS Already Open" was a dead end when your own shift was open on the OTHER outlet
+- **Symptom (user):** signing in as Administrator at `/pos` gave **"POS Already Open — Cashier is currently assigned to another POS."** with only Reload and Sign out. No entry named, nothing to act on.
+- **Cause, confirmed against the data, and NOT the reports change** (that commit touches only report functions — no hunk lands in `posOpening`, `get_pos_open_entry` or `validate_pos_close`). Administrator held the one open entry **POS-OPE-2026-00037 on the `Sitout` profile** (open since 14 Sep) while the browser was registered to an **Airport** terminal. ERPNext's `check_user_already_assigned` allows a user exactly ONE open entry site-wide, so it refused the Airport one. The sentence on screen is ERPNext's, verbatim.
+- **Why the dialog had nothing to say.** `get_pos_open_entry(terminal)` looked **only on that terminal's POS Profile**. The blocker was on another profile, so the lookup returned None → `entryName` null, `is_mine` false → the dialog fell through to its weakest branch and told the user *another cashier* owned it, when it was their own shift one outlet over. The 2026-07-28 rework killed this dead end for the same-profile case; the cross-profile case survived because both ERPNext guards were being answered with one profile-scoped question.
+- **Fix — `get_pos_open_entry(terminal, include_own_elsewhere=0)`.** When the till's own profile is clear and the flag is set, it falls back to **this user's open entry on ANY profile** and stamps `other_profile = 1`. That is the only other thing that can refuse a create, so between the two lookups both guards are now answerable.
+  - **Opt-in on purpose, and this is the load-bearing bit.** Four callers use this endpoint. The Shift Hours banner and the Header's End Shift ask "how long has THIS till been open" — handing them a shift from another outlet would run the banner against the wrong clock and offer to close the wrong day. Only the opening dialog, which is explicitly hunting for whatever blocked it, passes the flag.
+  - `getBranch()` moved out of the top of the function into the branch that needs it. It can throw for an unlinked user, and throwing before we can name the blocker is precisely the dead end being fixed; it is now caught and degrades to the fallback.
+- **The dialog now branches four ways** ([POSOpeningDialog.tsx](pos/src/components/POSOpeningDialog.tsx)), instead of two:
+  - **mine, this profile** → "Your Shift Is Still Open" + Close My Shift (unchanged).
+  - **mine, another outlet** → **"Your Shift Is Open On Another Till"**, naming the profile, the entry and since when — "You still have a shift open on Airport, open since 23 Sep (POS-OPE-2026-00042). One person can only hold one open shift at a time…" — with **Close That Shift**.
+  - **someone else's** → read-only (unchanged). A cashier is still never invited to close a colleague's shift; that settles their takings under your count.
+  - **nothing found** → keeps ERPNext's sentence but adds what to do (ask a manager to close it from the desk, or sign out and back in as the right user), instead of a bare refusal.
+- **`canCloseShift` gates the button.** Closing is ExPOS Manager only (2026-08-05), so a plain cashier is told *who to ask* and which entry, rather than being given a button the backend would refuse.
+- **Verified against the live site, read-only, no data mutated** — the user's own shift had moved to Airport by then, which is the mirror image of the bug and exercises the new path for free:
+  | Call | Result |
+  |---|---|
+  | `('Sitout Kitchen')` | `None` — **unchanged**, so the banner/header callers are untouched |
+  | `('Sitout Kitchen', include_own_elsewhere=1)` | POS-OPE-2026-00042, `other_profile 1`, `is_mine 1`, `same_terminal 0` |
+  | `('Airport Main Terminal')` | same entry, `other_profile 0`, `same_terminal 1` |
+  | `('Airport Main Terminal', 1)` | identical to the line above — the fallback fires ONLY when the till's own profile is clear |
+  `tsc -p tsconfig.app.json --noEmit` 0 errors; ESLint shows the **same single pre-existing `no-explicit-any`** (the `catch (err: any)`, just shifted); `yarn build` clean with the new copy confirmed in the emitted bundle.
+- **No unit test, deliberately, and worth being straight about it.** The logic is query dispatch, not arithmetic; a meaningful test needs an open POS Opening Entry on a second profile, and manufacturing one on a copy of the client's data means creating and then cancelling a financial document (cancellation is one-way). The four paths above were exercised against real rows instead. If a fixture-safe way to stand up two profiles appears, this deserves a proper test.
+- **To reproduce the dialog without breaking anything:** point a browser at the till whose profile is NOT the one holding your open shift — `localStorage.setItem('ury_pos_terminal', 'Sitout Kitchen')` then reload. **Do not press Close That Shift** unless you actually mean to close the shift it names.
+- **Deploy: `bench restart` (changed whitelisted method) + redeploy the `pos/` build. No migrate.**
+
 ### 2026-09-23 — Reports are no longer terminal-scoped, and On Account is filterable on Sales by Staff
 - **Symptom (user, with two screenshots):** the same Sales by Staff report, same date range, showed **different grand totals depending on which till the browser was registered to** — "Main Restaurant Cashier" and "Airport Main Terminal" disagreed, "which is confusing people". Asked to remove the terminal filter from Sales by Staff **and from every other report that has one**, and to add **On Account** to the payment-method dropdown.
 - **The data is the whole argument.** On the client's copy, of 2,611 submitted invoices **2,610 carry `custom_terminal = 'Airport Main Terminal'` and exactly ONE carries 'Main Restaurant Cashier'.** So for 2026-08-13 → 2026-09-18 the old filter produced:

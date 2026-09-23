@@ -135,14 +135,33 @@ export interface CurrentPOSOpenEntry {
   opened_by?: string | null;
   /** 1 when it was opened on the terminal we asked about. */
   same_terminal?: 0 | 1;
+  /**
+   * 1 when this entry lives on a DIFFERENT POS Profile than the terminal
+   * we asked about — i.e. it only came back because the caller passed
+   * `includeOwnElsewhere`. It is the user's own shift on another outlet,
+   * which is what ERPNext's `check_user_already_assigned` refuses over.
+   */
+  other_profile?: 0 | 1;
 }
 
+/**
+ * The open POS Opening Entry that `posOpening()` treats as "this session".
+ *
+ * `includeOwnElsewhere` widens the search ONE step when the terminal's own
+ * POS Profile is clear: it then returns this user's open entry on any other
+ * profile, flagged `other_profile: 1`. Only the opening dialog wants that —
+ * it is hunting for whatever refused its create. Callers asking "how long
+ * has THIS till been open" (the Shift Hours banner, End Shift in the header)
+ * must leave it off, or they would measure against another outlet's clock.
+ */
 export const getCurrentPosOpenEntry = async (
-  terminal?: string | null
+  terminal?: string | null,
+  options?: { includeOwnElsewhere?: boolean }
 ): Promise<CurrentPOSOpenEntry | null> => {
   try {
     const params: Record<string, string> = {};
     if (terminal) params.terminal = terminal;
+    if (options?.includeOwnElsewhere) params.include_own_elsewhere = '1';
     const res = await call.get<{ message: CurrentPOSOpenEntry | null }>(
       'ury.ury_pos.api.get_pos_open_entry',
       params
