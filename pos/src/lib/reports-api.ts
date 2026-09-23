@@ -35,6 +35,20 @@ export interface SalesByCashierRow {
 
 export type StaffGrouping = 'cashier' | 'waiter';
 
+/** Send this as `payment_mode` to filter Sales by Staff down to bills
+ *  with money left on a customer's account. On Account is the ABSENCE
+ *  of a tender, so it is not a real Mode of Payment and cannot be
+ *  matched against a payment row. Mirrors ON_ACCOUNT_PAYMENT_FILTER in
+ *  ury/ury_pos/api.py — keep the two in step. */
+export const ON_ACCOUNT_PAYMENT_FILTER = '__on_account__';
+
+/** Human label for an active payment-mode filter — the On Account
+ *  sentinel must never reach a heading or a printout raw. */
+export function paymentModeLabel(mode: string | null | undefined): string {
+  if (!mode) return '';
+  return mode === ON_ACCOUNT_PAYMENT_FILTER ? 'On Account' : mode;
+}
+
 export interface SalesByCashierResponse {
   from_date: string;
   to_date: string;
@@ -46,8 +60,17 @@ export interface SalesByCashierResponse {
   is_admin: 0 | 1;
   /** Active mode-of-payment filter, if any. */
   payment_mode: string | null;
-  /** Modes actually seen in this window (not every mode configured). */
+  /** Modes seen in the CURRENT (filtered) result — drives the columns. */
   payment_modes: string[];
+  /** Modes available in the window ignoring the filter — drives the
+   *  dropdown, so options don't disappear as you use them. */
+  payment_mode_options?: string[];
+  /** 1 when the window has any on-account money, i.e. offer the option. */
+  has_on_account?: 0 | 1;
+  /** Sentinel to send as `payment_mode` to filter to on-account bills.
+   *  On Account is the ABSENCE of a tender, so it is not a real Mode of
+   *  Payment and needs its own value. */
+  on_account_filter_value?: string;
   /** Total taken per mode across the whole window. */
   payment_totals: Record<string, number>;
   rows: SalesByCashierRow[];
@@ -91,7 +114,6 @@ export async function getCourseSales(
   const params: Record<string, unknown> = {};
   if (range.from_date) params.from_date = range.from_date;
   if (range.to_date) params.to_date = range.to_date;
-  if (range.terminal) params.terminal = range.terminal;
   const res = await call.get<{ message: CourseSalesResponse }>(
     'ury.ury_pos.api.get_course_sales',
     params
@@ -160,10 +182,13 @@ export interface ShiftSummaryResponse {
   terminal?: string | null;
 }
 
+/** Reports are scoped by BRANCH and date only. There is deliberately no
+ *  terminal here: the same report used to read differently depending on
+ *  which till the browser was registered to. See the backend's
+ *  _NO_TERMINAL_SCOPE note. */
 export interface ReportDateRange {
   from_date?: string;
   to_date?: string;
-  terminal?: string | null;
 }
 
 export async function getSalesByCashier(
@@ -175,7 +200,6 @@ export async function getSalesByCashier(
   if (paymentMode) params.payment_mode = paymentMode;
   if (range.from_date) params.from_date = range.from_date;
   if (range.to_date) params.to_date = range.to_date;
-  if (range.terminal) params.terminal = range.terminal;
   const res = await call.get<{ message: SalesByCashierResponse }>(
     'ury.ury_pos.api.get_sales_by_cashier',
     params
@@ -189,7 +213,6 @@ export async function getSalesByCategory(
   const params: Record<string, unknown> = {};
   if (range.from_date) params.from_date = range.from_date;
   if (range.to_date) params.to_date = range.to_date;
-  if (range.terminal) params.terminal = range.terminal;
   const res = await call.get<{ message: SalesByCategoryResponse }>(
     'ury.ury_pos.api.get_sales_by_category',
     params
@@ -203,7 +226,6 @@ export async function getTopBottomItems(
   const params: Record<string, unknown> = {};
   if (range.from_date) params.from_date = range.from_date;
   if (range.to_date) params.to_date = range.to_date;
-  if (range.terminal) params.terminal = range.terminal;
   if (range.limit) params.limit = range.limit;
   const res = await call.get<{ message: TopBottomItemsResponse }>(
     'ury.ury_pos.api.get_top_bottom_items',
@@ -212,14 +234,10 @@ export async function getTopBottomItems(
   return res.message;
 }
 
-export async function getMyShiftSummary(
-  terminal?: string | null
-): Promise<ShiftSummaryResponse> {
-  const params: Record<string, unknown> = {};
-  if (terminal) params.terminal = terminal;
+export async function getMyShiftSummary(): Promise<ShiftSummaryResponse> {
   const res = await call.get<{ message: ShiftSummaryResponse }>(
     'ury.ury_pos.api.get_my_shift_summary',
-    params
+    {}
   );
   return res.message;
 }
@@ -273,7 +291,6 @@ export async function getShiftHistory(
   const params: Record<string, unknown> = {};
   if (range.from_date) params.from_date = range.from_date;
   if (range.to_date) params.to_date = range.to_date;
-  if (range.terminal) params.terminal = range.terminal;
   const res = await call.get<{ message: ShiftHistoryResponse }>(
     'ury.ury_pos.api.get_shift_history',
     params
@@ -490,7 +507,6 @@ export async function getPaymentSplitsReport(
   const params: Record<string, unknown> = {};
   if (range.from_date) params.from_date = range.from_date;
   if (range.to_date) params.to_date = range.to_date;
-  if (range.terminal) params.terminal = range.terminal;
   const res = await call.get<{ message: PaymentSplitsResponse }>(
     'ury.ury_pos.api.get_payment_splits_report',
     params
@@ -504,7 +520,6 @@ export async function getMergeReport(
   const params: Record<string, unknown> = {};
   if (range.from_date) params.from_date = range.from_date;
   if (range.to_date) params.to_date = range.to_date;
-  if (range.terminal) params.terminal = range.terminal;
   const res = await call.get<{ message: MergeReportResponse }>(
     'ury.ury_pos.api.get_merge_report',
     params
@@ -518,7 +533,6 @@ export async function getTransferReport(
   const params: Record<string, unknown> = {};
   if (range.from_date) params.from_date = range.from_date;
   if (range.to_date) params.to_date = range.to_date;
-  if (range.terminal) params.terminal = range.terminal;
   const res = await call.get<{ message: TransferReportResponse }>(
     'ury.ury_pos.api.get_transfer_report',
     params
@@ -604,7 +618,6 @@ export async function getStaffInvoices(
   const params: Record<string, unknown> = { staff, group_by: groupBy };
   if (range.from_date) params.from_date = range.from_date;
   if (range.to_date) params.to_date = range.to_date;
-  if (range.terminal) params.terminal = range.terminal;
   if (paymentMode) params.payment_mode = paymentMode;
   const res = await call.get<{ message: StaffInvoiceRow[] }>(
     'ury.ury_pos.api.get_staff_invoices',
@@ -654,7 +667,6 @@ export async function getSalesByPaymentMethod(
   const params: Record<string, unknown> = {};
   if (range.from_date) params.from_date = range.from_date;
   if (range.to_date) params.to_date = range.to_date;
-  if (range.terminal) params.terminal = range.terminal;
   const res = await call.get<{ message: PaymentMethodResponse }>(
     'ury.ury_pos.api.get_sales_by_payment_method',
     params
@@ -669,7 +681,6 @@ export async function getPaymentModeInvoices(
   const params: Record<string, unknown> = { mode };
   if (range.from_date) params.from_date = range.from_date;
   if (range.to_date) params.to_date = range.to_date;
-  if (range.terminal) params.terminal = range.terminal;
   const res = await call.get<{ message: StaffInvoiceRow[] }>(
     'ury.ury_pos.api.get_payment_mode_invoices',
     params
@@ -754,7 +765,6 @@ export async function getMealPeriodSales(
     {
       from_date: range.from_date,
       to_date: range.to_date,
-      ...(range.terminal ? { terminal: range.terminal } : {}),
     }
   );
   return res.message;
