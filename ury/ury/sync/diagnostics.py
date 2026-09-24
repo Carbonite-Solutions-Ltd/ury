@@ -113,49 +113,12 @@ def _describe_transport_error(exc):
 	return f"{name}: {text[:200]}"
 
 
+
+
+# One implementation, in transport, where HTTP-error interpretation belongs.
+# Kept under the old private name so existing callers and tests are unchanged.
 def _missing_method_reason(status, body):
-	"""Detect "the remote has no such method", and say WHY.
-
-	⚠ Verified against a real site rather than assumed, and the assumption
-	was wrong: a missing whitelisted method does NOT reliably come back as
-	404. Frappe wraps the import failure and returns **HTTP 417
-	ValidationError** with "Failed to get method for command ... No module
-	named ...". Classifying that as a generic unexpected response produced a
-	useless "check the error log" remedy for what is by far the most common
-	setup mistake — a cloud site running an ExPOS build older than sync.
-
-	Returns (detail, remedy) or None.
-	"""
-	blob = body if isinstance(body, str) else json.dumps(body, default=str)
-
-	deploy_remedy = (
-		"That site's ExPOS predates branch→cloud sync. Deploy the ExPOS build "
-		"that contains ury/ury/sync to the cloud site, then run "
-		"bench --site <cloud> migrate and bench restart."
-	)
-
-	if "No module named 'ury.ury.sync'" in blob or 'No module named "ury.ury.sync"' in blob:
-		return (
-			"ExPOS IS installed on the remote, but that version has no sync module.",
-			deploy_remedy,
-		)
-	if "No module named 'ury'" in blob or 'No module named "ury"' in blob:
-		return (
-			"ExPOS (ury) is not installed on the remote site at all.",
-			"Install ExPOS there: bench --site <cloud> install-app ury, then migrate.",
-		)
-	if "has no attribute 'ping'" in blob or 'has no attribute "ping"' in blob:
-		return (
-			"The remote has the sync module but no ping endpoint, so it is older "
-			"than the connection test.",
-			deploy_remedy,
-		)
-	if status == 404 or "Failed to get method" in blob or "Method Not Found" in blob:
-		return (
-			f"The remote has no {transport.PING_METHOD} method (HTTP {status}).",
-			deploy_remedy,
-		)
-	return None
+	return transport.missing_method_reason(status, body, transport.PING_METHOD)
 
 
 @frappe.whitelist()

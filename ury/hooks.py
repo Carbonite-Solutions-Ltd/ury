@@ -211,7 +211,12 @@ scheduler_events = {
 		"*/15 * * * *":[
 			# Reclaims rows whose worker died, backfills sales that bypassed
 			# the doc event, and alerts on anything stuck. Same kill switch.
-			"ury.ury.sync.worker.sweep"
+			"ury.ury.sync.worker.sweep",
+			# Pulls master data (items, menus, tax templates, customers) DOWN
+			# from the cloud so a branch can trade on current prices and,
+			# critically, compute the same tax head office would. Same kill
+			# switch — inert unless URY Sync Settings.enabled is on.
+			"ury.ury.sync.masters.pull"
 		]
 	}
 # 	"all": [

@@ -1,0 +1,101 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:master_doctype",
+ "creation": "2026-09-24 17:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "System",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "master_doctype",
+  "last_modified",
+  "column_break_state",
+  "last_pulled_at",
+  "rows_pulled",
+  "last_error"
+ ],
+ "fields": [
+  {
+   "fieldname": "master_doctype",
+   "fieldtype": "Data",
+   "label": "Master Doctype",
+   "reqd": 1,
+   "unique": 1,
+   "in_list_view": 1,
+   "description": "Which master record type this row tracks. One row per doctype in ury/ury/sync/masters.py MASTER_DOCTYPES."
+  },
+  {
+   "fieldname": "last_modified",
+   "fieldtype": "Datetime",
+   "label": "Cloud Watermark",
+   "read_only": 1,
+   "in_list_view": 1,
+   "description": "The highest 'modified' seen on the CLOUD for this doctype. The next pull asks only for records changed after it. Clear it to force a full re-pull."
+  },
+  {
+   "fieldname": "column_break_state",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "last_pulled_at",
+   "fieldtype": "Datetime",
+   "label": "Last Pulled At",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "rows_pulled",
+   "fieldtype": "Int",
+   "label": "Records Applied",
+   "read_only": 1,
+   "description": "Running total applied on this site since sync was first enabled."
+  },
+  {
+   "fieldname": "last_error",
+   "fieldtype": "Small Text",
+   "label": "Last Error",
+   "read_only": 1,
+   "description": "Errors from the most recent pull. A record that fails here is skipped, not retried in a loop — the rest of the page still applies."
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-09-24 17:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "URY",
+ "name": "URY Master Sync State",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1,
+   "share": 1,
+   "print": 1,
+   "email": 1
+  },
+  {
+   "role": "URY Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1,
+   "share": 1,
+   "print": 1,
+   "email": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

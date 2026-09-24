@@ -27,13 +27,25 @@ SETTINGS = "URY Sync Settings"
 
 
 def _pick_invoice():
-	"""A real submitted sale to replicate, preferring one with line items."""
+	"""A real submitted sale to replicate, preferring one with line items.
+
+	⚠ Skips invoices that ALREADY have a sync queue row. The suite asserts a
+	freshly enqueued row is due and claimable, but `enqueue` is idempotent —
+	so if it picked an invoice someone had already synced by hand, it would
+	get handed back that terminal `Synced` row and report two confusing
+	failures about the queue being broken when nothing was. Found exactly
+	that way after a manual end-to-end test left a row behind.
+	"""
 	rows = frappe.db.sql(
 		"""
 		SELECT pi.name
 		FROM `tabPOS Invoice` pi
 		JOIN `tabPOS Invoice Item` pii ON pii.parent = pi.name
+		LEFT JOIN `tabURY Sync Queue` q
+		       ON q.reference_doctype = 'POS Invoice'
+		      AND q.reference_name = pi.name
 		WHERE pi.docstatus = 1
+		  AND q.name IS NULL
 		GROUP BY pi.name
 		ORDER BY pi.creation DESC
 		LIMIT 1
