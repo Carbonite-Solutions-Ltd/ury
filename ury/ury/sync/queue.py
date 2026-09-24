@@ -217,10 +217,11 @@ def on_pos_invoice_submit(doc, method=None):
 	sweeper's backfill catches anything this misses anyway.
 	"""
 	try:
-		if doc.get("is_return"):
-			# Returns are reflected by the return invoice itself, which is
-			# also a submitted POS Invoice and gets queued on its own.
-			pass
+		# Returns are queued too, deliberately: a return IS a submitted POS
+		# Invoice, and head office needs the refund as much as the sale.
+		# (An earlier version had an `if doc.get("is_return"): pass` here,
+		# which did nothing but read as if returns were skipped — one
+		# "tidy-up" away from silently dropping every refund.)
 		enqueue("POS Invoice", doc.name, branch=doc.get("branch"))
 	except Exception:
 		frappe.log_error(

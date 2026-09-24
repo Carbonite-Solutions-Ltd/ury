@@ -114,8 +114,26 @@ def run_sync_integration_tests():
 		check("a payload with no invoice name is REJECTED",
 		      bad.get("status") == "rejected", str(bad))
 
-		# ── 5. Queue mechanics, with sync briefly switched on ───────────
+		# ── 4b. The master switch. This is the load-bearing safety
+		# property of the whole feature: `on_pos_invoice_submit` is wired to
+		# EVERY POS Invoice submit on every site that has this app, so "off"
+		# has to mean genuinely inert — not "queues rows nobody drains".
 		original = frappe.get_doc(SETTINGS).as_dict()
+		off = frappe.get_doc(SETTINGS)
+		off.enabled = 0
+		off.save(ignore_permissions=True)
+		frappe.db.commit()
+		frappe.clear_cache(doctype=SETTINGS)
+
+		check("sync reports disabled when the switch is off", not queue.is_enabled())
+		rows_before = frappe.db.count(QUEUE)
+		check("enqueue is a no-op while disabled",
+		      queue.enqueue("POS Invoice", invoice_name) is None)
+		queue.on_pos_invoice_submit(frappe.get_doc("POS Invoice", invoice_name))
+		check("the on_submit hook queues NOTHING while disabled",
+		      frappe.db.count(QUEUE) == rows_before)
+
+		# ── 5. Queue mechanics, with sync briefly switched on ───────────
 		s = frappe.get_doc(SETTINGS)
 		s.enabled = 1
 		s.remote_url = "https://sync-selftest.invalid"
