@@ -1,0 +1,151 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:SYNC-{YYYY}-{MM}-{#####}",
+ "naming_rule": "Expression",
+ "creation": "2026-09-24 12:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "System",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "reference_doctype",
+  "reference_name",
+  "column_break_ref",
+  "branch",
+  "status",
+  "attempt_section",
+  "attempts",
+  "next_attempt_at",
+  "column_break_attempt",
+  "claimed_at",
+  "synced_at",
+  "error_section",
+  "last_error"
+ ],
+ "fields": [
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Link",
+   "options": "DocType",
+   "label": "Reference Doctype",
+   "reqd": 1,
+   "in_standard_filter": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "reference_name",
+   "fieldtype": "Dynamic Link",
+   "options": "reference_doctype",
+   "label": "Reference Name",
+   "reqd": 1,
+   "in_list_view": 1,
+   "search_index": 1,
+   "read_only": 1,
+   "description": "The local document this row is responsible for pushing. The payload is read from it at send time rather than snapshotted, so a row can never send a stale copy."
+  },
+  {
+   "fieldname": "column_break_ref",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "options": "Branch",
+   "label": "Branch",
+   "in_standard_filter": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "options": "Queued\nSending\nSynced\nRetrying\nFailed",
+   "default": "Queued",
+   "label": "Status",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "search_index": 1,
+   "description": "Synced and Failed are terminal. A transient failure goes to Retrying and is retried INDEFINITELY \u2014 abandoning a row would silently lose a real sale from head office's books. Only Failed (the remote rejected the payload itself) needs a human."
+  },
+  {
+   "fieldname": "attempt_section",
+   "fieldtype": "Section Break",
+   "label": "Delivery"
+  },
+  {
+   "fieldname": "attempts",
+   "fieldtype": "Int",
+   "default": "0",
+   "label": "Attempts",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "next_attempt_at",
+   "fieldtype": "Datetime",
+   "label": "Next Attempt At",
+   "read_only": 1,
+   "search_index": 1,
+   "description": "Blank means due immediately. Backoff is 1, 2, 5, 10, 30 minutes then hourly forever."
+  },
+  {
+   "fieldname": "column_break_attempt",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "claimed_at",
+   "fieldtype": "Datetime",
+   "label": "Claimed At",
+   "read_only": 1,
+   "description": "Set when a worker takes the row. A row left claimed for over 10 minutes had its worker die and is returned to Retrying by the sweeper."
+  },
+  {
+   "fieldname": "synced_at",
+   "fieldtype": "Datetime",
+   "label": "Synced At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "error_section",
+   "fieldtype": "Section Break",
+   "label": "Last Error"
+  },
+  {
+   "fieldname": "last_error",
+   "fieldtype": "Small Text",
+   "label": "Last Error",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-24 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "URY",
+ "name": "URY Sync Queue",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "read": 1,
+   "role": "URY Manager",
+   "report": 1,
+   "export": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

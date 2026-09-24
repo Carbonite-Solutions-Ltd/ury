@@ -154,6 +154,10 @@ doc_events = {
         "validate": "ury.ury.hooks.ury_pos_invoice.validate",
         "after_insert":"ury.ury.api.ury_kot_order_number.set_order_number",
         "before_submit": "ury.ury.hooks.ury_pos_invoice.before_submit",
+        # Branch -> cloud sync. A no-op unless URY Sync Settings.enabled is
+        # on, which it is not by default, and wrapped so it can never block
+        # a sale. See ury/ury/sync/.
+        "on_submit": "ury.ury.sync.queue.on_pos_invoice_submit",
         "on_cancel": "ury.ury.hooks.ury_pos_invoice.on_trash",
         "on_trash": "ury.ury.hooks.ury_pos_invoice.on_trash",
     },
@@ -198,7 +202,15 @@ doc_events = {
 scheduler_events = {
     "cron":{
 		"* * * * *":[
-			"ury.ury.api.ury_kot_validation.kotValidationThread"
+			"ury.ury.api.ury_kot_validation.kotValidationThread",
+			# Sends due rows from the branch -> cloud sync queue. Returns
+			# immediately unless URY Sync Settings.enabled is on (default off).
+			"ury.ury.sync.worker.process_queue"
+		],
+		"*/15 * * * *":[
+			# Reclaims rows whose worker died, backfills sales that bypassed
+			# the doc event, and alerts on anything stuck. Same kill switch.
+			"ury.ury.sync.worker.sweep"
 		]
 	}
 # 	"all": [

@@ -1,0 +1,145 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-09-24 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "intro_html",
+  "remote_section",
+  "remote_url",
+  "remote_api_key",
+  "remote_api_secret",
+  "column_break_remote",
+  "connection_timeout_seconds",
+  "batch_size",
+  "ops_section",
+  "alert_role",
+  "last_success_at",
+  "column_break_ops",
+  "last_error",
+  "last_error_at"
+ ],
+ "fields": [
+  {
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "default": "0",
+   "label": "Sync Enabled",
+   "in_list_view": 1,
+   "description": "Master switch, OFF by default. While off, nothing is queued and the scheduled workers return immediately \u2014 the sync feature is completely inert. Turn it on only once the remote settings below are filled in and tested."
+  },
+  {
+   "fieldname": "intro_html",
+   "fieldtype": "HTML",
+   "options": "<div class=\"alert alert-warning\">This site pushes its completed sales to a remote URY site for head-office reporting. It is meant for a <b>branch-local</b> install whose internet is unreliable: sales are queued locally and sent whenever a connection is available, retrying indefinitely so nothing is lost.<br><br><b>Only ever enable this on a branch site, never on the cloud site it pushes to.</b></div>"
+  },
+  {
+   "fieldname": "remote_section",
+   "fieldtype": "Section Break",
+   "label": "Remote Site"
+  },
+  {
+   "fieldname": "remote_url",
+   "fieldtype": "Data",
+   "label": "Remote Site URL",
+   "mandatory_depends_on": "eval:doc.enabled",
+   "description": "Base URL of the cloud site, e.g. https://landing.erpxpand.com \u2014 no trailing slash and no path."
+  },
+  {
+   "fieldname": "remote_api_key",
+   "fieldtype": "Data",
+   "label": "API Key",
+   "mandatory_depends_on": "eval:doc.enabled",
+   "description": "From a dedicated user on the REMOTE site. Give that user only what the receiver needs \u2014 do not reuse an administrator key."
+  },
+  {
+   "fieldname": "remote_api_secret",
+   "fieldtype": "Password",
+   "label": "API Secret",
+   "mandatory_depends_on": "eval:doc.enabled"
+  },
+  {
+   "fieldname": "column_break_remote",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "connection_timeout_seconds",
+   "fieldtype": "Int",
+   "default": "30",
+   "label": "Connection Timeout (seconds)",
+   "description": "Must stay well below the sweeper's stale-claim threshold (600s), or a row still legitimately in flight could be reclaimed and pushed twice."
+  },
+  {
+   "fieldname": "batch_size",
+   "fieldtype": "Int",
+   "default": "20",
+   "label": "Rows Per Run",
+   "description": "How many queued sales one worker pass sends. Kept modest so a long backlog drains steadily instead of saturating a weak link."
+  },
+  {
+   "fieldname": "ops_section",
+   "fieldtype": "Section Break",
+   "label": "Status"
+  },
+  {
+   "fieldname": "alert_role",
+   "fieldtype": "Link",
+   "options": "Role",
+   "label": "Alert Role",
+   "description": "Who hears about a sale that has failed to sync for ~48 minutes, or one rejected outright."
+  },
+  {
+   "fieldname": "last_success_at",
+   "fieldtype": "Datetime",
+   "read_only": 1,
+   "label": "Last Successful Push"
+  },
+  {
+   "fieldname": "column_break_ops",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "last_error",
+   "fieldtype": "Small Text",
+   "read_only": 1,
+   "label": "Last Error"
+  },
+  {
+   "fieldname": "last_error_at",
+   "fieldtype": "Datetime",
+   "read_only": 1,
+   "label": "Last Error At"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-09-24 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "URY",
+ "name": "URY Sync Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "URY Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

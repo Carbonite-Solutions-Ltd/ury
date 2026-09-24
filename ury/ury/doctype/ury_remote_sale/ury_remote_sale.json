@@ -1,0 +1,319 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:remote_key",
+ "naming_rule": "By fieldname",
+ "creation": "2026-09-24 12:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "System",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "intro_html",
+  "remote_key",
+  "invoice_name",
+  "source_site",
+  "column_break_id",
+  "branch",
+  "pos_profile",
+  "terminal",
+  "status",
+  "is_return",
+  "when_section",
+  "posting_date",
+  "posting_time",
+  "column_break_when",
+  "received_at",
+  "payload_version",
+  "who_section",
+  "customer",
+  "customer_name",
+  "order_type",
+  "restaurant_table",
+  "column_break_who",
+  "waiter",
+  "cashier",
+  "raised_by",
+  "no_of_pax",
+  "money_section",
+  "net_total",
+  "total_taxes_and_charges",
+  "discount_amount",
+  "column_break_money",
+  "grand_total",
+  "paid_amount",
+  "on_account_amount",
+  "detail_section",
+  "items",
+  "payments_json"
+ ],
+ "fields": [
+  {
+   "fieldname": "intro_html",
+   "fieldtype": "HTML",
+   "label": "",
+   "options": "<div class=\"alert alert-info\">A <b>read-only mirror</b> of a sale made on a branch site. Deliberately not a POS Invoice: replicating a real POS Invoice here would fire <code>pos_invoice_naming</code> (re-assigning its name), <code>validate_pos_opening_entry</code> (which throws \u2014 the cloud has no open shift) and <code>set_order_number</code> (recomputing from the wrong baseline). These rows carry no hooks, no links to masters and no accounting, so an insert can never fail on state this site does not have.</div>"
+  },
+  {
+   "fieldname": "remote_key",
+   "fieldtype": "Data",
+   "label": "Remote Key",
+   "reqd": 1,
+   "unique": 1,
+   "read_only": 1,
+   "description": "'<source site>|<invoice name>' \u2014 the primary key. Scoping by site keeps two branches from colliding even if per-branch invoice prefixes were never configured, and makes re-delivery of the same sale a no-op."
+  },
+  {
+   "fieldname": "invoice_name",
+   "fieldtype": "Data",
+   "label": "Invoice Name",
+   "read_only": 1,
+   "in_list_view": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "source_site",
+   "fieldtype": "Data",
+   "label": "Source Site",
+   "read_only": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "column_break_id",
+   "fieldtype": "Column Break",
+   "label": ""
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Data",
+   "label": "Branch",
+   "read_only": 1,
+   "in_standard_filter": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "pos_profile",
+   "fieldtype": "Data",
+   "label": "POS Profile",
+   "read_only": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "terminal",
+   "fieldtype": "Data",
+   "label": "Terminal",
+   "read_only": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Data",
+   "label": "Status",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "is_return",
+   "fieldtype": "Check",
+   "label": "Is Return",
+   "read_only": 1,
+   "default": "0"
+  },
+  {
+   "fieldname": "when_section",
+   "fieldtype": "Section Break",
+   "label": "Timing"
+  },
+  {
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Posting Date",
+   "read_only": 1,
+   "in_list_view": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "posting_time",
+   "fieldtype": "Time",
+   "label": "Posting Time",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_when",
+   "fieldtype": "Column Break",
+   "label": ""
+  },
+  {
+   "fieldname": "received_at",
+   "fieldtype": "Datetime",
+   "label": "Received At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "payload_version",
+   "fieldtype": "Int",
+   "label": "Payload Version",
+   "read_only": 1,
+   "default": "1",
+   "description": "Bumped when the payload shape changes, so the receiver can stay compatible with branches that have not been updated yet."
+  },
+  {
+   "fieldname": "who_section",
+   "fieldtype": "Section Break",
+   "label": "Attribution"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Data",
+   "label": "Customer",
+   "read_only": 1
+  },
+  {
+   "fieldname": "customer_name",
+   "fieldtype": "Data",
+   "label": "Customer Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "order_type",
+   "fieldtype": "Data",
+   "label": "Order Type",
+   "read_only": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "restaurant_table",
+   "fieldtype": "Data",
+   "label": "Table",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_who",
+   "fieldtype": "Column Break",
+   "label": ""
+  },
+  {
+   "fieldname": "waiter",
+   "fieldtype": "Data",
+   "label": "Waiter",
+   "read_only": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "cashier",
+   "fieldtype": "Data",
+   "label": "Cashier",
+   "read_only": 1,
+   "in_standard_filter": 1,
+   "description": "Copied verbatim. On the source site this field is not reliably a user id \u2014 the shift-close transfer path writes a full name \u2014 so reports reading this must tolerate both."
+  },
+  {
+   "fieldname": "raised_by",
+   "fieldtype": "Data",
+   "label": "Created By",
+   "read_only": 1,
+   "description": "The source invoice's owner. Named raised_by because 'owner' is a Frappe builtin."
+  },
+  {
+   "fieldname": "no_of_pax",
+   "fieldtype": "Int",
+   "label": "Covers",
+   "read_only": 1
+  },
+  {
+   "fieldname": "money_section",
+   "fieldtype": "Section Break",
+   "label": "Amounts"
+  },
+  {
+   "fieldname": "net_total",
+   "fieldtype": "Currency",
+   "label": "Net Total",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_taxes_and_charges",
+   "fieldtype": "Currency",
+   "label": "Taxes and Charges",
+   "read_only": 1
+  },
+  {
+   "fieldname": "discount_amount",
+   "fieldtype": "Currency",
+   "label": "Discount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_money",
+   "fieldtype": "Column Break",
+   "label": ""
+  },
+  {
+   "fieldname": "grand_total",
+   "fieldtype": "Currency",
+   "label": "Grand Total",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "paid_amount",
+   "fieldtype": "Currency",
+   "label": "Paid",
+   "read_only": 1
+  },
+  {
+   "fieldname": "on_account_amount",
+   "fieldtype": "Currency",
+   "label": "On Account",
+   "read_only": 1
+  },
+  {
+   "fieldname": "detail_section",
+   "fieldtype": "Section Break",
+   "label": "Detail"
+  },
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "Items",
+   "options": "URY Remote Sale Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "payments_json",
+   "fieldtype": "Long Text",
+   "label": "Payments (JSON)",
+   "read_only": 1,
+   "description": "Mode-of-payment rows as sent, e.g. [{\"mode_of_payment\":\"Cash\",\"amount\":50}]. Kept as JSON rather than a child table because head office only aggregates it."
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-24 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "URY",
+ "name": "URY Remote Sale",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "read": 1,
+   "role": "URY Manager",
+   "report": 1,
+   "export": 1
+  }
+ ],
+ "sort_field": "posting_date",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}
