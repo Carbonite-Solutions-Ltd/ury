@@ -1136,6 +1136,7 @@ import {
   startConnectivityWatch,
   stopConnectivityWatch,
 } from "../lib/connectivity";
+import { hardenCall } from "../lib/retry-rule";
 import Masonry from "masonry-layout";
 import io from "socket.io-client";
 import Header from "./Header.vue";
@@ -1193,7 +1194,10 @@ export default {
     return {
       kot: [],
       masonry: null,
-      call: frappe.call(),
+      // Reads retry through a Starlink satellite-handover blip (~every 15s).
+      // Writes are deliberately NOT retried — serve/reinstate/cancel-accept
+      // are not idempotent. (2026-09-24)
+      call: hardenCall(frappe.call()),
       // Kitchen -> waiter change request modal (2026-07-16)
       showChangeModal: false,
       changeKot: null,
@@ -2445,6 +2449,26 @@ export default {
           if (this.audio_alert === 1) {
             this.showAudioAlertMessage = true;
           }
+          // Resync on every socket reconnect.
+          //
+          // Frappe's publish_realtime is fire-and-forget: a KOT pushed
+          // while this socket was down is lost for good, there is no
+          // replay. Starlink hands off between satellites roughly every
+          // 15 seconds, so on this link the socket drops routinely — and
+          // the only `connect` handler in the file just logged (kot.vue,
+          // initializeSocket), leaving the board stale until the 30s
+          // safety-net poll. That is precisely "the kitchen doesn't see
+          // the orders on time". (2026-09-24)
+          socket.on("connect", () => {
+            if (!self.boardActive) return;
+            self
+              .fetchKOT()
+              .then(() => self.masonryLoading())
+              .catch(() => {
+                /* the 30s poll retries */
+              });
+          });
+
           socket.on(this.kot_channel, (doc) => {
             // Rings unless the admin explicitly muted it; falls back to the
             // bundled bell when no profile sound is configured. 2026-07-16.
