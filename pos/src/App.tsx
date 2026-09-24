@@ -24,7 +24,7 @@ import { ToastProvider } from './components/ui/toast';
 import { useConnectivity } from './lib/connectivity';
 import { usePOSStore } from './store/pos-store';
 import { useEffect, useState } from 'react';
-import { setupKotListener } from './lib/kot-listener';
+import { setupKotListener, stopKotListener } from './lib/kot-listener';
 import { initPosDisplay, destroyPosDisplay } from './lib/pos-display';
 import {
   getSavedTerminal,
@@ -190,6 +190,13 @@ function App() {
       initPosDisplay();
       return () => {
         destroyPosDisplay();
+        // Must stop the KOT poller too. Without this, every re-run of
+        // this effect (terminal change, geofence retry) left the previous
+        // 3s/8s interval running and unreachable, so the polling load
+        // compounded across a shift and helped starve the browser's
+        // per-origin connection pool. `stopKotListener` existed but was
+        // never called from anywhere. (2026-09-24)
+        stopKotListener();
       };
     }
   }, [initializeApp, terminal, geofencePassed]);

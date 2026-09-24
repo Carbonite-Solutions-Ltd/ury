@@ -6,6 +6,7 @@ import { formatCurrency, cn, extractFrappeServerError, parseFrappeServerMessages
 import { canManageMenuPrices, isCaptainOrAbove } from '../lib/role-utils';
 import { useConnectivity } from '../lib/connectivity';
 import { useOutbox } from '../lib/outbox';
+import { kickKotCheck } from '../lib/kot-listener';
 import { CustomerSelect } from './CustomerSelect';
 import ProductDialog from './ProductDialog';
 import OrderTypeSelect from './OrderTypeSelect';
@@ -345,6 +346,11 @@ const OrderPanel = ({ mobileOpen = false, onCloseMobile }: OrderPanelProps = {})
         }
         throw err; // real server error → outer catch (Price Not Set, etc.)
       }
+
+      // The KOT poller is a safety net on a slow timer, so nudge it now
+      // that we know a ticket was just created — keeps kitchen printing
+      // prompt without polling the server every few seconds. (2026-09-24)
+      kickKotCheck();
 
       // Reset all states after successful order submission
       resetOrderState();

@@ -22,6 +22,7 @@ import { syncOrder, type SyncOrderRequest } from './order-api';
 import { useConnectivity } from './connectivity';
 import { extractFrappeServerError, parseFrappeServerMessages } from './utils';
 import { showToast } from '../components/ui/toast';
+import { kickKotCheck } from './kot-listener';
 
 export type OutboxStatus = 'pending' | 'sending' | 'failed';
 
@@ -141,6 +142,9 @@ export const useOutbox = create<OutboxState>((set, get) => {
           try {
             await syncOrder(entry.payload);
             remove(id);
+            // A drained order has already waited; don't make it wait for
+            // the next poll tick to reach the kitchen printer too.
+            kickKotCheck();
             showToast.success(`Order sent to the kitchen — ${entry.label}.`);
           } catch (err) {
             if (isNetworkError(err)) {
@@ -177,11 +181,33 @@ export const useOutbox = create<OutboxState>((set, get) => {
   };
 });
 
-// ── Reconnect drain wiring ─────────────────────────────────────────────
+// ── Drain wiring ────────────────────────────────────────────
 let started = false;
+let sweeper: number | null = null;
 
-/** Wire the outbox to drain when connectivity returns, and once on load
- * if we're already online with a backlog. Call once from main.tsx. */
+/*
+ * Why there is a timer as well as a transition (2026-09-24).
+ *
+ * The transition subscription below only fires on offline -> online. That
+ * covers an order queued while the POS KNEW it was offline. It does NOT
+ * cover the other way an order gets queued: OrderPanel also enqueues when
+ * a submit drops mid-flight while the app still believes it is online
+ * (see the `networkFailure` branch there). In that case there is no
+ * transition to ride, so the drain was never triggered - the order sat in
+ * localStorage indefinitely while the waiter had been told, in writing,
+ * that it would be sent automatically. Orders really were lost this way.
+ *
+ * The sweeper closes that hole: while online, retry pending entries on a
+ * slow timer regardless of how they got queued. `drain()` is already
+ * guarded (it no-ops when offline or already draining) and only touches
+ * `pending` entries, so a tick with an empty queue costs nothing and a
+ * server-rejected `failed` entry is still left alone for a manual retry.
+ */
+const SWEEP_MS = 30000;
+
+/** Wire the outbox to drain when connectivity returns, on a slow timer
+ * while online, and once on load if we're already online with a backlog.
+ * Call once from main.tsx. */
 export function initOutbox(): void {
   if (started || typeof window === 'undefined') return;
   started = true;
@@ -193,7 +219,24 @@ export function initOutbox(): void {
     }
   });
 
+  sweeper = window.setInterval(() => {
+    const { online } = useConnectivity.getState();
+    const { entries, draining } = useOutbox.getState();
+    if (!online || draining) return;
+    if (!entries.some((e) => e.status === 'pending')) return;
+    void useOutbox.getState().drain();
+  }, SWEEP_MS);
+
   if (useConnectivity.getState().online && useOutbox.getState().entries.length) {
     window.setTimeout(() => useOutbox.getState().drain(), 1500);
   }
+}
+
+/** Test/teardown helper - not used in production. */
+export function stopOutbox(): void {
+  if (sweeper !== null) {
+    clearInterval(sweeper);
+    sweeper = null;
+  }
+  started = false;
 }
