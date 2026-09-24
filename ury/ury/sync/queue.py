@@ -98,42 +98,54 @@ def due_rows(limit):
 
 
 def claim(row_name):
-	"""Take ownership of a row. True if it is ours to send.
+	"""Take ownership of a row. True only if WE took it.
 
-	A conditional UPDATE (not a read-then-write) followed by a read-back,
-	so that two overlapping passes — a slow run still going when the next
-	minute fires, or a manual trigger alongside the scheduler — do not both
-	pick up the same sale and waste a send on it.
+	Uses `SELECT ... FOR UPDATE` to lock the row, check its status and
+	update it inside one transaction. A concurrent claimer blocks at the
+	SELECT until we commit, then reads `Sending` and correctly returns
+	False. Same primitive Frappe itself uses for naming series
+	(`frappe/model/naming.py`, `getseries`).
 
-	⚠ Note what this deliberately does NOT rely on. An earlier version read
-	`frappe.db._cursor.rowcount` to see whether the UPDATE matched. That is
-	a private attribute, and getting it wrong in either direction is bad:
-	read it as always-zero and the queue stalls forever; always-nonzero and
-	every row is double-sent.
+	⚠ Two earlier versions of this were both wrong, in opposite ways, and
+	both are worth remembering:
 
-	More importantly, correctness here does not depend on the claim at all.
-	The receiver is idempotent — `URY Remote Sale` is keyed on
-	`<site>|<invoice>` and a repeat delivery returns `duplicate: 1` without
-	inserting. So the worst case if two workers ever raced past this guard
-	is one wasted HTTP request, not a sale booked twice at head office.
-	This is an optimisation; the receiver is the guarantee.
+	  1. Reading `frappe.db._cursor.rowcount` after a conditional UPDATE.
+	     Correct in behaviour, but a PRIVATE attribute — read it as
+	     always-zero and the queue stalls forever, always-nonzero and every
+	     row double-sends.
+	  2. A conditional UPDATE followed by reading the status back. This
+	     looks safe and is not: if another worker already holds the row,
+	     the UPDATE matches nothing but the read-back still sees `Sending`,
+	     so the second claimer ALSO returns True — precisely the
+	     double-send the claim exists to prevent. Caught by
+	     `test_sync_integration`'s "claiming twice fails".
+
+	Note this remains an optimisation, not the guarantee: the receiver is
+	idempotent (keyed `<site>|<invoice>`), so even if two workers somehow
+	both sent, head office books the sale once.
 	"""
+	locked = frappe.db.sql(
+		"""
+		SELECT status FROM `tabURY Sync Queue`
+		WHERE name = %s
+		FOR UPDATE
+		""",
+		(row_name,),
+		as_dict=True,
+	)
+	if not locked or not rules.is_claimable(locked[0].status):
+		return False
+
+	stamp = now_datetime()
 	frappe.db.sql(
 		"""
 		UPDATE `tabURY Sync Queue`
 		SET status = %s, claimed_at = %s, modified = %s
-		WHERE name = %s AND status IN (%s, %s)
+		WHERE name = %s
 		""",
-		(
-			rules.SENDING,
-			now_datetime(),
-			now_datetime(),
-			row_name,
-			rules.QUEUED,
-			rules.RETRYING,
-		),
+		(rules.SENDING, stamp, stamp, row_name),
 	)
-	return frappe.db.get_value(QUEUE_DOCTYPE, row_name, "status") == rules.SENDING
+	return True
 
 
 def mark_synced(row_name):
