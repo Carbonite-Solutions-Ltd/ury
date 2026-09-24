@@ -111,6 +111,16 @@ export function initConnectivityWatch(): void {
    * defeating the hysteresis.
    */
   const check = async (): Promise<void> => {
+    // Skipped entirely while the page is hidden. A backgrounded tab has
+    // its timers throttled and its fetches deferred, so a probe there
+    // measures BROWSER THROTTLING rather than the network — and counting
+    // that as a failure is what makes the POS appear to "go offline"
+    // while the tablet is locked, then announce "back online" the moment
+    // the waiter wakes it. A hidden page isn't being used, so its
+    // connectivity doesn't matter until it's visible; the
+    // visibilitychange listener below probes the instant it is.
+    // (2026-09-24, found while auditing the KDS for the same bug.)
+    if (typeof document !== 'undefined' && document.hidden) return;
     if (probing) return;
     probing = true;
     let ok = false;
@@ -141,6 +151,11 @@ export function initConnectivityWatch(): void {
   // lets the hysteresis above decide.
   window.addEventListener('offline', () => void check());
   window.addEventListener('online', () => void check());
+  // Waking the tablet is the moment we most need a fresh verdict, and the
+  // moment the throttled-probe skip above has left us without one.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) void check();
+  });
 
   // First check on boot, then poll to catch "connected but no internet".
   void check();

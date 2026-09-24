@@ -1132,6 +1132,10 @@
 
 <script>
 import { FrappeApp } from "frappe-js-sdk";
+import {
+  startConnectivityWatch,
+  stopConnectivityWatch,
+} from "../lib/connectivity";
 import Masonry from "masonry-layout";
 import io from "socket.io-client";
 import Header from "./Header.vue";
@@ -1276,6 +1280,9 @@ export default {
       service_policy_time: 0,
       _tickHandle: null,
       _refreshHandle: null,
+      // Guards the 30s board refresh against overlapping when the server
+      // is slow — see the interval in mounted(). (2026-09-24)
+      _refreshInFlight: false,
     };
   },
   methods: {
@@ -2365,8 +2372,16 @@ export default {
     },
   },
   mounted() {
-    window.addEventListener("online", this.handleOnline);
-    window.addEventListener("offline", this.handleOffline);
+    // Connectivity is decided by a real reachability probe with two-strike
+    // hysteresis, NOT by `navigator.onLine` — that signal flaps on Android
+    // whenever the screen sleeps or the device roams between access points,
+    // and every flap used to pop the red "You are Offline" toast followed by
+    // a green "You are online". The watcher only calls back on a SETTLED
+    // change, so these handlers can no longer be spammed. (2026-09-24)
+    startConnectivityWatch((online) => {
+      if (online) this.handleOnline();
+      else this.handleOffline();
+    });
     window.addEventListener("resize", this.measureStockPanel);
     document.addEventListener("click", this.hideAudioAlertMessage);
     // The screen is the last path segment: /Mosaic/<unit or department>.
@@ -2458,16 +2473,25 @@ export default {
     this._refreshHandle = setInterval(() => {
       if (document.hidden) return; // don't poll a backgrounded screen
       if (!this.boardActive) return; // picker / no-access screen
+      // Never let ticks overlap. On a slow server an unguarded poll stacks
+      // up, and each pending request holds one of the six connections a
+      // browser allows per origin on HTTP/1.1 — which starves everything
+      // else on the page, including the connectivity probe. Same failure
+      // the POS hit with its KOT poller. (2026-09-24)
+      if (this._refreshInFlight) return;
+      this._refreshInFlight = true;
       this.fetchKOT()
         .then(() => this.masonryLoading())
         .catch(() => {
           /* transient — the next tick tries again */
+        })
+        .finally(() => {
+          this._refreshInFlight = false;
         });
     }, 30000);
   },
   beforeUnmount() {
-    window.removeEventListener("online", this.handleOnline);
-    window.removeEventListener("offline", this.handleOffline);
+    stopConnectivityWatch();
     window.removeEventListener("resize", this.measureStockPanel);
     document.removeEventListener("click", this.hideAudioAlertMessage);
     if (this._tickHandle) clearInterval(this._tickHandle);
