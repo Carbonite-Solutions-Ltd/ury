@@ -219,8 +219,14 @@ async function checkForNewKots() {
         console.error(`❌ Failed to print KOT to ${printerName}:`, error);
       }
     }
-  } catch {
-    // Silently fail if no KOTs found
+  } catch (error) {
+    // Do NOT swallow this. A missing `@frappe.whitelist()` on
+    // `get_latest_kot` meant this whole function failed on EVERY tick, and
+    // because the error was discarded there was no log line anywhere and no
+    // symptom other than kitchen tickets never printing. Debug level keeps
+    // it quiet during a genuine outage (the poller retries every 8s) while
+    // still leaving a trace when something is actually wrong. (2026-09-24)
+    console.debug('[ury-pos] KOT check failed', error);
   }
 }
 

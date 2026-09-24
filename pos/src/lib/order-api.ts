@@ -1,4 +1,5 @@
 import { call } from './frappe-sdk';
+import { isTransientNetworkError, retryDelayFor } from './retry-rule';
 
 export interface POSInvoiceItem {
   name: string;
@@ -111,10 +112,39 @@ export interface SyncOrderRequest {
 }
 
 export const syncOrder = async (data: SyncOrderRequest) => {
-  const res = await call.post(
-    'ury.ury.doctype.ury_order.ury_order.sync_order',
-    data
-  );
+  // Retried here, not in the SDK proxy.
+  //
+  // `sync_order` is a POST, and the proxy deliberately never retries
+  // writes — a blind retry could create a second invoice and fire the
+  // kitchen twice. This ONE write is safe because it carries
+  // `idempotency_key`: the backend's first statement looks the key up and
+  // returns the already-created invoice instead of making another
+  // (ury_order.py, `_find_invoice_by_idempotency_key`).
+  //
+  // Worth doing because this is the most user-visible request in the app.
+  // On Starlink a submit that landed in a satellite-handover window failed
+  // outright, and the waiter got "order queued" (or, before the outbox,
+  // nothing) for a link that was working a quarter-second later. Retrying
+  // turns that into a silent success. Only retried when the key is present
+  // — without it a retry would NOT be idempotent. (2026-09-24)
+  const retryable = Boolean(data.idempotency_key);
+  let res: unknown;
+  let attempt = 0;
+  for (;;) {
+    try {
+      res = await call.post(
+        'ury.ury.doctype.ury_order.ury_order.sync_order',
+        data
+      );
+      break;
+    } catch (e) {
+      attempt += 1;
+      const delay =
+        retryable && isTransientNetworkError(e) ? retryDelayFor(attempt) : null;
+      if (delay === null) throw e;
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
   // `sync_order` used to refuse an edit by returning {status: "Failure"}
   // instead of raising. The caller discarded the response and toasted
   // "Order updated successfully" while nothing had been saved — the worst

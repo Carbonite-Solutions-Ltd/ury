@@ -2090,7 +2090,6 @@ def posOpening(terminal=None):
     return needs_open
 
 
-@frappe.whitelist()
 def _scope_invoices_for_opening_entry(opening_doc, include_earlier_shifts=False):
     """Return the SQL WHERE clause + params that match POS Invoices
     belonging to the given opening entry's shift.
@@ -3452,7 +3451,6 @@ def validate_pos_close(pos_profile, terminal=None):
 
     return {"status": "Success"}
 
-@frappe.whitelist(allow_guest=True)
 def _build_pu_print_jobs_for_kot(kot_doc, terminal=None):
     """Build QZ print jobs for one KOT in URY Production Unit mode.
 
@@ -3545,6 +3543,7 @@ def _build_pu_print_jobs_for_kot(kot_doc, terminal=None):
     return jobs, ("no_print_jobs" if not jobs else None)
 
 
+@frappe.whitelist()
 def get_latest_kot():
     """Get the latest unprinted KOT for the current user's POS Profile.
 

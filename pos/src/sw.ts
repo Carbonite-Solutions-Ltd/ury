@@ -117,6 +117,17 @@ registerRoute(
     url.origin === self.location.origin &&
     request.method === 'GET' &&
     !url.searchParams.has('__ping') &&
+    // NEVER cache the KOT discovery poll. Its response carries print jobs
+    // with pre-rendered HTML, and the "already printed?" guard on the
+    // client (`lastCheckedKot`) is in-memory and resets on reload. A cached
+    // 200 served during an outage therefore re-fires an ALREADY PRINTED
+    // ticket to QZ — and QZ is on the LAN so the print succeeds, while the
+    // mark-printed call back to the server fails. The kitchen gets the same
+    // order twice and the server never learns. (2026-09-24)
+    !url.pathname.startsWith('/api/method/ury.ury_pos.api.get_latest_kot') &&
+    !url.pathname.startsWith(
+      '/api/method/ury.ury_pos.api.print_pending_kots_for_invoice'
+    ) &&
     (url.pathname.startsWith('/api/method/ury.') ||
       url.pathname === '/api/method/frappe.auth.get_logged_user'),
   new NetworkFirst({
