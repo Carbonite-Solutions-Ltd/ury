@@ -1366,6 +1366,14 @@ export default {
               this.audio_alert = msg.audio_alert;
               this.daily_order_number = msg.daily_order_number;
               this.kds_routing_mode = msg.kds_routing_mode || "Menu Course";
+              // Cache the branch: the realtime channel names are derived
+              // from it, and without it an offline boot cannot even name the
+              // channel to subscribe to. See restoreCachedBranch(). (2026-09-24)
+              try {
+                localStorage.setItem("ury_kds_branch", this.branch || "");
+              } catch (e) {
+                /* private mode / storage disabled — non-fatal */
+              }
               this.kot_channel = `kot_update_${this.branch}_${this.production}`;
               this.change_channel = `kot_change_resolved_${this.branch}_${this.production}`;
               this.cancel_channel = `kot_cancel_requested_${this.branch}_${this.production}`;
@@ -1386,11 +1394,20 @@ export default {
               resolve();
             })
             .catch((error) => {
+              // RESOLVE, don't reject. The boot path in mounted() subscribes
+              // to the realtime KOT channel inside this promise's .then().
+              // Rejecting here meant a kitchen screen that booted during an
+              // outage never ran that block — so it subscribed to NOTHING and
+              // stayed permanently deaf, even after the network came back,
+              // until somebody reloaded it while online. That is a silent
+              // "kitchen never sees the order" failure. The 30s safety-net
+              // poll then repopulates the board on its own. (2026-09-24)
               console.error(error);
-              reject(error);
+              resolve();
             });
         } catch (error) {
-          reject(error);
+          console.error(error);
+          resolve();
         }
       });
     },
@@ -1425,6 +1442,26 @@ export default {
     // Cooks want their own running order. The chosen sequence is kept in
     // localStorage per production, so a reload (or the 30s poll) doesn't
     // shuffle the board back.
+    /**
+     * Rebuild the realtime channel names from the branch cached on the last
+     * successful fetch, so a screen that boots offline still subscribes and
+     * wakes up by itself when the connection returns. A fresh fetch
+     * overwrites these with authoritative values. (2026-09-24)
+     */
+    restoreCachedBranch() {
+      if (this.branch) return;
+      let cached = "";
+      try {
+        cached = localStorage.getItem("ury_kds_branch") || "";
+      } catch (e) {
+        cached = "";
+      }
+      if (!cached) return;
+      this.branch = cached;
+      this.kot_channel = `kot_update_${cached}_${this.production}`;
+      this.change_channel = `kot_change_resolved_${cached}_${this.production}`;
+      this.cancel_channel = `kot_cancel_requested_${cached}_${this.production}`;
+    },
     orderStorageKey() {
       return "ury_kds_order_" + (this.production || "all");
     },
@@ -2389,6 +2426,11 @@ export default {
     const parts = window.location.pathname.split("/").filter(Boolean);
     const last = decodeURIComponent(parts[parts.length - 1] || "");
     this.production = last.toLowerCase() === "mosaic" ? "" : last;
+    // Derive the realtime channels from the LAST KNOWN branch before the
+    // first kot_list call. If the screen boots with no connection that call
+    // fails, and without this the channel names would be empty strings and
+    // the board would subscribe to nothing. (2026-09-24)
+    this.restoreCachedBranch();
     const self = this;
     window.addEventListener("resize", this.masonryLoading());
     this.masonryLoading();
