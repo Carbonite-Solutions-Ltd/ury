@@ -53,6 +53,7 @@ doctype_js = {
     "User": "public/js/user_biometric_enrollment.js",
     "Item": "public/js/item_add_to_menu.js",
     "POS Invoice": "public/js/pos_invoice_attribution.js",
+    "URY Sync Settings": "public/js/ury_sync_settings.js",
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}

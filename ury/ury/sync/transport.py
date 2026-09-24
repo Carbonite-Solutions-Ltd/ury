@@ -24,6 +24,13 @@ import frappe
 from frappe.utils import now_datetime
 
 RECEIVER_METHOD = "ury.ury.sync.receiver.receive_sale"
+PING_METHOD = "ury.ury.sync.receiver.ping"
+
+# A core method every Frappe site has, used to test credentials on their
+# own — separately from whether ExPOS is installed. That separation is what
+# lets the connection test say "the key is wrong" instead of "something is
+# wrong", which is the whole point of having a test button.
+AUTH_PROBE_METHOD = "frappe.auth.get_logged_user"
 
 
 class PermanentRejection(Exception):
@@ -62,6 +69,34 @@ def _short(body, limit=400):
 	return text[:limit]
 
 
+def remote_base(settings):
+	"""The remote site root, with any trailing slash removed."""
+	return (settings.remote_url or "").rstrip("/")
+
+
+def remote_method_url(settings, method):
+	return f"{remote_base(settings)}/api/method/{method}"
+
+
+def auth_headers(settings):
+	"""Frappe token auth for the configured key pair.
+
+	⚠ Shared with the connection test on purpose. If the test built its own
+	header it could pass while a real push failed (or the reverse), which
+	would make the test worse than having none.
+	"""
+	secret = settings.get_password("remote_api_secret", raise_exception=False)
+	return {
+		"Authorization": f"token {settings.remote_api_key}:{secret}",
+		"Content-Type": "application/json",
+		"Accept": "application/json",
+	}
+
+
+def request_timeout(settings):
+	return int(settings.connection_timeout_seconds or 30)
+
+
 def push_sale(payload, settings):
 	"""Deliver one sale payload. Raises PermanentRejection, or any other
 	Exception for a transient failure.
@@ -70,14 +105,9 @@ def push_sale(payload, settings):
 	"""
 	import requests
 
-	url = f"{(settings.remote_url or '').rstrip('/')}/api/method/{RECEIVER_METHOD}"
-	secret = settings.get_password("remote_api_secret", raise_exception=False)
-	headers = {
-		"Authorization": f"token {settings.remote_api_key}:{secret}",
-		"Content-Type": "application/json",
-		"Accept": "application/json",
-	}
-	timeout = int(settings.connection_timeout_seconds or 30)
+	url = remote_method_url(settings, RECEIVER_METHOD)
+	headers = auth_headers(settings)
+	timeout = request_timeout(settings)
 
 	try:
 		response = requests.post(

@@ -87,6 +87,46 @@ def receive_sale(payload):
 	return {"status": "accepted", "remote_key": key, "duplicate": 0}
 
 
+@frappe.whitelist()
+def ping():
+	"""Answer "is this a usable cloud site for ExPOS sync?"
+
+	Called by a branch's connection test, never by the delivery path.
+
+	⚠ This deliberately REPORTS problems instead of throwing them. An
+	earlier instinct was to reuse `_assert_not_a_branch_site()` here, which
+	would have made a misconfigured remote look identical to an unreachable
+	one — the test would say "something is wrong" where it could have said
+	"that site is itself a branch and will refuse your sales." Diagnosing is
+	the entire job of this endpoint, so every check returns a field.
+
+	Reaching this at all already proves four things the caller cannot
+	otherwise distinguish: the site is up, the credentials are valid, ExPOS
+	is installed, and this app is new enough to contain the sync module.
+	"""
+	mirror_ready = bool(frappe.db.exists("DocType", MIRROR_DOCTYPE))
+
+	sync_enabled = 0
+	try:
+		settings = frappe.get_cached_doc("URY Sync Settings")
+		sync_enabled = 1 if settings.get("enabled") else 0
+	except Exception:
+		# No settings doctype yet (ExPOS installed but not migrated). Not an
+		# error here — `mirror_ready` is what the caller acts on.
+		pass
+
+	return {
+		"ok": 1,
+		"app": "ury",
+		"site": frappe.local.site,
+		"payload_version": payload_builder.PAYLOAD_VERSION,
+		"mirror_doctype_ready": int(mirror_ready),
+		"sync_enabled": sync_enabled,
+		# The one field a branch actually needs: may I send you sales?
+		"can_receive": int(mirror_ready and not sync_enabled),
+	}
+
+
 def _assert_not_a_branch_site():
 	"""A site that pushes must not also receive.
 
