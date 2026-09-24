@@ -3,25 +3,101 @@ import { printKotWithQz } from './print-qz';
 let pollingInterval: NodeJS.Timeout | null = null;
 let lastCheckedKot: string | null = null;
 
+/*
+ * Poll cadence + request discipline (2026-09-24).
+ *
+ * This poller used to fire every 3s with a bare `fetch()` that had NO
+ * timeout and NO overlap guard. On a loaded server that is a request
+ * amplifier: when `get_latest_kot` takes longer than the interval, the
+ * ticks stack up and each pending request holds one of the browser's
+ * SIX allowed connections per origin (the client's server is HTTP/1.1,
+ * so that ceiling is real). Once the pool is starved, OTHER requests
+ * can't get a socket at all — including the connectivity heartbeat in
+ * connectivity.ts, whose probe then times out and makes the POS declare
+ * itself offline on a perfectly good connection. That is what produced
+ * the "keeps going offline and online" flapping.
+ *
+ * Three independent guards now, and all three matter:
+ *   1. `inFlight`  — never more than ONE discovery request per tablet at
+ *      a time, so the pool can never be starved by this poller no matter
+ *      how slow the server gets.
+ *   2. `POLL_TIMEOUT_MS` — a stuck request is abandoned instead of
+ *      occupying a connection indefinitely.
+ *   3. `POLL_INTERVAL_MS` 3s → 8s — cuts the steady request rate from
+ *      20/min to ~7/min per tablet, which matters on a shared server.
+ *
+ * The slower interval does NOT slow the kitchen down, because
+ * `kickKotCheck()` fires a check immediately after an order is rung
+ * (see OrderPanel). The timer is now a safety net, not the primary
+ * trigger — which is the right shape for this.
+ */
+const POLL_INTERVAL_MS = 8000;
+const POLL_TIMEOUT_MS = 12000;
+
+/** True while a discovery request is outstanding. Guards against overlap. */
+let inFlight = false;
+
+/**
+ * Fetch that abandons a stuck request instead of holding a connection
+ * slot forever. A hung KOT poll is exactly what starves the pool.
+ */
+async function fetchWithTimeout(url: string, ms: number): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+/**
+ * Run one discovery pass, unless one is already running.
+ *
+ * Returns immediately when a request is still outstanding — that skip is
+ * the whole point: a slow server must not be able to queue up work.
+ */
+async function runKotCheck(): Promise<void> {
+  if (inFlight) return;
+  inFlight = true;
+  try {
+    await checkForNewKots();
+  } catch (error) {
+    console.error('Error checking for KOTs:', error);
+  } finally {
+    inFlight = false;
+  }
+}
+
+/**
+ * Check for printable KOTs right now, without waiting for the next tick.
+ * Called after an order is successfully rung so the kitchen ticket still
+ * prints promptly even though the timer is slower.
+ */
+export function kickKotCheck(): void {
+  if (typeof window === 'undefined') return;
+  void runKotCheck();
+}
+
 export function setupKotListener() {
   if (typeof window === 'undefined') return;
+  // Idempotent. Without this, every re-run of the effect in App.tsx that
+  // calls it would orphan the previous interval — it stayed running,
+  // unreachable, and the polling load compounded across a shift.
+  if (pollingInterval) return;
 
   console.log('✅ KOT polling listener initialized');
 
-  // Poll every 3 seconds for new KOTs
-  pollingInterval = setInterval(async () => {
-    try {
-      await checkForNewKots();
-    } catch (error) {
-      console.error('Error checking for KOTs:', error);
-    }
-  }, 3000);
+  pollingInterval = setInterval(runKotCheck, POLL_INTERVAL_MS);
 }
 
 async function checkForNewKots() {
   try {
     // Get the latest KOT
-    const response = await fetch('/api/method/ury.ury_pos.api.get_latest_kot');
+    const response = await fetchWithTimeout(
+      '/api/method/ury.ury_pos.api.get_latest_kot',
+      POLL_TIMEOUT_MS
+    );
     const result = await response.json();
 
     if (!result?.message) return;
@@ -329,4 +405,8 @@ export function stopKotListener() {
     pollingInterval = null;
     console.log('🛑 KOT polling listener stopped');
   }
+  // Reset the guard too. If a stop landed while a request was in flight,
+  // a stale `true` here would make every future tick return early and
+  // the poller would go silently dead after a restart.
+  inFlight = false;
 }
