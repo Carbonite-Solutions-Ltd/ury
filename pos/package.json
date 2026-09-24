@@ -9,7 +9,8 @@
     "copy-html-entry": "cp ../ury/public/pos/index.html ../ury/www/pos.html",
     "copy-sw": "cp ../ury/public/pos/sw.js ../ury/www/sw-min.js",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:unit": "node --test test/"
   },
   "dependencies": {
     "@radix-ui/react-select": "^2.2.5",
