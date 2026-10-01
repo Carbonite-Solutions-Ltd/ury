@@ -40,8 +40,9 @@ import {
   getGeofenceConfig,
   validateGeofence,
 } from './lib/geofence-api';
-import { Monitor, MapPin, MapPinOff, ShieldAlert } from 'lucide-react';
+import { Monitor, MapPin, MapPinOff, ShieldAlert, Building2 } from 'lucide-react';
 import { extractFrappeServerError } from './lib/utils';
+import { groupTerminalsByBranch } from './lib/branch-scope';
 
 
 function App() {
@@ -104,7 +105,6 @@ function App() {
           setTerminal(config);
           setTerminalConfig(config);
           sessionStorage.removeItem('posProfile');
-          sessionStorage.removeItem('menuCategories');
         } catch (err) {
           // Saved terminal no longer valid, or this user has no access to
           // its branch (2026-09-19) — show setup, saying why.
@@ -404,6 +404,14 @@ function TerminalSetupScreen({
   const [selected, setSelected] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
 
+  // Grouped by branch. A user on two branches used to get every till in one
+  // flat list, which is how someone registers a device to the wrong outlet —
+  // and each branch prices the same item differently. The heading only
+  // appears when there is more than one branch, so the common single-branch
+  // case is unchanged.
+  const branchGroups = groupTerminalsByBranch(terminals);
+  const showBranchHeadings = branchGroups.length > 1;
+
   useEffect(() => {
     getTerminals()
       .then((list) => {
@@ -503,8 +511,19 @@ function TerminalSetupScreen({
           )}
 
           {/* Terminal list */}
-          <div className="space-y-3 mb-8">
-            {terminals.map((t) => {
+          <div className="mb-8">
+            {branchGroups.map((group) => (
+              <div key={group.branch} className="mb-6 last:mb-0">
+                {showBranchHeadings && (
+                  <div className="flex items-center gap-1.5 mb-2 px-1">
+                    <Building2 className="w-4 h-4 text-gray-400" />
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                      {group.branch}
+                    </h3>
+                  </div>
+                )}
+                <div className="space-y-3">
+            {group.terminals.map((t) => {
               const unconfigured = !t.pos_profile;
               const isSelected = selected === t.terminal;
               return (
@@ -544,7 +563,7 @@ function TerminalSetupScreen({
                     </div>
                     <div className="text-sm text-gray-500 truncate">
                       {t.room}
-                      {t.branch && ` · ${t.branch}`}
+                      {!showBranchHeadings && t.branch && ` · ${t.branch}`}
                     </div>
                     {t.pos_profile ? (
                       <div className="text-xs text-gray-400 truncate mt-0.5">
@@ -564,6 +583,9 @@ function TerminalSetupScreen({
                 </button>
               );
             })}
+                </div>
+              </div>
+            ))}
           </div>
 
           {/* Confirm */}

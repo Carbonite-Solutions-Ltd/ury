@@ -3,7 +3,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { storage } from '../lib/storage';
 import { getRestaurantMenu, getAggregatorMenu, MenuItem as APIMenuItem } from '../lib/menu-api';
 import { getCurrencyInfo, PosProfileCombined, getCombinedPosProfile } from '../lib/pos-profile-api';
-import { getMenuCourses } from '../lib/menu-course-api';
+import { deriveCategories, resolveSelectedCategory } from '../lib/menu-categories';
+import { offlineMenuKeys } from '../lib/branch-scope';
 import { getCustomerGroups, getCustomerTerritories } from '../lib/customer-api';
 import { DEFAULT_ORDER_TYPE, OrderType } from '../data/order-types';
 import { getTableOrder, TableOrder, type SyncOrderRequest } from '../lib/order-api';
@@ -13,6 +14,23 @@ import { Waiter, loadWaitersWithCache } from '../lib/waiter-api';
 // Constants
 const MAX_QUANTITY = 99;
 const MIN_QUANTITY = 0;
+
+/**
+ * The category rail is DERIVED from the menu, never fetched separately.
+ *
+ * Always set the two together through this helper. Setting `menuItems`
+ * alone would leave the rail describing the previous menu — which is the
+ * whole class of bug being fixed (0-count rows, and another outlet's
+ * courses showing on this terminal). See lib/menu-categories.ts.
+ */
+const withDerivedCategories = (menuItems: MenuItem[], selectedCategory: string) => {
+  const categories = deriveCategories(menuItems);
+  return {
+    menuItems,
+    categories,
+    selectedCategory: resolveSelectedCategory(selectedCategory, categories),
+  };
+};
 
 // Custom error class for cart operations
 class CartError extends Error {
@@ -155,7 +173,6 @@ interface POSState {
 export interface POSStore extends POSState {
   fetchMenuItems: () => Promise<void>;
   fetchAggregatorMenu: (aggregator: string) => Promise<void>;
-  fetchCategories: () => Promise<void>;
   fetchPaymentModes: () => Promise<void>;
   addToOrder: (item: OrderItem) => Promise<void>;
   removeFromOrder: (uniqueId: string) => Promise<void>;
@@ -372,7 +389,6 @@ export const usePOSStore = create<POSStore>((set, get) => ({
       await Promise.allSettled([
         get().fetchPosProfile(),
         get().fetchMenuItems(),
-        get().fetchCategories(),
         get().fetchPaymentModes(),
       ]);
 
@@ -470,10 +486,19 @@ export const usePOSStore = create<POSStore>((set, get) => ({
     if (!posProfile?.restaurant) return;
 
     // Durable offline copies (localStorage): the exact menu for this
-    // context + the last menu loaded. Lets the waiter still browse the
-    // menu with no internet even if the SW runtime cache missed it.
-    const CTX_KEY = `ury_offline_menu:${posProfile.name}:${selectedRoom || ''}:${selectedOrderType}`;
-    const LAST_KEY = 'ury_offline_menu_last';
+    // context + the last menu loaded for THIS PROFILE. Lets the waiter
+    // still browse the menu with no internet even if the SW runtime cache
+    // missed it.
+    //
+    // ⚠ Both keys are profile-scoped by offlineMenuKeys(). The fallback
+    // used to be a single shared 'ury_offline_menu_last', which on a
+    // two-branch user served the other branch's menu — and its prices —
+    // whenever the fetch failed right after a switch. See lib/branch-scope.ts.
+    const { ctxKey: CTX_KEY, lastKey: LAST_KEY } = offlineMenuKeys(
+      posProfile.name,
+      selectedRoom,
+      selectedOrderType
+    );
 
     try {
       set({ menuLoading: true, error: null });
@@ -493,7 +518,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
         tax_rate: 0,
       }));
 
-      set({ menuItems });
+      set(withDerivedCategories(menuItems, get().selectedCategory));
       try {
         const serialized = JSON.stringify(menuItems);
         storage.setItem(CTX_KEY, serialized);
@@ -507,7 +532,10 @@ export const usePOSStore = create<POSStore>((set, get) => ({
       const durable = storage.getItem(CTX_KEY) || storage.getItem(LAST_KEY);
       if (durable) {
         try {
-          set({ menuItems: JSON.parse(durable), error: null });
+          set({
+            ...withDerivedCategories(JSON.parse(durable), get().selectedCategory),
+            error: null,
+          });
           return;
         } catch {
           /* corrupt cache — fall through */
@@ -539,47 +567,10 @@ export const usePOSStore = create<POSStore>((set, get) => ({
         category: item.course
       }));
 
-      set({ menuItems, menuLoading: false });
+      set({ ...withDerivedCategories(menuItems, get().selectedCategory), menuLoading: false });
     } catch (error) {
       set({ error: 'Failed to load aggregator menu', menuLoading: false });
       console.error('Error loading aggregator menu:', error);
-    }
-  },
-
-  fetchCategories: async () => {
-    // Durable offline copy (localStorage). getMenuCourses hits the
-    // /api/resource REST path which the service worker does NOT cache, and
-    // App.tsx clears the sessionStorage 'menuCategories' cache on every
-    // terminal resolve — so without this the POS shows "failed to load
-    // menu categories" on an offline reload. localStorage survives both.
-    const DURABLE_KEY = 'ury_offline_categories';
-    try {
-      const cached = sessionStorage.getItem('menuCategories');
-      if (cached) {
-        const categories = JSON.parse(cached);
-        set({ categories });
-        return;
-      }
-
-      const courses = await getMenuCourses();
-      const categoryNames = courses.map(course => course.name);
-      sessionStorage.setItem('menuCategories', JSON.stringify(categoryNames));
-      storage.setItem(DURABLE_KEY, JSON.stringify(categoryNames));
-      set({ categories: categoryNames });
-    } catch (error) {
-      // Offline / fetch failed — fall back to the last durable copy so the
-      // POS still renders its categories with no internet.
-      const durable = storage.getItem(DURABLE_KEY);
-      if (durable) {
-        try {
-          set({ categories: JSON.parse(durable), error: null });
-          return;
-        } catch {
-          /* corrupt cache — fall through to the error */
-        }
-      }
-      set({ error: 'Failed to load menu categories' });
-      throw error;
     }
   },
 
@@ -1041,6 +1032,7 @@ export const usePOSStore = create<POSStore>((set, get) => ({
     selectedItem: null,
     orderLoading: false,
     menuItems: [],
+    categories: [],
     error: null,
     selectedOrderType: DEFAULT_ORDER_TYPE,
     orderComment: '',
