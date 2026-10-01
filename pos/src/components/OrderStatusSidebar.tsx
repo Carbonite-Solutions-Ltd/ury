@@ -192,7 +192,13 @@ const OrderStatusSidebar = ({
                   onClick={() => setSelectedStatus(status.value as OrderStatusType)}
                   variant="ghost"
                   className={cn(
-                    'w-full flex items-center justify-between px-3 py-2.5 text-sm font-medium transition-all duration-200 group relative',
+                    // h-auto overrides the Button primitive's fixed h-10 —
+                    // "Incoming Transfers" with a badge wraps in this w-64
+                    // rail and would otherwise print over the row beneath.
+                    // Same fix as the POS category rail; see Sidebar.tsx.
+                    'w-full flex items-center justify-between gap-2 px-3 py-2.5',
+                    'h-auto min-h-[2.5rem] text-sm font-medium text-left',
+                    'transition-all duration-200 group relative',
                     selectedStatus === status.value
                       ? 'bg-white text-gray-900 shadow-sm font-semibold'
                       : 'text-gray-700 hover:bg-white/60 hover:text-gray-900'
@@ -202,10 +208,10 @@ const OrderStatusSidebar = ({
                   {selectedStatus === status.value && (
                     <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-blue-600 rounded-r-full" />
                   )}
-                  <div className="flex items-center gap-3 ml-1">
+                  <div className="flex items-center gap-3 ml-1 min-w-0 flex-1">
                     <FileText
                       className={cn(
-                        'w-4 h-4',
+                        'w-4 h-4 flex-shrink-0',
                         hasBadge
                           ? isIncoming
                             ? 'text-indigo-500'
@@ -213,12 +219,14 @@ const OrderStatusSidebar = ({
                           : 'text-gray-500'
                       )}
                     />
-                    <span>{status.label}</span>
+                    <span className="text-start leading-snug break-words">
+                      {status.label}
+                    </span>
                   </div>
                   {hasBadge && (
                     <span
                       className={cn(
-                        'min-w-[1.5rem] px-1.5 py-0.5 text-xs font-bold rounded-full text-white',
+                        'shrink-0 min-w-[1.5rem] px-1.5 py-0.5 text-xs font-bold rounded-full text-white',
                         isIncoming ? 'bg-indigo-500' : 'bg-orange-500'
                       )}
                       title={
