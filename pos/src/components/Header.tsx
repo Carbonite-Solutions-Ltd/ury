@@ -12,6 +12,7 @@ import {
   Fingerprint,
   KeyRound,
   Settings as SettingsIcon,
+  Building2,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Button, Input } from './ui';
@@ -20,7 +21,9 @@ import { usePOSStore } from '../store/pos-store';
 import type { RootState } from '../store/root-store';
 import { logout } from '../lib/auth-api';
 import { showToast } from './ui/toast';
-import { clearSavedTerminal } from '../lib/terminal-api';
+import { getTerminals } from '../lib/terminal-api';
+import { canSwitchTerminal } from '../lib/branch-scope';
+import TerminalSwitchDialog from './TerminalSwitchDialog';
 import {
   canAccessDeskAndTerminalSwitch,
   canAccessSettings,
@@ -40,6 +43,11 @@ const Header = () => {
   const [closingEntryName, setClosingEntryName] = useState<string | null>(null);
   const [endShiftLoading, setEndShiftLoading] = useState(false);
   const [showResetPin, setShowResetPin] = useState(false);
+  const [showTerminalSwitch, setShowTerminalSwitch] = useState(false);
+  // Whether this user has anywhere to switch TO. Fetched once; the answer
+  // decides whether the control exists at all, so it can't wait until the
+  // menu is opened.
+  const [canSwitchTill, setCanSwitchTill] = useState(false);
   const canSeeAdminActions = canAccessDeskAndTerminalSwitch(user);
   const canOpenSettings = canAccessSettings(user);
   // Waiter-only users don't manage shifts — the cashier opens/closes the day.
@@ -55,6 +63,7 @@ const Header = () => {
     terminalPosProfile,
     terminalDescription,
     selectedRoom,
+    activeOrders,
   } = usePOSStore();
   const { orderSearchQuery, setOrderSearchQuery } = useRootStore();
   const [orderSearchInput, setOrderSearchInput] = useState(orderSearchQuery);
@@ -139,10 +148,29 @@ const Header = () => {
     window.location.reload();
   };
 
-  const handleChangeTerminal = () => {
-    clearSavedTerminal();
-    sessionStorage.clear();
-    window.location.reload();
+  // Does this user have more than one till? Decides whether the switcher is
+  // offered. Deliberately NOT role-gated (it used to be captain+): a cashier
+  // listed on two branches has a real reason to switch and had no way to.
+  // The server re-checks branch access on the switch itself.
+  useEffect(() => {
+    let cancelled = false;
+    getTerminals()
+      .then((list) => {
+        if (!cancelled) setCanSwitchTill(canSwitchTerminal(list));
+      })
+      .catch(() => {
+        // Failing to list tills just means no switcher; every other POS
+        // screen still works, so this is not worth an error here.
+        if (!cancelled) setCanSwitchTill(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const openTerminalSwitch = () => {
+    setShowUserMenu(false);
+    setShowTerminalSwitch(true);
   };
 
   const handleEndShift = async () => {
@@ -195,9 +223,34 @@ const Header = () => {
             // at a glance exactly what context they're ringing in.
             // Hidden on small screens (info is in the avatar dropdown).
             // See CLAUDE.md "Fixes log" 2026-04-08.
+            // Clicking the chip is the discoverable way to switch; the
+            // user menu carries the same action for completeness.
             <span
-              className="ml-3 hidden lg:inline-flex items-center gap-1.5 text-xs font-medium text-gray-700 bg-gray-100 border border-gray-200 rounded-md px-2.5 py-1"
-              title={terminalDescription || undefined}
+              role={canSwitchTill ? 'button' : undefined}
+              tabIndex={canSwitchTill ? 0 : undefined}
+              onClick={canSwitchTill ? openTerminalSwitch : undefined}
+              onKeyDown={
+                canSwitchTill
+                  ? (e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        openTerminalSwitch();
+                      }
+                    }
+                  : undefined
+              }
+              className={[
+                'ml-3 hidden lg:inline-flex items-center gap-1.5 text-xs font-medium',
+                'text-gray-700 bg-gray-100 border border-gray-200 rounded-md px-2.5 py-1',
+                canSwitchTill
+                  ? 'cursor-pointer hover:bg-gray-200 hover:border-gray-300 transition-colors'
+                  : '',
+              ].join(' ')}
+              title={
+                canSwitchTill
+                  ? `${terminalDescription ? terminalDescription + ' — ' : ''}Click to switch till`
+                  : terminalDescription || undefined
+              }
             >
               <Monitor className="w-3 h-3 text-gray-500" />
               <span>{terminalName}</span>
@@ -282,20 +335,25 @@ const Header = () => {
                   )}
                 </div>
                 <div className="py-2">
-                  {/* Change Terminal + Switch to Desk are admin-ish
-                      actions — cashiers don't see them. Captains,
-                      managers, and admins do. See role-utils.ts
+                  {/* Switch Till is offered to ANYONE with more than one
+                      accessible till — a cashier listed on two branches
+                      needs it most, and used to have no way to switch. The
+                      server re-checks branch access on the switch itself. */}
+                  {canSwitchTill && (
+                    <Button
+                      variant="ghost"
+                      className="flex justify-start items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
+                      onClick={openTerminalSwitch}
+                    >
+                      <Building2 className="w-4 h-4 mr-3" />
+                      Switch Till
+                    </Button>
+                  )}
+                  {/* Desk access and biometric enrolment stay admin-ish —
+                      cashiers don't see them. See role-utils.ts
                       canAccessDeskAndTerminalSwitch. */}
                   {canSeeAdminActions && (
                     <>
-                      <Button
-                        variant="ghost"
-                        className="flex justify-start items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
-                        onClick={handleChangeTerminal}
-                      >
-                        <MapPin className="w-4 h-4 mr-3" />
-                        Change Terminal
-                      </Button>
                       <Button
                         variant="ghost"
                         className="flex justify-start items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
@@ -405,6 +463,12 @@ const Header = () => {
         />
       )}
       <ResetPinDialog open={showResetPin} onClose={() => setShowResetPin(false)} />
+      <TerminalSwitchDialog
+        isOpen={showTerminalSwitch}
+        onClose={() => setShowTerminalSwitch(false)}
+        currentTerminal={terminalName}
+        cartItemCount={activeOrders?.length || 0}
+      />
     </header>
   );
 };

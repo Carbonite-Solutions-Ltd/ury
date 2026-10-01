@@ -10,7 +10,7 @@
     "copy-sw": "cp ../ury/public/pos/sw.js ../ury/www/sw-min.js",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test:unit": "node --test test/"
+    "test:unit": "node --test \"test/**/*.test.mjs\""
   },
   "dependencies": {
     "@radix-ui/react-select": "^2.2.5",
