@@ -2090,6 +2090,90 @@ def posOpening(terminal=None):
     return needs_open
 
 
+# ---------------------------------------------------------------------------
+# Which invoice statuses a shift close must sweep up
+# ---------------------------------------------------------------------------
+# Shared by `_get_shift_invoice_breakdown` (what a close ATTACHES) and
+# `orphaned_unconsolidated_invoices` (what the desk-close guard refuses to
+# leave BEHIND). The two MUST agree. If the guard's idea of "should have been
+# consolidated" were wider than the close's idea of "what I sweep", a POS
+# close would attach everything it knows about and then be refused by the
+# guard for the remainder — an unclosable shift, which is worse than the bug
+# the guard exists to prevent. One constant, so they cannot drift.
+CLOSE_ELIGIBLE_INVOICE_STATUSES = (
+    "Paid",
+    "Consolidated",
+    "Return",
+    # Unpaid / Partly Paid / Overdue carry ON-ACCOUNT bills (2026-08-24): a
+    # submitted POS Invoice that was not fully tendered has one of these, and
+    # excluding them made it invisible to the close. Do NOT narrow this back.
+    "Unpaid",
+    "Partly Paid",
+    "Overdue",
+)
+
+# Literal, hardcoded values — safe to interpolate into SQL. Never build this
+# from anything a caller supplies.
+_CLOSE_STATUS_SQL = ", ".join("'{0}'".format(s) for s in CLOSE_ELIGIBLE_INVOICE_STATUSES)
+
+
+def split_orphaned_invoices(unconsolidated_rows, attached_names):
+    """Pure: which unconsolidated invoices a closing entry leaves behind.
+
+    `unconsolidated_rows` is a list of dicts carrying at least ``name`` and
+    ``grand_total``; `attached_names` is whatever the closing entry already
+    has in its ``pos_invoices`` child table.
+
+    Returns ``(orphans, total)`` — orphans in input order, total being their
+    summed ``grand_total``.
+
+    Deliberately free of `frappe` so the guard's arithmetic is unit-testable
+    without a bench. See test_pos_close_guard.py.
+    """
+    attached = {n for n in (attached_names or []) if n}
+    orphans = [
+        row
+        for row in (unconsolidated_rows or [])
+        if row.get("name") and row.get("name") not in attached
+    ]
+    total = 0.0
+    for row in orphans:
+        try:
+            total += float(row.get("grand_total") or 0)
+        except (TypeError, ValueError):
+            # A non-numeric grand_total must not stop the guard from
+            # reporting the COUNT, which is the part that matters.
+            pass
+    return orphans, total
+
+
+def orphaned_unconsolidated_invoices(pos_profile, attached_names=None):
+    """Submitted, unconsolidated invoices on `pos_profile` not attached here.
+
+    Uses the WIDE scope on purpose — profile + unconsolidated, with no shift
+    or timestamp window — which is exactly what `_get_shift_invoice_breakdown`
+    uses for submitted invoices. An invoice that missed its own shift's close
+    must stay sweepable forever, or its money never reaches the books.
+    """
+    if not pos_profile:
+        return [], 0.0
+
+    rows = frappe.db.sql(
+        f"""
+        SELECT pi.name, pi.grand_total, pi.posting_date
+        FROM `tabPOS Invoice` AS pi
+        WHERE pi.pos_profile = %s
+          AND pi.docstatus = 1
+          AND (pi.consolidated_invoice IS NULL OR pi.consolidated_invoice = '')
+          AND pi.status IN ({_CLOSE_STATUS_SQL})
+        ORDER BY pi.posting_date ASC, pi.creation ASC
+        """,
+        (pos_profile,),
+        as_dict=True,
+    )
+    return split_orphaned_invoices(rows, attached_names)
+
+
 @frappe.whitelist()
 def _scope_invoices_for_opening_entry(opening_doc, include_earlier_shifts=False):
     """Return the SQL WHERE clause + params that match POS Invoices
@@ -2197,10 +2281,7 @@ def _get_shift_invoice_breakdown(opening_doc):
           -- Entry, never consolidated, and rotted as an orphan with the
           -- receivable never reaching the books. Do NOT narrow this back
           -- to ('Paid','Consolidated','Return').
-          AND pi.status IN (
-            'Paid', 'Consolidated', 'Return',
-            'Unpaid', 'Partly Paid', 'Overdue'
-          )
+          AND pi.status IN ({_CLOSE_STATUS_SQL})
         ORDER BY pi.creation ASC
         """,
         tuple(wide_params),
