@@ -78,15 +78,26 @@ def refuse_close_that_orphans_invoices(doc):
     is a silent one that cost real money.
 
     URY's own close (``ury.ury_pos.api.submit_pos_closing_entry``) scopes the
-    invoices it attaches by **pos_profile + unconsolidated**, with no
-    timestamp window, precisely so a bill that missed its own shift's close
-    can still be swept up later. ERPNext's native
-    ``make_closing_entry_from_opening`` — which is what you get when someone
-    builds a POS Closing Entry **from the desk** instead of from the POS —
-    scopes by ``posting_date + posting_time BETWEEN period_start AND
-    period_end`` instead. Any invoice whose posting time falls outside that
-    window is dropped from the attached list *and* from the totals, with no
-    error and nothing in the Error Log.
+    invoices it attaches by **pos_profile + unconsolidated**, with no owner
+    and no timestamp window, precisely so a bill that missed its own shift's
+    close can still be swept up later. It then REHOMES each invoice's
+    ``owner`` to the opener so ERPNext's ``validate_pos_invoices`` accepts
+    them.
+
+    ERPNext's native ``make_closing_entry_from_opening`` — what a POS Closing
+    Entry built **from the desk** uses — does neither. Its
+    ``build_invoice_query`` filters on **BOTH**::
+
+        (owner == closing user)
+        AND Timestamp(posting_date, posting_time) BETWEEN period_start AND period_end
+
+    So a desk close silently drops every invoice rung by anyone other than
+    the closing user, *and* everything outside the posting-time window, from
+    the attached list AND the totals — no error, nothing in the Error Log.
+    On a shift where several cashiers rang sales (the normal case here: the
+    backlog below was rung by 8+ people) a desk close is structurally
+    incapable of sweeping it, whichever cashier runs it. That is exactly why
+    URY has the rehome pass and the owner-free scope.
 
     On the client's site that produced, over two days:
 
@@ -95,11 +106,25 @@ def refuse_close_that_orphans_invoices(doc):
 
     while **151 submitted POS Invoices worth ₵69,085** sat unconsolidated on
     that one profile, their revenue never reaching the GL. Every close up to
-    00102 had gone through the POS and swept 37–88 invoices each; the two that
-    lost the money were the two created from the desk. The giveaway is that
-    URY sets ``period_end_date = now()`` at close time, so on a POS close
-    ``creation`` and ``period_end_date`` match to the millisecond — and on
-    those two they were hours apart.
+    00102 had gone through the POS and swept 37–88 invoices each.
+
+    ⚠ AND THE BACKLOG ITSELF WAS NOT CREATED BY A DESK CLOSE — corrected
+    2026-10-30. All 151 carry URY's own ``"Originally rung by …; ownership
+    normalized on shift close"`` remark, so a **POS** close reached them,
+    rehomed their owners and **committed that**, then failed before
+    consolidating. Everything after the rehome rolled back (closing entry,
+    merge logs, Sales Invoices, the auto-replenishment Work Orders, even the
+    naming series) while the rehome survived, because it commits on its own.
+    The reported failure mode is a **gateway timeout** — gunicorn runs with
+    ``-t 120`` on that box and consolidation is forced INLINE on purpose
+    (2026-06-11), so a close big enough to exceed it dies and rolls back,
+    and every retry rolls back again.
+
+    Do NOT read ``creation`` vs ``period_end_date`` as proof of which path
+    ran. ERPNext's helper also sets ``period_end_date = get_datetime()``, so
+    a match means "inserted when the period was stamped" (which URY always
+    does, in one transaction) but a mismatch only means it was not — a desk
+    form held open overnight does that too.
 
     So: refuse, and point at the POS, which already does the right thing. We
     deliberately do NOT sweep the missing invoices in here. Doing that would
