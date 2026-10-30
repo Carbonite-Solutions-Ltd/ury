@@ -2720,6 +2720,22 @@ def submit_pos_closing_entry(opening_entry, closing_amounts, transfer_to=None):
             )
             rehomed_paid += 1
     if rehomed_paid:
+        # ⚠ THIS COMMIT SURVIVES A FAILED CLOSE, and that is a real side
+        # effect (seen 2026-10-30). If consolidation then fails — a gateway
+        # timeout on a large close is the live case, gunicorn runs with
+        # `-t 120` — the closing entry, merge logs, Sales Invoices, the
+        # auto-replenishment Work Orders and even the naming series all roll
+        # back, while this ownership rewrite stays. So a failed close
+        # permanently relabels who sold what, and the only record of the
+        # original ringer is the `remarks` text written above. All 151
+        # invoices in the ₵69,085 backlog were in exactly that state.
+        #
+        # Diagnostically that is useful — a rehome remark with no
+        # consolidation is the fingerprint of a close that died mid-flight.
+        # As behaviour it is wrong, but do not "fix" it by simply deleting
+        # the commit without checking whether ERPNext's
+        # `validate_pos_invoices` needs the value visible outside this
+        # transaction first.
         frappe.db.commit()
 
     # --- Build + insert the closing entry ------------------------------
