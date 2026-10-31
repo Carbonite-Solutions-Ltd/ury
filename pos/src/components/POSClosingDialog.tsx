@@ -34,8 +34,10 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Select, SelectItem } from './ui/select';
 import {
+  closeMayStillBeRunning,
   previewClosingEntry,
   submitClosingEntry,
+  waitForShiftClosed,
   type POSClosingPaymentRow,
   type POSClosingPreview,
 } from '../lib/pos-closing-api';
@@ -57,6 +59,13 @@ type DialogState =
   | { kind: 'error'; message: string }
   | { kind: 'form'; preview: POSClosingPreview; rows: POSClosingPaymentRow[] }
   | { kind: 'submitting' }
+  /**
+   * The submit request died in transit (gateway timeout / dropped
+   * connection) but the server is probably still consolidating. We are
+   * polling the POS Opening Entry to find out what actually happened
+   * rather than guessing. See pos-closing-api.ts.
+   */
+  | { kind: 'verifying'; elapsedMs: number }
   | { kind: 'success'; closingEntryName: string };
 
 const POSClosingDialog = ({
@@ -80,6 +89,7 @@ const POSClosingDialog = ({
   const blockedFromClosing =
     !canCloseShift(user) &&
     state.kind !== 'submitting' &&
+    state.kind !== 'verifying' &&
     state.kind !== 'success';
 
   // Initial preview fetch.
@@ -146,11 +156,35 @@ const POSClosingDialog = ({
       // Brief confirmation flash, then hand control back to the parent.
       setTimeout(() => onClosed(res.name), 800);
     } catch (err) {
-      const parsed = extractFrappeServerError(
-        err,
-        'Failed to submit closing entry. Please try again.'
-      );
-      setSubmitError(parsed.message);
+      // A GATEWAY TIMEOUT IS NOT A VERDICT. gunicorn does not abort a
+      // request when the client goes away, so when Cloudflare gives up
+      // at 100s the close is usually still running - and often commits
+      // a few seconds later. Reporting failure here is exactly what
+      // makes a cashier retry a close that already succeeded, so ask
+      // the database what happened before saying anything.
+      if (closeMayStillBeRunning(err)) {
+        setState({ kind: 'verifying', elapsedMs: 0 });
+        const outcome = await waitForShiftClosed(openingEntry, {
+          onProgress: (elapsedMs) => setState({ kind: 'verifying', elapsedMs }),
+        });
+        if (outcome.closed) {
+          const name = outcome.closingEntryName ?? '';
+          setState({ kind: 'success', closingEntryName: name });
+          setTimeout(() => onClosed(name), 1200);
+          return;
+        }
+        setSubmitError(
+          'The connection timed out, and the shift was still open after four minutes of waiting. ' +
+            'The close may yet be running on the server. Wait a minute, then reopen this dialog and ' +
+            'check before trying again - do not start a second close on top of the first.'
+        );
+      } else {
+        const parsed = extractFrappeServerError(
+          err,
+          'Failed to submit closing entry. Please try again.'
+        );
+        setSubmitError(parsed.message);
+      }
       // Restore the form state so the user can edit and retry.
       // We re-derive from the last good preview/rows we had.
       setState((current) => {
@@ -199,7 +233,9 @@ const POSClosingDialog = ({
               </p>
             </div>
           </div>
-          {state.kind !== 'submitting' && state.kind !== 'success' && (
+          {state.kind !== 'submitting' &&
+            state.kind !== 'verifying' &&
+            state.kind !== 'success' && (
             <button
               onClick={onCancel}
               className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
@@ -238,6 +274,9 @@ const POSClosingDialog = ({
             />
           )}
           {state.kind === 'submitting' && <SubmittingBody />}
+          {state.kind === 'verifying' && (
+            <VerifyingBody elapsedMs={state.elapsedMs} />
+          )}
           {state.kind === 'success' && (
             <SuccessBody closingEntryName={state.closingEntryName} />
           )}
@@ -365,6 +404,28 @@ const ErrorBody = ({ message }: { message: string }) => (
   <div className="p-4 rounded-lg bg-red-50 border border-red-200 flex gap-3">
     <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
     <div className="text-sm text-red-700">{message}</div>
+  </div>
+);
+
+const VerifyingBody = ({ elapsedMs }: { elapsedMs: number }) => (
+  <div className="text-center py-10">
+    <div className="inline-flex items-center justify-center h-14 w-14 rounded-full bg-amber-100 mb-3">
+      <Loader2 className="h-7 w-7 animate-spin text-amber-600" />
+    </div>
+    <div className="text-lg font-semibold text-gray-900">
+      Still finishing&hellip;
+    </div>
+    <p className="text-sm text-gray-600 mt-2 max-w-md mx-auto">
+      The connection timed out, but the server is still working on this
+      shift. Checking whether it finished&nbsp;&mdash;{' '}
+      <span className="font-medium text-gray-800">
+        {Math.round(elapsedMs / 1000)}s
+      </span>
+      .
+    </p>
+    <p className="text-xs text-amber-700 mt-3 font-medium">
+      Please don&rsquo;t close this window or press Close Shift again.
+    </p>
   </div>
 );
 
